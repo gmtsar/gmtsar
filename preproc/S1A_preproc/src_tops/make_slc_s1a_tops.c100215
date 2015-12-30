@@ -1,0 +1,445 @@
+/***************************************************************************
+ * Creator:  Xiaohua(Eric) XU                                              *
+ *           (Scripps Institution of Oceanography)                         *
+ * Date   :  04/06/2015                                                    *
+ ***************************************************************************/
+
+/***************************************************************************
+ * Modification history:                                                   *
+ *                                                                         *
+ * Date   :  08/21/15 DTS begin modification for precision shifting        *
+ *                                                                         *
+ ***************************************************************************/
+
+#include"tiffio.h"
+#include<stdio.h>
+#include<stdlib.h>
+#include<math.h>
+#include<string.h>
+#include"PRM.h"
+#include"lib_functions.h"
+#include"stateV.h"
+#include"xmlC.h"
+#include"lib_defs.h"
+//#include "soi.h"
+#include "gmtsar.h"
+
+typedef struct burst_bounds{
+    int SL;
+    int SC;
+    int SH;
+    int EL;
+    int EC;
+    int EH;
+}burst_bounds;
+
+int pop_led(tree *,state_vector *);
+int write_orb(state_vector *sv, FILE *fp, int);
+int pop_burst(struct PRM *, tree *, burst_bounds *, char *);
+int shift_write_slcs(void *, struct PRM *, tree *,burst_bounds *, TIFF *, FILE *, FILE *, FILE *, double);
+
+char *USAGE = "\n\nUsage: make_slc_s1a_tops name_of_xml_file name_of_tiff_file name_output azi_shift \n"
+"\nExample: make_slc_s1a_tops s1a-s1-slc-vv-20140807.xml s1a-s1-slc-vv-20140807.tiff S1Avv_20140807 0.823 \n"
+"\nOutput: S1Avv_20140807.SLCL S1Avv_20140807.SLCC S1Avv_20140807.SLCH S1Avv_20140807.PRM S1Avv_20140807.LED\n";
+
+int main(int argc, char **argv){
+    
+    FILE *XML_FILE,*OUTPUT_PRM,*OUTPUT_LED;
+    FILE *OUTPUT_SLCL,*OUTPUT_SLCC,*OUTPUT_SLCH;
+    TIFF *TIFF_FILE;
+    char tmp_str[200];
+    struct PRM prm;
+    tree xml_tree[60000];
+    state_vector sv[200];
+    burst_bounds bb[100];
+    int n;
+    double azi;
+
+    void    *API = NULL; /* GMT API control structure */
+    /* Begin: Initializing new GMT5 session */
+    if ((API = GMT_Create_Session (argv[0], 0U, 0U, NULL)) == NULL) return EXIT_FAILURE;
+    
+    if (argc < 5) die (USAGE,"");
+    // generate the xml tree
+    if ((XML_FILE = fopen(argv[1],"r")) == NULL) die("Couldn't open xml file: \n",argv[1]);
+    get_tree(XML_FILE,xml_tree);
+    //show_tree(xml_tree,0,0);
+    fclose(XML_FILE);
+    
+    // generate the LED file
+    n = pop_led(xml_tree,sv);
+    
+    strcpy(tmp_str,argv[3]);
+    strcat(tmp_str,".LED");
+    if ((OUTPUT_LED = fopen(tmp_str,"w")) == NULL) die ("Couldn't open led file: \n",tmp_str);
+    write_orb(sv,OUTPUT_LED,n);
+    fclose(OUTPUT_LED);
+    
+    // initiate the prm
+    null_sio_struct(&prm);
+
+    // analyze the burst and generate the PRM
+    pop_burst(&prm,xml_tree,bb,argv[3]);
+    
+    // open the TIFF file and the three SLC files SLCLi-low  SLCC-center and SLCH-high
+    TIFFSetWarningHandler(NULL);
+    if ((TIFF_FILE = TIFFOpen(argv[2], "r")) == NULL) die ("Couldn't open tiff file: \n",argv[2]);
+    strcpy(tmp_str,argv[3]);
+    //strcat(tmp_str,".SLCL");
+    strcat(tmp_str,".SLC");
+    if ((OUTPUT_SLCL = fopen(tmp_str,"wb")) == NULL) die ("Couldn't open slc(L) file: \n",tmp_str);
+    strcpy(tmp_str,argv[3]);
+    strcat(tmp_str,".SLCC");
+    if ((OUTPUT_SLCC = fopen(tmp_str,"wb")) == NULL) die ("Couldn't open slc(C) file: \n",tmp_str);
+    strcpy(tmp_str,argv[3]);
+    strcat(tmp_str,".SLCH");
+    if ((OUTPUT_SLCH = fopen(tmp_str,"wb")) == NULL) die ("Couldn't open slc(H) file: \n",tmp_str);
+
+    // apply range and azimuth shifts to each burst and write the three SLC files SLCL SLCC and SLCH
+    // the sign change is needed to match the resamp code
+    azi = -atof(argv[4]);
+    //fprintf(stderr," azi %f \n",azi);
+    shift_write_slcs(API,&prm,xml_tree,bb,TIFF_FILE,OUTPUT_SLCL,OUTPUT_SLCC,OUTPUT_SLCH,azi);
+    
+    TIFFClose(TIFF_FILE);
+    fclose(OUTPUT_SLCL);
+    fclose(OUTPUT_SLCC);
+    fclose(OUTPUT_SLCH);
+    
+    strcpy(tmp_str,argv[3]);
+    strcat(tmp_str,".PRM");
+    if ((OUTPUT_PRM = fopen(tmp_str,"w")) == NULL) die ("Couldn't open prm file: \n",tmp_str);
+    put_sio_struct(prm, OUTPUT_PRM);
+    fclose(OUTPUT_PRM);
+}
+
+int write_orb(state_vector *sv, FILE *fp, int n){
+    int i;
+    double dt;
+    
+    dt = trunc((sv[1].sec)*100.0)/100.0-trunc((sv[0].sec)*100.0)/100.0;
+    if(n<=1) return(-1);
+    fprintf(fp,"%d %d %d %.3lf %lf \n",n,sv[0].yr,sv[0].jd,sv[0].sec,dt);
+    for(i=0;i<n;i++){
+        fprintf(fp,"%d %d %.3lf %.6lf %.6lf %.6lf %.8lf %.8lf %.8lf \n",sv[i].yr,sv[i].jd,sv[i].sec,sv[i].x,sv[i].y,sv[i].z,sv[i].vx,sv[i].vy,sv[i].vz);
+    }
+    return(1);
+}
+
+int pop_led(tree *xml_tree,state_vector *sv){
+    int i,count;
+    char tmp_c[200];
+    double tmp_d;
+    
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/",tmp_c,3,0,1);
+    count = (int)str2double(tmp_c);
+    for (i=0;i<count;i++){
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/time/",tmp_c,2,4,i+1);
+        tmp_d = str2double(tmp_c);
+        sv[i].yr = (int)(trunc(tmp_d/1000.0));
+        sv[i].jd = (int)(tmp_d - trunc(tmp_d/1000.0)*1000.0);
+        sv[i].sec = (tmp_d - trunc(tmp_d))*86400;
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/position/x/",tmp_c,1,4,i+1);
+        sv[i].x = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/position/y/",tmp_c,1,4,i+1);
+        sv[i].y = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/position/z/",tmp_c,1,4,i+1);
+        sv[i].z = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,i+1);
+        sv[i].vx = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,i+1);
+        sv[i].vy = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,i+1);
+        sv[i].vz = str2double(tmp_c);
+    }
+    printf("%d Lines Written for Orbit...\n",count);
+    return(count);
+}
+
+int pop_burst(struct PRM *prm, tree *xml_tree, burst_bounds *bb, char *file_name){
+    
+    char tmp_c[200],tmp_cc[60000];
+    double tmp_d,dt,t[100];
+    int i,j,k,nl=0,nlf,ntl,count,lpb,tmp_i,flag,flag0;
+    int k_start, kC;
+    int *kF, *ksa, *ksr, *kea, *ker, *kover;
+    double t0=-1.,time;
+    double c_speed = 299792458.0;
+    char *cflag;
+    
+    // define some of the variables
+    prm->first_line = 1;
+    prm->st_rng_bin = 1;
+    search_tree(xml_tree,"/product/imageAnnotation/processingInformation/swathProcParamsList/swathProcParams/rangeProcessing/numberOfLooks/",tmp_c,1,0,1);
+    prm->nlooks = (int)str2double(tmp_c);
+    prm->rshift = 0;
+    prm->ashift = 0;
+    prm->sub_int_r = 0.0;
+    prm->sub_int_a = 0.0;
+    prm->stretch_r = 0.0;
+    prm->stretch_a = 0.0;
+    prm->a_stretch_r = 0.0;
+    prm->a_stretch_a = 0.0;
+    prm->first_sample = 1;
+    strasign(prm->dtype,"a",0,0);
+    search_tree(xml_tree,"/product/generalAnnotation/productInformation/rangeSamplingRate/",tmp_c,1,0,1);
+    prm->fs = str2double(tmp_c);//rng_samp_rate
+    prm->SC_identity = 10; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a*/
+    search_tree(xml_tree,"/product/generalAnnotation/productInformation/radarFrequency/",tmp_c,1,0,1);
+    prm->lambda = c_speed/str2double(tmp_c);
+    search_tree(xml_tree,"/product/generalAnnotation/downlinkInformationList/downlinkInformation/downlinkValues/txPulseLength/",tmp_c,1,0,1);
+    tmp_d = str2double(tmp_c);
+    search_tree(xml_tree,"/product/imageAnnotation/processingInformation/swathProcParamsList/swathProcParams/rangeProcessing/lookBandwidth/",tmp_c,1,0,1);
+    prm->chirp_slope = str2double(tmp_c)/tmp_d;
+    prm->pulsedur = tmp_d;
+    search_tree(xml_tree,"/product/qualityInformation/qualityDataList/qualityData/imageQuality/imageStatistics/outputDataMean/re/",tmp_c,1,0,1);
+    //prm->xmi = str2double(tmp_c); //I_mean
+    prm->xmi = 0.0; //I_mean
+    search_tree(xml_tree,"/product/qualityInformation/qualityDataList/qualityData/imageQuality/imageStatistics/outputDataMean/im/",tmp_c,1,0,1);
+    //prm->xmq = str2double(tmp_c); //Q_mean
+    prm->xmq = 0.0; //Q_mean
+    search_tree(xml_tree,"/product/imageAnnotation/imageInformation/azimuthTimeInterval/",tmp_c,1,0,1);
+    dt = str2double(tmp_c);
+    prm->prf = 1/dt;
+    search_tree(xml_tree,"/product/imageAnnotation/imageInformation/slantRangeTime/",tmp_c,1,0,1);
+    prm->near_range = str2double(tmp_c)*c_speed/2;
+    prm->ra = 6378137.00; //equatorial_radius
+    prm->rc = 6356752.31; //polar_radius
+    search_tree(xml_tree,"/product/generalAnnotation/productInformation/pass/",tmp_c,1,0,1);
+    strasign(prm->orbdir,tmp_c,0,0);
+    strasign(prm->lookdir,"R",0,0);
+    strcpy(tmp_c,file_name);
+    strcat(tmp_c,".raw");
+    strcpy(prm->input_file,tmp_c);
+    strcpy(tmp_c,file_name);
+    strcat(tmp_c,".LED");
+    strcpy(prm->led_file,tmp_c);
+    strcpy(tmp_c,file_name);
+    strcat(tmp_c,".SLC");
+    strcpy(prm->SLC_file,tmp_c);
+    prm->SLC_scale = 1.0;
+    strasign(prm->iqflip,"n",0,0); //Flip_iq
+    strasign(prm->deskew,"n",0,0); //deskew
+    strasign(prm->offset_video,"n",0,0);
+    search_tree(xml_tree,"/product/imageAnnotation/imageInformation/numberOfSamples/",tmp_c,1,0,1);
+    tmp_i = (int)str2double(tmp_c) - (int)str2double(tmp_c)%4;
+    prm->bytes_per_line = tmp_i*4;
+    prm->good_bytes = prm->bytes_per_line;
+    prm->num_rng_bins = prm->bytes_per_line/4;
+    prm->caltone = 0.0;
+    prm->pctbwaz = 0.0; //rm_az_band
+    prm->pctbw = 0.2; //rm_rng_band
+    prm->rhww = 1.0; //rng_spec_wgt
+    strasign(prm->srm,"0",0,0); //scnd_rng_mig
+    prm->az_res = 0.0;
+    //prm->antenna_side = -1;
+    prm->fdd1 = 0.0;
+    prm->fddd1 = 0.0;
+    
+    // manipulate the lines
+    search_tree(xml_tree,"/product/swathTiming/burstList/",tmp_c,3,0,1);
+    count = (int)str2double(tmp_c);
+    search_tree(xml_tree,"/product/imageAnnotation/imageInformation/numberOfLines/",tmp_c,1,0,1);
+    ntl = (int)str2double(tmp_c);
+    search_tree(xml_tree,"/product/swathTiming/linesPerBurst/",tmp_c,1,4,0);
+    lpb = (int)str2double(tmp_c);
+    nlf = count*lpb;
+    // allocate some memory
+    kF = (int *)malloc(nlf*sizeof(int));
+    ksa = (int *)malloc(count*sizeof(int));
+    ksr = (int *)malloc(count*sizeof(int));
+    kea = (int *)malloc(count*sizeof(int));
+    ker = (int *)malloc(count*sizeof(int));
+    kover = (int *)malloc(count*sizeof(int));
+    cflag = (char*)malloc(sizeof(char) * 10*( lpb + 1 ) );
+    
+    search_tree(xml_tree,"/product/imageAnnotation/imageInformation/productFirstLineUtcTime/",tmp_c,2,0,1);
+    prm->SC_clock_start = str2double(tmp_c);
+    
+    k = 0;
+    flag0 = -1;
+    for (i=1;i<=count;i++){
+        search_tree(xml_tree,"/product/swathTiming/burstList/burst/azimuthAnxTime/",tmp_c,1,4,i);
+        t[i] = str2double(tmp_c);
+        search_tree(xml_tree,"/product/swathTiming/burstList/burst/firstValidSample/",tmp_cc,1,4,i);
+	strcpy(cflag,tmp_cc);
+        for (j=0;j<lpb;j++){
+            flag = (int)strtol(cflag,&cflag,10);
+            time = t[i] + (double)j/prm->prf;
+            kF[k] = -1;
+        // don't use flagged data
+            if(flag > 0) {
+		if(t0 < 0.) {
+                t0=time;
+                k_start = k;
+                }
+       //  the kF array uniquely maps the line on the input file into the SLC line on output
+              kF[k] = (int)((time - t0)*prm->prf + .1);
+              nl = kF[k];
+            }
+       // calculate the start and end index for each burst
+            if(flag > flag0) {
+              ksa[i] = kF[k];
+              ksr[i] = j;
+            }
+            if(flag < flag0) {
+              kea[i] = kF[k-1];
+              ker[i] = j-1;
+            }
+            flag0 = flag;
+            k++;
+        }
+    }
+    // calculate the burst overlap.  The first one is zero.
+    //fprintf(stderr," \n SL   EL  SC  EC  SH   EH \n");
+    kover[0] = 0;
+    for (i=1;i<=count;i++){
+        kover[i] = 0;
+        if(i < count) kover[i] = kea[i] - ksa[i+1] +1;
+        //fprintf(stderr,"%d \n",kover[i]);
+    }
+    // calculate the approximate center shift
+    kC = kover[1]/2;
+    // calculate the relative start S and end E lines for each burst in the L and H configurations
+    for (i=1;i<=count;i++){
+        bb[i].SL = ksr[i];
+        bb[i].SH = ksr[i] + kover[i-1];
+        bb[i].EL = ker[i] - kover[i];
+        bb[i].EH = ker[i];
+    }
+    // make the center start end locations
+    for (i=1;i<count;i++){
+        bb[i].EC = bb[i].EL + kC;
+        bb[i+1].SC = bb[i+1].SL + kC;
+    }
+    bb[1].SC = bb[1].SL;
+    bb[count].EC = bb[i].EL;
+    for (i=1;i<=count;i++){
+        //fprintf(stderr," %d %d %d %d %d %d \n",bb[i].SL,bb[i].EL,bb[i].SC,bb[i].EC,bb[i].SH,bb[i].EH);
+    }
+
+    // make sure the number of lines is divisible by 4
+    prm->num_lines = nl-nl%4;
+    // advance the start time to account for the zero lines at the start of the first burst
+    prm->SC_clock_start = prm->SC_clock_start + (double)(k_start)/prm->prf/86400.;
+    prm->SC_clock_stop = prm->SC_clock_start + prm->num_lines/prm->prf/86400;
+    prm->nrows = prm->num_lines;
+    prm->num_valid_az = prm->num_lines;
+    prm->num_patches = 1;
+    prm->chirp_ext = 0;
+    return(1);
+
+}
+ 
+int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *bb, TIFF *tif, FILE *slcl, FILE *slcc, FILE *slch, double azi){
+
+    uint16 s=0;
+    uint16 *buf;
+    short *tmp, *brst;
+    int ii,jj,nl,it,k,kk;
+    int count, lpb, nlf, width2;
+    uint32 width,height,widthi;
+    char tmp_c[200];
+    fcomplex *fft_vec;
+    int ranfft;
+
+    // get the burst information and compare with the TIFF file
+    search_tree(xml_tree,"/product/swathTiming/burstList/",tmp_c,3,0,1);
+    count = (int)str2double(tmp_c);
+    search_tree(xml_tree,"/product/swathTiming/linesPerBurst/",tmp_c,1,4,0);
+    lpb = (int)str2double(tmp_c);
+    nlf = count*lpb;
+
+    //fprintf(stderr," azi %f \n",azi);
+    // get the width the file and make width divisible by 4
+    TIFFGetField(tif,TIFFTAG_IMAGEWIDTH,&widthi);
+    TIFFGetField(tif,TIFFTAG_IMAGELENGTH,&height);
+    width = widthi - widthi%4;
+    width2 = 2*width;
+
+    fprintf(stderr," widthi width2 width %d %d %d \n",widthi,width2,width);
+
+    if(nlf != height) {
+       fprintf(stderr,"XML and TIFF file disagree on image height %d %d \n", nlf, height);
+    }
+    
+    // allocate memory for the burst and other arrays
+    brst = (short *)malloc(height*width2*sizeof(short));
+    buf = (uint16 *)_TIFFmalloc(TIFFScanlineSize(tif));
+    tmp = (short *)malloc(widthi*2*sizeof(short));
+    ranfft = fft_bins(lpb);
+    //fprintf(stderr," ranfft %d \n",ranfft);
+    fft_vec = (fcomplex *) malloc(ranfft*sizeof(fcomplex));
+    nl = prm-> num_lines;
+ 
+    printf("Writing SLC..Image Size: %d X %d...\n",width,nl);
+    it = 0;
+    for (kk=1;kk<=count;kk++){
+    // read a burst into memory
+        for (ii=0;ii<lpb;ii++){
+            TIFFReadScanline(tif, buf, it, s);
+            for (jj=0;jj<width2;jj++){
+                k = ii*width2+jj;
+                brst[k]=(short)buf[jj];
+	    }
+            it++;
+        }
+    // shift the burst column by column of azi != 0.
+       if(azi != 0.){
+       fprintf(stderr," azi %f \n",azi);
+       for (jj=0;jj<width2;jj=jj+2){
+           for (ii=0;ii<ranfft;ii++){
+           // load the complex vector
+               if(ii < lpb){
+               k = ii*width2+jj;
+               //fprintf(stderr," jj ii k %d %d %d %d \n",jj,ii,k,k+1);
+                   fft_vec[ii].r = (float) brst[k];
+                   fft_vec[ii].i = (float) brst[k+1];
+               }
+               else{
+                   fft_vec[ii].r = 0.0f;
+                   fft_vec[ii].i = 0.0f;
+               }
+           }
+           // apply the shift theorem
+           shift(API,ranfft,fft_vec,azi);
+           for (ii=0;ii<lpb;ii++){
+           // unload the complex vector
+               k = ii*width2+jj;
+               //fprintf(stderr," jj ii k %d %d %d %d \n",jj,ii,k,k+1);
+                   brst[k]   = (int) fft_vec[ii].r;
+                   brst[k+1] = (int) fft_vec[ii].i;
+               }
+       }
+       }
+    // write the burst in L, C, and H configurations
+          for (ii=0;ii<lpb;ii++){
+            if(ii >= bb[kk].SL && ii <= bb[kk].EL){
+            for (jj=0;jj<width2;jj++){
+                k = ii*width2+jj;
+                tmp[jj] = brst[k];
+            }
+            fwrite(tmp,sizeof(short),width*2,slcl);
+            }
+            if(ii >= bb[kk].SC && ii <= bb[kk].EC){
+            for (jj=0;jj<width2;jj++){
+                k = ii*width2+jj;
+                tmp[jj] = brst[k];
+            }
+            fwrite(tmp,sizeof(short),width*2,slcc);
+            }
+            if(ii >= bb[kk].SH && ii <= bb[kk].EH){
+            for (jj=0;jj<width2;jj++){
+                k = ii*width2+jj;
+                tmp[jj] = brst[k];
+            }
+            fwrite(tmp,sizeof(short),width*2,slch);
+            }
+        }
+    }
+
+    _TIFFfree(buf);
+    free(tmp);
+    return(1);
+}
+
