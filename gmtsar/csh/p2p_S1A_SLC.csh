@@ -170,7 +170,7 @@ unset noclobber
     cp $slave.PRM $slave.PRM0
     SAT_baseline $master.PRM $slave.PRM0 >> $slave.PRM
     xcorr $master.PRM $slave.PRM -xsearch 128 -ysearch 128
-    fitoffset.csh 4 freq_xcorr.dat >> $slave.PRM
+    fitoffset.csh 2 2 freq_xcorr.dat >> $slave.PRM
     resamp $master.PRM $slave.PRM $slave.PRMresamp $slave.SLCresamp 4
     rm $slave.SLC
     mv $slave.SLCresamp $slave.SLC

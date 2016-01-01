@@ -210,7 +210,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     int k_start, kC;
     int *kF, *ksa, *ksr, *kea, *ker, *kover;
     double t0=-1.,time;
-    char *cflag;
+    char *cflag,*cflag_orig;
     
     // define some of the variables
     prm->first_line = 1;
@@ -297,7 +297,8 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     kea = (int *)malloc(count*sizeof(int));
     ker = (int *)malloc(count*sizeof(int));
     kover = (int *)malloc(count*sizeof(int));
-    cflag = (char *)malloc(sizeof(char)*8*( lpb + 1 ) );
+    cflag_orig = (char *)malloc(sizeof(char)*8*( lpb + 1 ) );
+    cflag = cflag_orig;
     
     search_tree(xml_tree,"/product/imageAnnotation/imageInformation/productFirstLineUtcTime/",tmp_c,2,0,1);
     prm->clock_start = str2double(tmp_c);
@@ -384,7 +385,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     free(kea);
     free(ker);
     free(kover);
-    //free(cflag); /* freeing this memory causes a crash!!!! */
+    free(cflag_orig); /* freeing this memory causes a crash!!!! */
     return(1);
 }
  
