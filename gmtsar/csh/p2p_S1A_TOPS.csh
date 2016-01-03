@@ -1,24 +1,22 @@
 #!/bin/csh -f
-#       $Id$
 #
-#  Xiaopeng Tong, Jan 14, 2014
+#  David Dandwell, December 29, 2015
 #
-# process generic L1.1 data
+# process Sentinel-1A TOPS data
 # Automatically process a single frame of interferogram.
 # see instruction.txt for details.
 #
 
-
 alias rm 'rm -f'
 unset noclobber
 #
-  if ($#argv != 3) then
+  if ($#argv < 3) then
     echo ""
-    echo "Usage: p2p_SAT_SLC.csh master_image slave_image configuration_file "
+    echo "Usage: p2p_S1A_TOPS.csh master_image slave_image configuration_file"
     echo ""
-    echo "Example: p2p_SAT_SLC.csh TSX_20110608 TSX_20110619 config.tsx.slc.txt"
+    echo "Example: p2p_S1A_TOPS.csh S1A20150526_F1 S1A20150607_F1 config.tsx.slc.txt "
     echo ""
-    echo "         Place the L1.1 data in a directory called raw and a dem.grd file in "
+    echo "         Place the pre-processed data in a directory called raw and a dem.grd file in "
     echo "         a parallel directory called topo.  Execute this command at the directory"
     echo "         location above raw and topo.  The file dem.grd"
     echo "         is a dem that completely covers the SAR frame - larger is OK."
@@ -29,9 +27,7 @@ unset noclobber
     echo ""
     exit 1
   endif
-
 # start 
-
 #
 #   make sure the files exist
 #
@@ -65,7 +61,6 @@ unset noclobber
   set region_cut = `grep region_cut $3 | awk '{print $3}'`
   set switch_land = `grep switch_land $3 | awk '{print $3}'`
   set defomax = `grep defomax $3 | awk '{print $3}'`
-
 #
 # read file names of raw data
 #
@@ -162,21 +157,16 @@ unset noclobber
     echo "ALIGN - START"
     cd SLC
     cp ../raw/*.PRM .
-    ln -s ../raw/$master.SLC . 
-    ln -s ../raw/$slave.SLC . 
+    ln -s ../raw/$master.SLC .
+    ln -s ../raw/$slave.SLC .
     ln -s ../raw/$master.LED . 
     ln -s ../raw/$slave.LED .
     
     cp $slave.PRM $slave.PRM0
-    SAT_baseline $master.PRM $slave.PRM0 >> $slave.PRM
-    xcorr $master.PRM $slave.PRM -xsearch 128 -ysearch 128
-    fitoffset.csh 1 1 freq_xcorr.dat >> $slave.PRM
-    mv freq_xcorr.dat xcorr_$1_$2.dat0
-    resamp $master.PRM $slave.PRM $slave.PRMresamp $slave.SLCresamp 4
+    resamp $master.PRM $slave.PRM $slave.PRMresamp $slave.SLCresamp 1
     rm $slave.SLC
     mv $slave.SLCresamp $slave.SLC
     cp $slave.PRMresamp $slave.PRM
-        
     cd ..
     echo "ALIGN - END"
   endif
@@ -217,7 +207,7 @@ unset noclobber
 #
 #  make sure the range increment of the amplitude image matches the topo_ra.grd
 #
-        set rng = `gmt grdinfo topo/topo_ra.grd | grep x_inc | awk '{print $7}'`
+        set rng = `grdinfo topo/topo_ra.grd | grep x_inc | awk '{print $7}'`
         cd SLC 
         echo " range decimation is:  " $rng
         slc2amp.csh $master.PRM $rng amp-$master.grd
@@ -295,10 +285,9 @@ unset noclobber
       cd intf
       set ref_id  = `grep SC_clock_start ../SLC/$master.PRM | awk '{printf("%d",int($3))}' `
       set rep_id  = `grep SC_clock_start ../SLC/$slave.PRM | awk '{printf("%d",int($3))}' `
-
       cd $ref_id"_"$rep_id
       if ((! $?region_cut) || ($region_cut == "")) then
-        set region_cut = `gmt grdinfo phase.grd -I- | cut -c3-20`
+        set region_cut = `grdinfo phase.grd -I- | cut -c3-20`
       endif
 
 #
@@ -332,7 +321,7 @@ unset noclobber
 # 6 - start from geocode  #
 ###########################
 
-  if ($stage <= 6) then
+    if ($stage <= 6) then
     cd intf
     set ref_id  = `grep SC_clock_start ../SLC/$master.PRM | awk '{printf("%d",int($3))}' `
     set rep_id  = `grep SC_clock_start ../SLC/$slave.PRM | awk '{printf("%d",int($3))}' `
