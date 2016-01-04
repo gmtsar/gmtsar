@@ -198,7 +198,7 @@ int pop_led(tree *xml_tree,state_vector *sv){
         search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,i+1);
         sv[i].vz = str2double(tmp_c);
     }
-    printf("%d Lines Written for Orbit...\n",count);
+    printf("Writing %d lines for orbit...\n",count);
     return(count);
 }
 
@@ -297,7 +297,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     kea = (int *)malloc(count*sizeof(int));
     ker = (int *)malloc(count*sizeof(int));
     kover = (int *)malloc(count*sizeof(int));
-    cflag_orig = (char *)malloc(sizeof(char)*8*( lpb + 1 ) );
+    cflag_orig = (char *)malloc(sizeof(char)*80*( lpb + 1 ) );
     cflag = cflag_orig;
     
     search_tree(xml_tree,"/product/imageAnnotation/imageInformation/productFirstLineUtcTime/",tmp_c,2,0,1);

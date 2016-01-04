@@ -27,6 +27,29 @@ if ($#argv < 5) then
  echo " "
  exit 1
 endif 
+#  
+#  make sure the files are available
+#
+if(! -f $1.xml) then
+   echo "****** missing file: "$1
+   exit
+endif
+if(! -f $2) then
+   echo "****** missing file: "$2
+   exit
+endif
+if(! -f $3.xml) then
+   echo "****** missing file: "$3
+   exit
+endif
+if(! -f $4) then
+   echo "****** missing file: "$4
+   exit
+endif
+if(! -f $5) then
+   echo "****** missing file: "$5
+   exit
+endif
 # 
 #  set the full names and create an output prefix
 #

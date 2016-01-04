@@ -89,7 +89,7 @@ int write_orb(state_vector *sv, FILE *fp, int n){
         fprintf(stderr,"NO orbit coverage in the selected file...\n");
         return(-1);
     }else{
-        printf("Writing %d lines of orbit for the LED file...\n",n);
+        printf("Writing %d lines of precise orbit for the LED file...\n",n);
     }
     
     dt = round((sv[1].sec)*1000.0)/1000.0-round((sv[0].sec)*1000.0)/1000.0;
@@ -110,7 +110,7 @@ int pop_led_pre(tree *xml_tree,state_vector *sv, double t1, double t2){
    
     search_tree(xml_tree,"/Earth_Explorer_File/Data_Block/List_of_OSVs/",tmp_c,3,0,1);
     count = (int)str2double(tmp_c);
-    //printf("%d Lines to be written for Orbit...\n",count);
+    //printf("Reading %d lines from precise orbit...\n",count);
     for (i=0;i<count;i++){
         search_tree(xml_tree,"/Earth_Explorer_File/Data_Block/List_of_OSVs/OSV/UTC/",tmp_c,2,4,i+1);
         tmp_d = str2double(tmp_c);
