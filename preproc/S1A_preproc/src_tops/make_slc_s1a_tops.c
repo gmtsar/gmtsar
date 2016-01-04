@@ -1,5 +1,5 @@
 /***************************************************************************
- * Creator:  Xiaohua(Eric) XU and David Sandwell                           *
+ * Creator:  David Sandwell and Xiaohua(Eric) XU                           *
  *           (Scripps Institution of Oceanography)                         *
  * Date   :  04/06/2015                                                    *
  ***************************************************************************/
@@ -82,7 +82,6 @@ int main(int argc, char **argv){
         }
     }
     fclose(XML_FILE);
-    //fprintf(stderr,"%d %d \n",n,nlmx);
     xml_tree = (struct tree *)malloc(n*5*sizeof(struct tree));
     
     // generate the xml tree
@@ -341,12 +340,10 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
         }
     }
     // calculate the burst overlap.  The first one is zero.
-    //fprintf(stderr," \n SL   EL  SC  EC  SH   EH \n");
     kover[0] = 0;
     for (i=1;i<=count;i++){
         kover[i] = 0;
         if(i < count) kover[i] = kea[i] - ksa[i+1] +1;
-        //fprintf(stderr,"%d \n",kover[i]);
     }
     // calculate the approximate center shift
     kC = kover[1]/2;
@@ -364,9 +361,6 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     }
     bb[1].SC = bb[1].SL;
     bb[count].EC = bb[i].EL;
-    for (i=1;i<=count;i++){
-        //fprintf(stderr," %d %d %d %d %d %d \n",bb[i].SL,bb[i].EL,bb[i].SC,bb[i].EC,bb[i].SH,bb[i].EH);
-    }
 
     // make sure the number of lines is divisible by 4
     prm->num_lines = nl-nl%4;
@@ -469,7 +463,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
    // don't need this code if there are no shifts
     if(azi != 0. || rng != 0.){
 
-    // complute the complex deramp_demod array for each burst with no shift
+    // compute the complex deramp_demod array for each burst with no shift
        dramp_dmod (xml_tree,kk,cramp,lpb,width,0.,0.,0.);
 
     // apply the dramp_dmod  
@@ -487,9 +481,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
 
     // shift the burst cramp in azimuth if azi != 0.
        if(azi != 0.){
-           //fprintf(stderr," SC = %d EC = %d %f\n",bb[kk].SC,bb[kk].EC,(cl+(bb[kk].EC-bb[kk].SC+1)/2.));
            azi_new=azi+(cl+(bb[kk].EC-bb[kk].SC+1)/2.)*a_stretch_a;
-           //fprintf(stderr," azi azi_new %f %f \n",azi,azi_new);
            azi_shift (API,cbrst,lpb,width,fft_vec_azi,ranfft_azi,azi_new,stretch_a);
        }
 
@@ -504,7 +496,6 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
                 cbrst[k] = Cmul(cbrst[k],cramp[k]);
             }
         }
-
      }
   
     // unload the float complex array into a short burst array, multiply by 2 and clip if needed
@@ -532,7 +523,6 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
             }
             if(imode == 2) fwrite(tmp,sizeof(short),width*2,slcl);
             }
-    
             // write center
             if(ii >= bb[kk].SC && ii <= bb[kk].EC){
             for (jj=0;jj<width2;jj++){
@@ -542,7 +532,6 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
             if(imode == 1) fwrite(tmp,sizeof(short),width*2,slcc);
             cl++;
             }
-
             // write high
             if(ii >= bb[kk].SH && ii <= bb[kk].EH){
             for (jj=0;jj<width2;jj++){
@@ -584,7 +573,6 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     str2dbs(fnc,tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthFmRatePolynomial/",tmp_c,1,4,nb+1);
     str2dbs(fka,tmp_c);
-    //fprintf(stderr," %d %g %g %g %g %g %g \n",nb+1,fnc[0],fnc[1],fnc[2],fka[0],fka[1],fka[2]);
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/radarFrequency/",tmp_c,1,0,1);
     fc = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,3*nb+1);
@@ -601,7 +589,6 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     ts0 = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
     tau0 = str2double(tmp_c);
-    //fprintf(stderr, "ts0 tau0 %g %g %g \n",ts0,tau0,ts0-tau0);
 
     // malloc the memory
     eta    = (double *) malloc(lpb*sizeof(double));
@@ -611,7 +598,6 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
 
     // compute velocity and then Doppler rate
     vtot = sqrt(vx*vx+vy*vy+vz*vz);
-    //fprintf(stderr," %d %lf \n",nb,vtot);
     ks = 2.*vtot*fc*kpsi/SOL;
 
     for (ii=0;ii<lpb;ii++){
@@ -626,7 +612,6 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
         kt[jj]=ka*ks/(ka-ks);
         fnct[jj]=fnc[0]+fnc[1]*taus+fnc[2]*taus*taus;
         etaref[jj]=-fnct[jj]/ka+fnc[0]/fka[0];
-        //fprintf(stderr," %d %f \n", jj, etaref[jj]);
     }
 
     for (ii=0;ii<lpb;ii++){
@@ -653,7 +638,6 @@ int azi_shift (void *API, fcomplex *cbrst, int lpb, int width, fcomplex *fft_vec
        // loop over columns of the burst
        for (jj=0;jj<width;jj++){
            azi_new = azi + jj*stretch_a;
-           //fprintf(stderr," %d %f %f \n",jj,jj*stretch_a,azi_new);
            // compute the mean value
            for (ii=0;ii<lpb;ii++){
                k = ii*width+jj;
