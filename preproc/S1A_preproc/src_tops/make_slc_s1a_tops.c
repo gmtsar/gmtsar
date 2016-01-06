@@ -317,7 +317,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
             time = t[i] + (double)j/prm->prf;
             kF[k] = -1;
         // don't use flagged data
-            if(flag > 0) {
+            if(flag >= 0) {
 		if(t0 < 0.) {
                 t0=time;
                 k_start = k;
@@ -327,7 +327,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
               nl = kF[k];
             }
        // calculate the start and end index for each burst
-            if(flag > flag0) {
+            if(flag >= flag0) {
               ksa[i] = kF[k];
               ksr[i] = j;
             }

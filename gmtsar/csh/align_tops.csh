@@ -104,8 +104,8 @@ paste master.ratll slave.ratll | awk '{print( $1, $6-$1, $2, $7-$2, "100")}' > t
 #
 set rmax = `grep num_rng_bins $mpre".PRM" | awk '{print $3}'`
 set amax = `grep num_lines $mpre".PRM" | awk '{print $3}'`
-#awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
-awk '{if($1 > 0 && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
+awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
+#awk '{if($1 > 0 && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
 #
 #  run fitoffset
 #

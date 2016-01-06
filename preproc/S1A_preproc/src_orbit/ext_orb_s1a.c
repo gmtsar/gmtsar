@@ -65,8 +65,8 @@ int main(int argc, char **argv){
     if ((INPUT_PRM = fopen(argv[1],"r")) == NULL) die("Couldn't open xml file: \n",argv[1]);
     get_sio_struct(INPUT_PRM,&prm);
     //fprintf(stderr,"%.12f  %.12f\n",prm.SC_clock_start,prm.SC_clock_stop);
-    t1 = prm.SC_clock_start-5*(prm.SC_clock_stop-prm.SC_clock_start);
-    t2 = prm.SC_clock_stop+5*(prm.SC_clock_stop-prm.SC_clock_start);
+    t1 = prm.SC_clock_start-10*(prm.SC_clock_stop-prm.SC_clock_start);
+    t2 = prm.SC_clock_stop+10*(prm.SC_clock_stop-prm.SC_clock_start);
     
     // generate the LED file
     n = pop_led_pre(xml_tree,sv,t1,t2);
