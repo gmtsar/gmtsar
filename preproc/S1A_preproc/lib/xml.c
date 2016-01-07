@@ -22,7 +22,7 @@
 int N = 0;
 int MAX_TREE_SIZE = 600000;	// size of the tree in maximum
 int MAX_CHAR_SIZE = 60000;	// size of char arrays in maximum
-char STR[100][60000];
+char STR[200][60000];
 
 int search_tree(tree *list, char *str, char *s_out, int type, int loc, int num){
 /***************************************************************************
@@ -594,3 +594,13 @@ int itoa(int d, char *buf, int base) {
     }
     return(1);
 }
+
+int null_MEM_STR(){
+    int i;
+    for(i=0;i<100;i++){
+        STR[i][0] = '\0';
+    }
+    return(1); 
+}
+
+

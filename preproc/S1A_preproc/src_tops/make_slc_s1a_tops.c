@@ -569,7 +569,8 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     double fnc[3],fka[3];
     double *eta,*etaref,*kt,*fnct;
     double azi_rng;
-    
+    double t_brst, t1, t2;
+
     // get all the parameters needed for the remod_deramp
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/azimuthSteeringRate/",tmp_c,1,0,1);
     kpsi=PI*str2double(tmp_c)/180.;
@@ -592,12 +593,7 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
 
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/radarFrequency/",tmp_c,1,0,1);
     fc = str2double(tmp_c);
-    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,3*nb+1);
-    vx = str2double(tmp_c);
-    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,3*nb+1);
-    vy = str2double(tmp_c);
-    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,3*nb+1);
-    vz = str2double(tmp_c);
+    
     search_tree(xml_tree,"/product/imageAnnotation/imageInformation/azimuthTimeInterval/",tmp_c,1,0,1);
     dta = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/rangeSamplingRate/",tmp_c,1,0,1);
@@ -606,6 +602,34 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     ts0 = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
     tau0 = str2double(tmp_c);
+
+    // find the velocity by linearly interpolating between 2 neareast point
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/",tmp_c,3,0,1);
+    jj = (int)str2double(tmp_c); 
+    search_tree(xml_tree,"/product/swathTiming/burstList/burst/azimuthTime/",tmp_c,2,4,nb);
+    t_brst = str2double(tmp_c)+dta*(double)lpb/2.0/86400.0;
+    
+    t2 = 0.0;
+    ii = 0;
+    while(t2 < t_brst && ii <= jj){
+        t1 = t2;
+        ii++;
+        search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/time/",tmp_c,2,4,ii);
+        t2 = str2double(tmp_c);
+    }
+
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,ii-1);
+    vx = str2double(tmp_c);
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,ii);
+    vx = (str2double(tmp_c)*(t2-t_brst)+vx*(t_brst-t1))/(t2-t1); 
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,ii-1);
+    vy = str2double(tmp_c);
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,ii);
+    vy = (str2double(tmp_c)*(t2-t_brst)+vy*(t_brst-t1))/(t2-t1); 
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,ii-1);
+    vz = str2double(tmp_c);
+    search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,ii);
+    vz = (str2double(tmp_c)*(t2-t_brst)+vz*(t_brst-t1))/(t2-t1);
 
     // malloc the memory
     eta    = (double *) malloc(lpb*sizeof(double));
