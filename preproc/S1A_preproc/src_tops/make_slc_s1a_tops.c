@@ -9,6 +9,7 @@
  *                                                                         *
  * Date   :  08/21/15 DTS begin modification for precision shifting        *
  * Date   :  10/24/15 DTS  Added the deramp and reramp                     *
+ * Date   :  12/29/15 DTS added 3-parameter phase shift and reramp         *
  *                                                                         *
  ***************************************************************************/
 #include"tiffio.h"
@@ -327,7 +328,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
               nl = kF[k];
             }
        // calculate the start and end index for each burst
-            if(flag >= flag0) {
+            if(flag > flag0) {
               ksa[i] = kF[k];
               ksr[i] = j;
             }
@@ -463,7 +464,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
    // don't need this code if there are no shifts
     if(azi != 0. || rng != 0.){
 
-    // compute the complex deramp_demod array for each burst with no shift
+    // complute the complex deramp_demod array for each burst with no shift
        dramp_dmod (xml_tree,kk,cramp,lpb,width,0.,0.,0.);
 
     // apply the dramp_dmod  
@@ -496,6 +497,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
                 cbrst[k] = Cmul(cbrst[k],cramp[k]);
             }
         }
+
      }
   
     // unload the float complex array into a short burst array, multiply by 2 and clip if needed
@@ -523,6 +525,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
             }
             if(imode == 2) fwrite(tmp,sizeof(short),width*2,slcl);
             }
+    
             // write center
             if(ii >= bb[kk].SC && ii <= bb[kk].EC){
             for (jj=0;jj<width2;jj++){
@@ -532,6 +535,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
             if(imode == 1) fwrite(tmp,sizeof(short),width*2,slcc);
             cl++;
             }
+
             // write high
             if(ii >= bb[kk].SH && ii <= bb[kk].EH){
             for (jj=0;jj<width2;jj++){
@@ -569,10 +573,23 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     // get all the parameters needed for the remod_deramp
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/azimuthSteeringRate/",tmp_c,1,0,1);
     kpsi=PI*str2double(tmp_c)/180.;
-    search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/dcEstimate/dataDcPolynomial/",tmp_c,1,4,nb+1);
+    search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/dcEstimate/dataDcPolynomial/",tmp_c,1,4,nb);
     str2dbs(fnc,tmp_c);
-    search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthFmRatePolynomial/",tmp_c,1,4,nb+1);
-    str2dbs(fka,tmp_c);
+
+    ii = search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
+    if (xml_tree[xml_tree[ii].sibr].sibr < 0){
+        search_tree(xml_tree, "/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthFmRatePolynomial/", tmp_c,1,4,nb+1);
+        str2dbs(fka,tmp_c);
+    }
+    else{
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c0/",tmp_c,1,4,nb);
+        fka[0] = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c1/",tmp_c,1,4,nb);
+        fka[1] = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c2/",tmp_c,1,4,nb);
+        fka[2] = str2double(tmp_c);
+    }
+
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/radarFrequency/",tmp_c,1,0,1);
     fc = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,3*nb+1);
