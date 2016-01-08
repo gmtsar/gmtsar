@@ -158,6 +158,10 @@ void baseline(struct PRM *r, struct ALOS_ORB *orb, int nfiles, int input_flag, c
         if(r[0].SC_identity < 3 || r[0].SC_identity == 4) ns2=ns*2;
 
 	nd = orb[0].nd;
+        for(ii=1;ii<nfiles;ii++){
+                if (nd < orb[ii].nd) nd = orb[ii].nd;
+        }
+
 	pt = malloc(nd*sizeof(double));
 	p = malloc(nd*sizeof(double));
 	pv = malloc(nd*sizeof(double));
