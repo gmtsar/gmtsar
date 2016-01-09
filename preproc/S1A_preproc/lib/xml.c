@@ -118,6 +118,7 @@ int search_tree(tree *list, char *str, char *s_out, int type, int loc, int num){
     else if (type == 3){
         cat_nums(s_out,list[list[ct].parent].name);
     }
+    free(tmp_name);
     return(list[ct].parent);
 }
 
@@ -254,7 +255,8 @@ int get_tree(FILE *fp, tree *list, int num_parse){
         //printf("%d %d %d\n",num_space[count],count,lev_ct);
         count++;
     }
-    
+    free(buffer);
+    free(tmp_c); 
     //fclose(fp);
     //free(num_space);
     return(1);

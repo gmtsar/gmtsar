@@ -292,11 +292,11 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     nlf = count*lpb;
     // allocate some memory
     kF = (int *)malloc(nlf*sizeof(int));
-    ksa = (int *)malloc(count*sizeof(int));
-    ksr = (int *)malloc(count*sizeof(int));
-    kea = (int *)malloc(count*sizeof(int));
-    ker = (int *)malloc(count*sizeof(int));
-    kover = (int *)malloc(count*sizeof(int));
+    ksa = (int *)malloc((count+1)*sizeof(int));
+    ksr = (int *)malloc((count+1)*sizeof(int));
+    kea = (int *)malloc((count+1)*sizeof(int));
+    ker = (int *)malloc((count+1)*sizeof(int));
+    kover = (int *)malloc((count+1)*sizeof(int));
     cflag_orig = (char *)malloc(sizeof(char)*80*( lpb + 1 ) );
     cflag = cflag_orig;
     
