@@ -153,8 +153,8 @@ void baseline(struct PRM *r, struct ALOS_ORB *orb, int nfiles, int input_flag, c
 	ns = (int) ((t12 - t11)/dt);	/* seconds of frame */
 	dt = (t12 - t11)/(ns - 1);
 
-        /* set the extension to 20% unless ERS or Envisat and then set to 200% */
-        ns2 = ns*0.2;
+        /* set the extension to 50% unless ERS or Envisat and then set to 200% */
+        ns2 = ns*0.5;
         if(r[0].SC_identity < 3 || r[0].SC_identity == 4) ns2=ns*2;
 
 	nd = orb[0].nd;
