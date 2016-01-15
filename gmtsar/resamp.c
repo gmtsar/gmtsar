@@ -1,7 +1,7 @@
 /*	$Id$	*/
 /***************************************************************************
  * resamp resamples a slave image to match the geometry of a master image. * 
-***************************************************************************/
+ **************************************************************************/
 
 /***************************************************************************
  * Creator:  David T. Sandwell                                             *
@@ -78,6 +78,7 @@ struct PRM pm, ps;
 
         /* force integer interpolation if this is nearest neighbor, needed for TOPS */
         if (intrp == 1) {
+        //if (intrp == 1 || intrp ==4) {
           sv_pr[0] = ps.sub_int_r;
 	  ps.sub_int_r = 0.;
           sv_pr[1] = ps.stretch_r;
@@ -140,6 +141,7 @@ struct PRM pm, ps;
 
         /* restore the affine parameters if this is nearest interpolation */
         if (intrp == 1) {
+        //if (intrp == 1 || intrp == 4) {
           ps.sub_int_r = sv_pr[0];
           ps.stretch_r = sv_pr[1];
           ps.a_stretch_r = sv_pr[2];

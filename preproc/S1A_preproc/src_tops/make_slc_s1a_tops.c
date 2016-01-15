@@ -10,6 +10,7 @@
  * Date   :  08/21/15 DTS begin modification for precision shifting        *
  * Date   :  10/24/15 DTS  Added the deramp and reramp                     *
  * Date   :  12/29/15 DTS added 3-parameter phase shift and reramp         *
+ * Date   :  01/14/15 EXU added range stretch and line interpolator        *
  *                                                                         *
  ***************************************************************************/
 #include"tiffio.h"
@@ -36,12 +37,14 @@ typedef struct burst_bounds{
 int pop_led(struct tree *, struct state_vector *);
 int write_orb(struct state_vector *sv, FILE *fp, int);
 int pop_burst(struct PRM *, struct tree *, struct burst_bounds *, char *);
-int shift_write_slcs(void *, struct PRM *, struct tree *,burst_bounds *, TIFF *, FILE *, FILE *, FILE *, int, double, double, double, double);
+int shift_write_slcs(void *, struct PRM *, struct tree *,burst_bounds *, TIFF *, FILE *, FILE *, FILE *, int, double, double, double, double, double ,double);
 int dramp_dmod(struct tree *, int, fcomplex *, int , int, double, double, double);
 int azi_shift (void *, fcomplex *, int , int , fcomplex *, int ,  double, double);
 int rng_shift (void *, fcomplex *, int , int , fcomplex *, int ,  double );
+int rng_interp (fcomplex *, fcomplex *, int, int, int, int, double, double, double);
+double sinc_kernel (double);
 
-char *USAGE = "\nUsage: make_slc_s1a_tops xml_file tiff_file output mode rng_shift azi_shift stretch_a a_stretch_a \n"
+char *USAGE = "\nUsage: make_slc_s1a_tops xml_file tiff_file output mode rng_shift azi_shift stretch_a a_stretch_a stretch_r a_stretch_r\n"
               "         xml_file    - name of xml file \n" 
               "         tiff_file   - name of tiff file \n" 
               "         output      - stem name of output files .PRM, .LED, .SLC \n" 
@@ -50,7 +53,9 @@ char *USAGE = "\nUsage: make_slc_s1a_tops xml_file tiff_file output mode rng_shi
               "         azi_shift   - fractional part of desired azimuth shift \n" 
               "         stretch_a   - additional azimuth shift in range dir \n" 
               "         a_stretch_a - additional azimuth shift in azimuth dir \n" 
-"\nExample: make_slc_s1a_tops s1a-s1-slc-vv-20140807.xml s1a-s1-slc-vv-20140807.tiff S1A20140807 1 0.4596 .9109 2.18065e-06 -3.63255e-06 \n"
+              "         stretch_r   - additional range shift in range dir \n"
+              "         a_stretch_r - additional range shift in azimuth dir \n"
+"\nExample: make_slc_s1a_tops s1a-s1-slc-vv-20140807.xml s1a-s1-slc-vv-20140807.tiff S1A20140807 1 0.4596 .9109 2.18065e-06 -3.63255e-06 1.37343e-05 -3.13352e-05 \n"
 "\nOutput: S1A20140807.PRM S1A20140807.LED S1A20140807.SLC\n";
 
 int main(int argc, char **argv){
@@ -64,13 +69,13 @@ int main(int argc, char **argv){
     struct state_vector sv[400];
     struct burst_bounds bb[200];
     int ch, n=0, nc=0, nlmx=0, imode=0;
-    double rng, azi, stretch_a, a_stretch_a;
+    double rng, azi, stretch_a, a_stretch_a, stretch_r, a_stretch_r;
 
     // Begin: Initializing new GMT5 session 
     void    *API = NULL; // GMT API control structure 
     if ((API = GMT_Create_Session (argv[0], 0U, 0U, NULL)) == NULL) return EXIT_FAILURE;
     
-    if (argc < 9) die (USAGE,"");
+    if (argc < 11) die (USAGE,"");
 
     // find the number of lines and the maximum line length of the xml file
     if ((XML_FILE = fopen(argv[1],"r")) == NULL) die("Couldn't open xml file: \n",argv[1]);
@@ -108,7 +113,7 @@ int main(int argc, char **argv){
     
     // open the TIFF file and the three SLC files SLCL-low  SLCC-center and SLCH-high
     TIFFSetWarningHandler(NULL);
-    if ((TIFF_FILE = TIFFOpen(argv[2], "r")) == NULL) die ("Couldn't open tiff file: \n",argv[2]);
+    if ((TIFF_FILE = TIFFOpen(argv[2], "rb")) == NULL) die ("Couldn't open tiff file: \n",argv[2]);
 
     // open output files depending on the imode
     imode = atoi(argv[4]);
@@ -131,16 +136,20 @@ int main(int argc, char **argv){
 
     /* apply range and azimuth shifts to each burst and write the three SLC files SLCL SLC and SLCH depending on imode */
     /* the negative signs are needed for all but the azimuth stretch versus range */
-    rng = -atof(argv[5]);
+    rng = atof(argv[5]);
     azi = -atof(argv[6]);
+    stretch_r = atof(argv[9]);
+    a_stretch_r = atof(argv[10]);
     stretch_a = atof(argv[7]);
     a_stretch_a = -atof(argv[8]);
-    prm.sub_int_r = -rng;
+    prm.sub_int_r = rng;
     prm.sub_int_a = -azi;
     prm.stretch_a = stretch_a;
     prm.a_stretch_a = -a_stretch_a;
+    prm.stretch_r = stretch_r;
+    prm.a_stretch_r = a_stretch_r;
 
-    shift_write_slcs(API,&prm,xml_tree,bb,TIFF_FILE,OUTPUT_SLCL,OUTPUT_SLCC,OUTPUT_SLCH,imode,rng,azi,stretch_a,a_stretch_a);
+    shift_write_slcs(API,&prm,xml_tree,bb,TIFF_FILE,OUTPUT_SLCL,OUTPUT_SLCC,OUTPUT_SLCH,imode,rng,azi,stretch_a,a_stretch_a,stretch_r,a_stretch_r);
     
     TIFFClose(TIFF_FILE);
     if(imode == 2) fclose(OUTPUT_SLCL);
@@ -384,13 +393,14 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     return(1);
 }
  
-int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *bb, TIFF *tif, FILE *slcl, FILE *slcc, FILE *slch, int imode, double rng, double azi, double stretch_a, double a_stretch_a){
+int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *bb, TIFF *tif, FILE *slcl, FILE *slcc, FILE *slch, int imode, double rng, double azi, double stretch_a, double a_stretch_a, double stretch_r, double a_stretch_r){
 
     uint16 s=0;
     uint16 *buf;
+    uint32 it;
     short *tmp, *brst;
     float *rtmp;
-    int ii,jj,nl,it,k,k2,kk;
+    int ii,jj,nl,k,k2,kk;
     int count, lpb, nlf, width2, nclip=0;
     uint32 width,height,widthi;
     char tmp_c[200];
@@ -416,7 +426,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
     if(nlf != height) {
        fprintf(stderr,"XML and TIFF file disagree on image height %d %d \n", nlf, height);
     }
-    
+
     // allocate memory for the burst and other arrays
     brst = (short *)malloc(height*width2*sizeof(short));
     cbrst = (fcomplex *) malloc(height*width*sizeof(fcomplex));
@@ -438,6 +448,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
 
     // loop over the bursts
     cl = 0;
+
     for (kk=1;kk<=count;kk++){
     fprintf(stderr,"burst # %d \n",kk);
 
@@ -464,6 +475,12 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
    // don't need this code if there are no shifts
     if(azi != 0. || rng != 0.){
 
+    // shift the burst in range if != 0.
+       if(rng != 0.){
+           rng_interp(cbrst,fft_vec_rng,cl,bb[kk].SC,bb[kk].EC,width,rng,stretch_r,a_stretch_r);
+           //rng_shift (API,cbrst,lpb,width,fft_vec_rng,ranfft_rng,rng);
+       }
+
     // complute the complex deramp_demod array for each burst with no shift
        dramp_dmod (xml_tree,kk,cramp,lpb,width,0.,0.,0.);
 
@@ -475,11 +492,6 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
             }
         }
 
-    // shift the burst in range if != 0.
-       if(rng != 0.){
-           rng_shift (API,cbrst,lpb,width,fft_vec_rng,ranfft_rng,rng);
-       }
-
     // shift the burst cramp in azimuth if azi != 0.
        if(azi != 0.){
            azi_new=azi+(cl+(bb[kk].EC-bb[kk].SC+1)/2.)*a_stretch_a;
@@ -487,7 +499,7 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
        }
 
     // now make a shifted version of the dramp_dmod
-       dramp_dmod (xml_tree,kk,cramp,lpb,width,rng,azi_new,stretch_a);
+       dramp_dmod (xml_tree,kk,cramp,lpb,width,0.0,azi_new,stretch_a);
 
     // reramp the slc
 	for (ii=0;ii<lpb;ii++){
@@ -741,3 +753,59 @@ int rng_shift (void *API, fcomplex *cbrst, int lpb, int width, fcomplex *fft_vec
        }
     return(1);
 }
+
+int rng_interp (fcomplex *cbrst, fcomplex *ctmp, int cl, int lstart, int lend, int width, double rng, double stretch_r, double a_stretch_r){
+
+/* this is a routine to shift and stretch along range for TOPS data */
+    
+    int ii,jj,ns2,j,k,kk;
+    double ra,w,wsum;  
+ 
+    ns2=NS/2-1;
+
+    for (ii=lstart;ii<=lend;ii++){
+        // read in the line
+        for (jj=0;jj<width;jj++){
+            kk = ii*width+jj;
+            ctmp[jj].i = cbrst[kk].i;
+            ctmp[jj].r = cbrst[kk].r;
+        }
+        // compute the output
+        for (jj=0;jj<width;jj++){
+            ra = (double)jj + ( rng + (double)jj*stretch_r + (cl+ii-lstart)*a_stretch_r );
+            j = (int)ra;
+            // make sure the point is safe for interpolation, use original input if can not be interpolated
+            if ( j-ns2 < 0 || j+ns2+1 >= width) continue;
+            
+            kk = ii*width+jj;
+            cbrst[kk].i = 0.0;
+            cbrst[kk].r = 0.0;
+            wsum = 0.0;
+            for (k=j-ns2;k<=j+ns2+1;k++) {
+                w = sinc_kernel(fabs(ra-(double)k));
+                cbrst[kk].i += w * ctmp[k].i;
+                cbrst[kk].r += w * ctmp[k].r;
+                wsum += w;
+            }
+            cbrst[kk].i = cbrst[kk].i/wsum;
+            cbrst[kk].r = cbrst[kk].r/wsum;
+        }
+    }
+    return(1);
+}
+
+
+double sinc_kernel (double x) {
+
+    double arg, f;
+        
+        arg = fabs(PI*x);
+        if(arg > 0.){
+            f=sin(arg)/arg;
+        }
+        else {
+            f=1.;
+        }
+        return (f);
+}
+

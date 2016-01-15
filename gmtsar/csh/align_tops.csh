@@ -64,8 +64,8 @@ echo $spre
 #
 #  1) make PRM and LED files for both master and slave but not the SLC file
 #
-make_slc_s1a_tops $mxml $mtiff $mpre 0 0. 0. 0. 0.
-make_slc_s1a_tops $sxml $stiff $spre 0 0. 0. 0. 0.
+make_slc_s1a_tops $mxml $mtiff $mpre 0 0. 0. 0. 0. 0. 0.
+make_slc_s1a_tops $sxml $stiff $spre 0 0. 0. 0. 0. 0. 0.
 #
 #  replace the LED with the precise orbit
 #
@@ -109,7 +109,8 @@ awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat
 #
 #  run fitoffset
 #
-fitoffset.csh 1 3 offset.dat >> $spre".PRM"
+#fitoffset.csh 1 3 offset.dat >> $spre".PRM"
+fitoffset.csh 3 3 offset.dat >> $spre".PRM"
 #
 #  save the rshift and ashift for the end
 #
@@ -126,18 +127,23 @@ rm topo.llt master.ratll slave.ratll tmp.dat offset.dat flt.grd
 #
 set sub_int_r = `grep sub_int_r $spre".PRM" | tail -1 | awk '{print $3}'`
 set sub_int_a = `grep sub_int_a $spre".PRM" | tail -1 | awk '{print $3}'`
+set stretch_r = `grep stretch_r $spre".PRM" | grep -v a_stretch_r | tail -1 | awk '{print $3}'`
 set stretch_a = `grep stretch_a $spre".PRM" | grep -v a_stretch_a | tail -1 | awk '{print $3}'`
 set a_stretch_a = `grep a_stretch_a $spre".PRM" | tail -1 | awk '{print $3}'`
+set a_stretch_r = `grep a_stretch_r $spre".PRM" | tail -1 | awk '{print $3}'`
+#echo $rshift $sub_int_r $stretch_r $a_stretch_r $ashift $sub_int_a $stretch_a $a_stretch_a
 #  
 #  make the new PRM files and SLC
 #
-make_slc_s1a_tops $mxml $mtiff $mpre 1 0. 0. 0. 0.
-make_slc_s1a_tops $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stretch_a
+make_slc_s1a_tops $mxml $mtiff $mpre 1 0. 0. 0. 0. 0. 0.
+make_slc_s1a_tops $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stretch_a $stretch_r $a_stretch_r
 #
 #   restore the integer rshift and ashift
 #
 update_PRM.csh $spre".PRM" rshift $rshift
 update_PRM.csh $spre".PRM" ashift $ashift
+#update_PRM.csh $spre".PRM" stretch_r $stretch_r
+#update_PRM.csh $spre".PRM" a_stretch_r $a_stretch_r
 #
 #   re-extract the lED files
 #
