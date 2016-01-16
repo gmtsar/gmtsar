@@ -105,11 +105,9 @@ paste master.ratll slave.ratll | awk '{print( $1, $6-$1, $2, $7-$2, "100")}' > t
 set rmax = `grep num_rng_bins $mpre".PRM" | awk '{print $3}'`
 set amax = `grep num_lines $mpre".PRM" | awk '{print $3}'`
 awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
-#awk '{if($1 > 0 && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
 #
 #  run fitoffset
 #
-#fitoffset.csh 1 3 offset.dat >> $spre".PRM"
 fitoffset.csh 3 3 offset.dat >> $spre".PRM"
 #
 #  save the rshift and ashift for the end
@@ -142,8 +140,6 @@ make_slc_s1a_tops $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stret
 #
 update_PRM.csh $spre".PRM" rshift $rshift
 update_PRM.csh $spre".PRM" ashift $ashift
-#update_PRM.csh $spre".PRM" stretch_r $stretch_r
-#update_PRM.csh $spre".PRM" a_stretch_r $a_stretch_r
 #
 #   re-extract the lED files
 #

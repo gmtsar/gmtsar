@@ -15,6 +15,8 @@
  * DATE                                                                    *
  * 11/18/96     Code largely based on phasediff.                           *
  * 01/11/14     Code modified to use mmap() instead of fread()             *
+ * 01/06/15     Code modified to use only integer rshift, ashift for       *
+ *              nearest (imode = 1) interpolation.
  ***************************************************************************/
 
 #include "gmtsar.h"
@@ -78,7 +80,6 @@ struct PRM pm, ps;
 
         /* force integer interpolation if this is nearest neighbor, needed for TOPS */
         if (intrp == 1) {
-        //if (intrp == 1 || intrp ==4) {
           sv_pr[0] = ps.sub_int_r;
 	  ps.sub_int_r = 0.;
           sv_pr[1] = ps.stretch_r;
@@ -93,7 +94,7 @@ struct PRM pm, ps;
           ps.a_stretch_a = 0.;
         }
 	
-	/* allocate memory for one row of the master image */
+	/* allocate memory for one row of the slave image */
         if((sout = (short *) malloc(2 * xdimm * sizeof(short))) == NULL){
           fprintf(stderr,"Sorry, couldn't allocate memory for output indata.\n");
           exit(-1);
@@ -141,7 +142,6 @@ struct PRM pm, ps;
 
         /* restore the affine parameters if this is nearest interpolation */
         if (intrp == 1) {
-        //if (intrp == 1 || intrp == 4) {
           ps.sub_int_r = sv_pr[0];
           ps.stretch_r = sv_pr[1];
           ps.a_stretch_r = sv_pr[2];
