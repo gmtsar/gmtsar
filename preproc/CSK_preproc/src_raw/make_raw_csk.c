@@ -99,29 +99,43 @@ int main(int argc, char **argv){
 int write_raw_hdf5(hid_t input, FILE *raw){
 
     int width,height;
-    unsigned char *buf;
+    signed char *buf;
     hsize_t dims[10];
     hid_t memtype,dset,group;
     herr_t status;
+    double mean, sum=0.;
+    int kk,ntot;
     
     hdf5_read(dims,input,"/S01","B001","",'n');
     height = (int)dims[0];
     width = (int)dims[1];
+    ntot = height * width;
     
-    buf = (unsigned char *)malloc(height*width*sizeof(unsigned char)*2);
+    buf = (signed char *)malloc(height*width*sizeof(signed char)*2);
 
     group = H5Gopen(input,"/S01",H5P_DEFAULT);
     dset = H5Dopen (group,"B001",H5P_DEFAULT);
     
-    memtype = H5T_NATIVE_UCHAR;
+    // data come as signed character with zero mean
+    memtype = H5T_NATIVE_SCHAR;
     
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+
+   /*  find the maximum */
+    for (kk=0;kk<ntot;kk++) sum=sum+(signed int)buf[kk];
+    for (kk=0;kk<ntot;kk++) {
+      mean=(signed int)buf[kk];
+      if(mean < 0. )fprintf(stderr," %lf ",mean);
+      //fprintf(stderr," %d ",buf[kk]);
+    }
+    mean = sum/ntot;
+    fprintf(stderr," mean %lf \n",mean);
     
     printf("Writing raw..Image Size: %d X %d...\n",width,height);
 
     /* write the data file */
-    fwrite(buf,sizeof(unsigned char),height*width*2,raw);
-    
+    fwrite(buf,sizeof(signed char),height*width*2,raw);
+
     free(buf);
     return(1);
 }
@@ -191,8 +205,8 @@ int pop_prm_hdf5(struct PRM *prm,hid_t input,char *file_name){
     prm->first_sample = 0;
     prm->SLC_scale = 1.0;
     prm->az_res = 3.0;
-    prm->xmi = 128.5; /* this is the mean value of one pair.  need to do more */
-    prm->xmq = 128.5;
+    prm->xmi = 127.0; /* this is the mean value of one pair.  need to do more */
+    prm->xmq = 127.0;
     strasign(prm->dtype,"a",0,0);
     prm->SC_identity = 8; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a*/
     prm->ra = 6378137.00; //equatorial_radius
