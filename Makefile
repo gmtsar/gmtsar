@@ -7,10 +7,8 @@ sinclude config.mk
 # Currently, S1A must happen before the CSK, TSZ, and RS2 builds due to dependencies via links
 # We will fix this so one can make anyting in any order
 #
-#  remove CSK temporarily because it uses boost
 PREPROCESSORS	= ALOS ENVI ERS S1A CSK TSX RS2
 #
-#PREPROCESSORS	= ALOS ENVI ERS S1A TSX RS2
 DIRS		= gmtsar snaphu/src
 
 all:	main preprocess

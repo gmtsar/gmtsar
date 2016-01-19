@@ -27,6 +27,7 @@ int pop_led_hdf5(hid_t, state_vector *);
 int write_orb(state_vector *sv, FILE *fp, int);
 int write_raw_hdf5(hid_t, FILE *);
 int hdf5_read(void *, hid_t , char *, char *, char *, int);
+void set_prm_defaults(struct PRM *);
 
 /*static inline unsigned long long bswap_64(unsigned long long x) {
     return (((unsigned long long)bswap_32(x&0xffffffffull))<<32) | (bswap_32(x>>32));
@@ -52,8 +53,6 @@ int main(int argc, char **argv){
     
     hid_t file;
     
-    //fprintf(stderr,"Hahahaha...\n");
-    
     buff_c = (char *)malloc(MAX_CHAR_SIZE*sizeof(char));
     buff_o = (char *)malloc(MAX_CHAR_SIZE*sizeof(char));
     buff_d = (double *)malloc(MAX_NUM_SIZE*sizeof(double));
@@ -68,9 +67,8 @@ int main(int argc, char **argv){
     // initiate the prm
     null_sio_struct(&prm);
 
-    // generate the PRM file
+    // generate the PRM file 
     pop_prm_hdf5(&prm,file,argv[2]);
-    
     strcpy(tmp_str,argv[2]);
     strcat(tmp_str,".PRM");
     if ((OUTPUT_PRM = fopen(tmp_str,"w")) == NULL) die ("Couldn't open prm file: \n",tmp_str);
@@ -93,9 +91,7 @@ int main(int argc, char **argv){
     
     write_raw_hdf5(file,OUTPUT_raw);
     fclose(OUTPUT_raw);
-    
-    //TIFFClose(TIFF_FILE);
-    //fclose(OUTPUT_SLC);
+
     H5Fclose(file);
 }
 
@@ -103,7 +99,7 @@ int main(int argc, char **argv){
 int write_raw_hdf5(hid_t input, FILE *raw){
 
     int width,height;
-    char *buf;
+    unsigned char *buf;
     hsize_t dims[10];
     hid_t memtype,dset,group;
     herr_t status;
@@ -112,18 +108,19 @@ int write_raw_hdf5(hid_t input, FILE *raw){
     height = (int)dims[0];
     width = (int)dims[1];
     
-    buf = (char *)malloc(height*width*sizeof(char)*2);
+    buf = (unsigned char *)malloc(height*width*sizeof(unsigned char)*2);
 
     group = H5Gopen(input,"/S01",H5P_DEFAULT);
     dset = H5Dopen (group,"B001",H5P_DEFAULT);
     
-    memtype = H5T_NATIVE_CHAR;
+    memtype = H5T_NATIVE_UCHAR;
     
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
     
     printf("Writing raw..Image Size: %d X %d...\n",width,height);
-    
-    fwrite(buf,sizeof(char),height*width*2,raw);
+
+    /* write the data file */
+    fwrite(buf,sizeof(unsigned char),height*width*2,raw);
     
     free(buf);
     return(1);
@@ -188,17 +185,14 @@ int pop_prm_hdf5(struct PRM *prm,hid_t input,char *file_name){
     double tmp_d[200];
     double c_speed = 299792458.0;
     hsize_t dims[10];
+    int nrng = 0;
     
-    prm->nlooks = 1;
-    prm->rshift = 0;
-    prm->ashift = 0;
-    prm->sub_int_r = 0.0;
-    prm->sub_int_a = 0.0;
-    prm->stretch_r = 0.0;
-    prm->stretch_a = 0.0;
-    prm->a_stretch_r = 0.0;
-    prm->a_stretch_a = 0.0;
-    prm->first_sample = 1;
+    set_prm_defaults(prm); /* use many default values */
+    prm->first_sample = 0;
+    prm->SLC_scale = 1.0;
+    prm->az_res = 3.0;
+    prm->xmi = 128.5; /* this is the mean value of one pair.  need to do more */
+    prm->xmq = 128.5;
     strasign(prm->dtype,"a",0,0);
     prm->SC_identity = 8; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a*/
     prm->ra = 6378137.00; //equatorial_radius
@@ -212,8 +206,6 @@ int pop_prm_hdf5(struct PRM *prm,hid_t input,char *file_name){
     strcpy(tmp_c,file_name);
     strcat(tmp_c,".SLC");
     strcpy(prm->SLC_file,tmp_c);
-    prm->SLC_scale = 1.0;
-    
     
     hdf5_read(tmp_d,input,"/S01","","Sampling Rate",'d');
     prm->fs = tmp_d[0];
@@ -289,26 +281,22 @@ int pop_prm_hdf5(struct PRM *prm,hid_t input,char *file_name){
     }
     
     hdf5_read(dims,input,"/S01","B001","",'n');
-    //fprintf(stderr,"%d  %d\n",(int)dims[0],(int)dims[1]);
-    
-    prm->bytes_per_line = (int)dims[0]*4;
+
+    prm->bytes_per_line = (int)dims[1]*2;
     prm->good_bytes = prm->bytes_per_line;
+    prm->num_rng_bins = prm->bytes_per_line/2;
+
+    /* pad the near and far range with 1200 samples */
+    prm->chirp_ext	= 2400;
+    nrng = 2 + (int)(prm->num_rng_bins/1200.);
+    prm->num_rng_bins = 1200 * nrng;
     
-    prm->num_lines = (int)dims[1] - (int)dims[1]%4;
+    prm->num_lines = (int)dims[0] - (int)dims[0]%4;
     prm->SC_clock_stop = prm->SC_clock_start + prm->num_lines/prm->prf/86400;
     prm->clock_stop = prm->clock_start + prm->num_lines/prm->prf/86400;
-    prm->nrows = prm->num_lines;
-    prm->num_valid_az = prm->num_lines;
-    prm->num_patches = 1;
-    prm->num_rng_bins = prm->bytes_per_line/4;
-    prm->chirp_ext	= 0;
-    //fprintf(stderr,"%d\n",(int)dims[0]);
-    
-    //fprintf(stderr,"%.15f\n",tmp_d[0]);
-    //fprintf(stderr,"%s\n",tmp_c);
-    
-    
-    
+    prm->nrows = 8192;
+    prm->num_valid_az = 6400;
+    prm->num_patches = (int)((float)prm->num_lines/prm->num_valid_az + 0.5);
 
     printf("PRM set for Image File...\n");
     

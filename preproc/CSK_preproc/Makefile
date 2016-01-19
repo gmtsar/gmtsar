@@ -2,8 +2,7 @@ include ../../config.mk
 #
 #   make all the files
 #
-#DIRS	= libtinyxpath libsar src_slc src_raw
-DIRS	= src_slc 
+DIRS	= src_slc src_raw
 
 all:
 	$(LN_S) -f ../S1A_preproc/include include
