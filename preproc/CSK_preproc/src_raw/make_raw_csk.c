@@ -99,42 +99,43 @@ int main(int argc, char **argv){
 int write_raw_hdf5(hid_t input, FILE *raw){
 
     int width,height;
-    signed char *buf;
+    unsigned char *buf;
     hsize_t dims[10];
     hid_t memtype,dset,group;
     herr_t status;
-    double mean, sum=0.;
     int kk,ntot;
+    double lut[1000],lut_max;
+
+    for(kk=0;kk<1000;kk++) lut[kk] = 0;
+ 
+    hdf5_read(lut,input,"/","","Analog Cal Reconstruction Levels",'d');
     
+    lut_max = 0;
+    for(kk=0;kk<1000;kk++) if(fabs(lut[kk])>lut_max) lut_max = fabs(lut[kk]);
+
+    //lut_max = lut_max*1.41421;
+
     hdf5_read(dims,input,"/S01","B001","",'n');
     height = (int)dims[0];
     width = (int)dims[1];
     ntot = height * width;
     
-    buf = (signed char *)malloc(height*width*sizeof(signed char)*2);
+    buf = (unsigned char *)malloc(height*width*sizeof(unsigned char)*2);
 
     group = H5Gopen(input,"/S01",H5P_DEFAULT);
     dset = H5Dopen (group,"B001",H5P_DEFAULT);
     
-    // data come as signed character with zero mean
-    memtype = H5T_NATIVE_SCHAR;
+    // data come as unsigned character 
+    memtype = H5T_NATIVE_UCHAR;
     
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
 
-   /*  find the maximum */
-    for (kk=0;kk<ntot;kk++) sum=sum+(signed int)buf[kk];
-    for (kk=0;kk<ntot;kk++) {
-      mean=(signed int)buf[kk];
-      if(mean < 0. )fprintf(stderr," %lf ",mean);
-      //fprintf(stderr," %d ",buf[kk]);
-    }
-    mean = sum/ntot;
-    fprintf(stderr," mean %lf \n",mean);
-    
+    for(kk=0;kk<ntot*2;kk++) buf[kk] = (unsigned char)(127.0*lut[(int)buf[kk]]/lut_max+127.0);
+
     printf("Writing raw..Image Size: %d X %d...\n",width,height);
 
     /* write the data file */
-    fwrite(buf,sizeof(signed char),height*width*2,raw);
+    fwrite(buf,sizeof(unsigned char),height*width*2,raw);
 
     free(buf);
     return(1);
