@@ -428,9 +428,9 @@ int shift_write_slcs (void *API, struct PRM *prm, tree *xml_tree, burst_bounds *
     }
 
     // allocate memory for the burst and other arrays
-    brst = (short *)malloc(height*width2*sizeof(short));
-    cbrst = (fcomplex *) malloc(height*width*sizeof(fcomplex));
-    cramp = (fcomplex *) malloc(height*width*sizeof(fcomplex));
+    brst = (short *)malloc(lpb*width2*sizeof(short));
+    cbrst = (fcomplex *) malloc(lpb*width*sizeof(fcomplex));
+    cramp = (fcomplex *) malloc(lpb*width*sizeof(fcomplex));
     buf = (uint16 *)_TIFFmalloc(TIFFScanlineSize(tif));
     tmp = (short *)malloc(width*2*sizeof(short));
     rtmp = (float *)malloc(width*2*sizeof(float));
