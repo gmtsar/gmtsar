@@ -52,7 +52,7 @@ else if ($SSC == 5) then
  if ($YR1 < 2013) then
   @ YR = $T0  / 1000 - 2006
  else
-  @ YR = $T0  / 1000 - 2004
+  @ YR = $T0  / 1000 - 2014
  endif
  @ YDAY = $YR * 365 + $DAY
 else
