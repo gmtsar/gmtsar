@@ -56,11 +56,7 @@ else if ($SSC == 5) then
  endif
  @ YDAY = $YR * 365 + $DAY
 else
- calc_dop_orb $1 temp 0 0
- cat $1 temp > tmp1.PRM
- calc_dop_orb $2 temp 0 0
- cat $2 temp > tmp2.PRM
- SAT_baseline tmp1.PRM tmp2.PRM > temp
+ SAT_baseline $1 $2 > temp
  if ($SSC == 7 || $SSC == 8) then
   @ YR = $T0 / 1000 - 2007
  else if ($SSC == 9) then
@@ -69,7 +65,6 @@ else
   @ YR = $T0 / 1000 - 2014
  endif
  @ YDAY = $YR * 356 + $DAY
-# rm temp tmp1.PRM tmp2.PRM
 endif
 #
 #  get the needed parameters from temp
