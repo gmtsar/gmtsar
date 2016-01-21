@@ -46,10 +46,30 @@ else if ($SSC == 4) then
  ENVI_baseline $1 $2 > temp
  @ YR = $T0  / 1000 - 1992
  @ YDAY = $YR * 365 + $DAY
-else 
+else if ($SSC == 5) then
  ALOS_baseline $1 $2 > temp
- @ YR = $T0  / 1000 - 2006
+ @ YR1 = $T0 / 1000
+ if ($YR1 < 2013) then
+  @ YR = $T0  / 1000 - 2006
+ else
+  @ YR = $T0  / 1000 - 2004
+ endif
  @ YDAY = $YR * 365 + $DAY
+else
+ calc_dop_orb $1 temp 0 0
+ cat $1 temp > tmp1.PRM
+ calc_dop_orb $2 temp 0 0
+ cat $2 temp > tmp2.PRM
+ SAT_baseline tmp1.PRM tmp2.PRM > temp
+ if ($SSC == 7 || $SSC == 8) then
+  @ YR = $T0 / 1000 - 2007
+ else if ($SSC == 9) then
+  @ YR = $T0 / 1000 - 2008
+ else if ($SSC == 10) then
+  @ YR = $T0 / 1000 - 2014
+ endif
+ @ YDAY = $YR * 356 + $DAY
+# rm temp tmp1.PRM tmp2.PRM
 endif
 #
 #  get the needed parameters from temp
@@ -65,6 +85,8 @@ else if ($SSC == 4) then
  set ORB = `grep input_file $2 | awk '{print $3}' | cut -c17-21`
 else if ($SSC == 1 || $SSC == 2) then
  set ORB = `grep input_file $2 | awk '{print $3}' | cut -c1-8`
+else 
+ set ORB = `grep input_file $2 | awk '{print $3}' | awk -F"." '{print $1}'`
 endif
 #
  if ($#argv < 3) then
