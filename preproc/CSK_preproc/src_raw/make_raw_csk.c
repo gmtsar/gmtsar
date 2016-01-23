@@ -125,13 +125,31 @@ int write_raw_hdf5(hid_t input, FILE *raw){
     group = H5Gopen(input,"/S01",H5P_DEFAULT);
     dset = H5Dopen (group,"B001",H5P_DEFAULT);
     
+<<<<<<< .mine
+    // data come as signed character with zero mean
+    memtype = H5T_STD_U8LE;
+=======
     // data come as unsigned character 
     memtype = H5T_NATIVE_UCHAR;
+>>>>>>> .r266
     
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
 
+<<<<<<< .mine
+   /*  find the maximum */
+    for (kk=0;kk<ntot;kk++) sum=sum+(signed int)buf[kk];
+    for (kk=0;kk<ntot;kk++) {
+      mean=(signed int)buf[kk];
+      //if(mean < 0. )fprintf(stderr," %lf ",mean);
+      //fprintf(stderr," %d ",buf[kk]);
+    }
+    mean = sum/ntot;
+    fprintf(stderr," mean %lf \n",mean);
+    
+=======
     for(kk=0;kk<ntot*2;kk++) buf[kk] = (unsigned char)(127.0*lut[(int)buf[kk]]/lut_max+127.0);
 
+>>>>>>> .r266
     printf("Writing raw..Image Size: %d X %d...\n",width,height);
 
     /* write the data file */
