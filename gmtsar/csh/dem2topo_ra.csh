@@ -35,6 +35,7 @@ set yvalid = `grep num_valid_az $1 | awk '{print $3}'`
 set num_patch = `grep num_patches $1 | awk '{print $3}'`
 set YMAX = `echo "$yvalid $num_patch" | awk '{print $1*$2}'`
 set SC = `grep SC_identity $1 | awk '{print $3}'`
+set PRF = `grep PRF *.PRM | awk 'NR == 1 {printf("%d", $3)}'`
 #
 # look for range sampling rate
 #
@@ -61,10 +62,22 @@ if ($SC == 5) then
   gmt grd2xyz --FORMAT_FLOAT_OUT=%lf $2 -s | ALOS_llt2rat $1 0 -bod  > trans.dat
 else 
   echo " processing generic data"
-  gmt grd2xyz --FORMAT_FLOAT_OUT=%lf $2 -s | SAT_llt2rat $1 0 -bod  > trans.dat
+  if($SC == 10) then
+     gmt grd2xyz --FORMAT_FLOAT_OUT=%lf $2 -s | SAT_llt2rat $1 1 -bod  > trans.dat
+  else
+     gmt grd2xyz --FORMAT_FLOAT_OUT=%lf $2 -s | SAT_llt2rat $1 0 -bod  > trans.dat
+  endif
 endif
+#
+# use an aximuth spacing of 2 for low PRF data such as S1A TOPS
+#
+if ($PRF < 1000) then
+  gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R0/$XMAX/0/$YMAX -I$rng/2 -bi3d -bo3d -V > temp.rat 
+  gmt surface temp.rat -R0/$XMAX/0/$YMAX -I$rng/2 -bi3d -T.50 -N1000 -Gnode.grd -V
+else
   gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R0/$XMAX/0/$YMAX -I$rng/4 -bi3d -bo3d -V > temp.rat 
   gmt surface temp.rat -R0/$XMAX/0/$YMAX -I$rng/4 -bi3d -T.50 -N1000 -Gnode.grd -V
+endif
 # 
 # resample and flip top to bottom for both ascending and descending passes
 #  
