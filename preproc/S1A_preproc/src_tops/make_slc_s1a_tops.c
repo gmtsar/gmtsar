@@ -276,7 +276,7 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
     strasign(prm->deskew,"n",0,0); //deskew
     strasign(prm->offset_video,"n",0,0);
     search_tree(xml_tree,"/product/imageAnnotation/imageInformation/numberOfSamples/",tmp_c,1,0,1);
-    tmp_i = (int)str2double(tmp_c) - (int)str2double(tmp_c)%8;
+    tmp_i = (int)str2double(tmp_c) - (int)str2double(tmp_c)%4;
     prm->bytes_per_line = tmp_i*4;
     prm->good_bytes = prm->bytes_per_line;
     prm->num_rng_bins = prm->bytes_per_line/4;
