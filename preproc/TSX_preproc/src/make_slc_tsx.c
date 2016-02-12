@@ -35,6 +35,7 @@ static int is_big_endian() {
     return( u.c[sizeof(long) - 1] ==  1 ? 1 : -1);
 }
 
+#ifndef __CYGWIN__
 static inline unsigned short bswap_16(unsigned short x) {
     return (x>>8) | (x<<8);
 }
@@ -46,6 +47,7 @@ static inline unsigned int bswap_32(unsigned int x) {
 /*static inline unsigned long long bswap_64(unsigned long long x) {
     return (((unsigned long long)bswap_32(x&0xffffffffull))<<32) | (bswap_32(x>>32));
 }*/
+#endif
 
 char *USAGE = "\n\nUsage: make_slc_tsx name_of_xml_file name_of_image_file name_output\n"
 "\nExample: make_slc_s1a TSX1_SAR__SSC______SM_S_SRA_20120615T162057_20120615T162105.xml IMAGE_HH_SRA_strip_007.cos TSX_HH_20120615\n"
