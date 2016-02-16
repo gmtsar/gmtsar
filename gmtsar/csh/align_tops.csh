@@ -6,7 +6,7 @@
 #
 #  1) Make PRM and LED files for both master and slave.
 #
-#  2) Do geometric back geocoding to make the range and azimuth alignment grids 
+#  2) Do geometric back projection to determine the alignment parameters.
 #
 #  3) Make PRM, LED and SLC files for both master and slave that are aligned
 #     at the fractional pixel level. They still need a integer alignment from 
@@ -64,8 +64,8 @@ echo $spre
 #
 #  1) make PRM and LED files for both master and slave but not the SLC file
 #
-make_s1a_tops $mxml $mtiff $mpre 0 
-make_s1a_tops $sxml $stiff $spre 0 
+make_slc_s1a_tops $mxml $mtiff $mpre 0 0. 0. 0. 0. 0. 0.
+make_slc_s1a_tops $sxml $stiff $spre 0 0. 0. 0. 0. 0. 0.
 #
 #  replace the LED with the precise orbit
 #
@@ -74,61 +74,72 @@ ext_orb_s1a $spre".PRM" $4 $spre
 #
 #  2) do a geometric back projection to determine the alignment parameters
 #
-#  Filter and downsample the topography to 12 seconds or about 360 m
+#  Downsample the topography. The topo value is irrelevant so it can be filtered and downsampled.
 #
-gmt grdfilter $5 -D3 -Fg2 -I12s -Ni -Gflt.grd 
+gmt grdfilter $5 -D2 -Fg4 -I30s -Gflt.grd 
 gmt grd2xyz --FORMAT_FLOAT_OUT=%lf flt.grd -s > topo.llt
 #
-# map the topography into the range and azimuth of the master and slave using polynomial refinement
-# can do this in parallel
+# zero the alignment parameters of the slave image
+# don'd change the alignment parameters of the master image in case this is a surrogate master
 #
-SAT_llt2rat $mpre".PRM" 1 < topo.llt > master.ratll &
-SAT_llt2rat $spre".PRM" 1 < topo.llt > slave.ratll &
-wait
+update_PRM.csh $spre".PRM" rshift 0
+update_PRM.csh $spre".PRM" sub_int_r 0.0
+update_PRM.csh $spre".PRM" stretch_r 0.0
+update_PRM.csh $spre".PRM" a_stretch_r 0.0
+update_PRM.csh $spre".PRM" ashift 0
+update_PRM.csh $spre".PRM" sub_int_a 0.0
+update_PRM.csh $spre".PRM" stretch_a 0.0
+update_PRM.csh $spre".PRM" a_stretch_a 0.0
+#
+# map the topography into the range and azimuth of the master and slave using polynomial refinement
+#
+SAT_llt2rat $mpre".PRM" 1 < topo.llt > master.ratll
+SAT_llt2rat $spre".PRM" 1 < topo.llt > slave.ratll
 #
 #  paste the files and compute the dr and da
 #
-paste master.ratll slave.ratll | awk '{print( $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
+paste master.ratll slave.ratll | awk '{print( $1, $6-$1, $2, $7-$2, "100")}' > tmp.dat
 #
-#  make sure the range and azimuth are within the bounds of the slave 
+#  make sure the range and azimuth are within the bounds of the master
 #
-set rmax = `grep num_rng_bins $spre".PRM" | awk '{print $3}'`
-set amax = `grep num_lines $spre".PRM" | awk '{print $3}'`
+set rmax = `grep num_rng_bins $mpre".PRM" | awk '{print $3}'`
+set amax = `grep num_lines $mpre".PRM" | awk '{print $3}'`
 awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
 #
-#  extract the range and azimuth data
+#  run fitoffset
 #
-awk '{ printf("%f %f %f \n",$1,$3,$2) }' < offset.dat > r.xyz
-awk '{ printf("%f %f %f \n",$1,$3,$4) }' < offset.dat > a.xyz
+fitoffset.csh 3 3 offset.dat >> $spre".PRM"
 #
-#  fit a surface to the range and azimuth offsets
+#  save the rshift and ashift for the end
 #
-gmt blockmedian r.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > rtmp.xyz
-gmt blockmedian a.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > atmp.xyz
-gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Grtmp.grd -N1000  -r -V &
-gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Gatmp.grd -N1000  -r -V &
-wait
-gmt grdmath rtmp.grd FLIPUD = r.grd
-gmt grdmath atmp.grd FLIPUD = a.grd
+set rshift = `grep rshift $spre".PRM" | tail -1 | awk '{print $3}'`
+set ashift = `grep ashift $spre".PRM" | tail -1 | awk '{print $3}'`
 #
 # clean up the mess
 #
-#rm topo.llt master.ratll slave.ratll *tmp* flt.grd r.xyz a.xyz
+rm topo.llt master.ratll slave.ratll tmp.dat offset.dat flt.grd
 #
 #  3) make PRM, LED and SLC files for both master and slave that are aligned
 #     at the fractional pixel level but still need a integer alignment from 
 #     resamp
+#
+set sub_int_r = `grep sub_int_r $spre".PRM" | tail -1 | awk '{print $3}'`
+set sub_int_a = `grep sub_int_a $spre".PRM" | tail -1 | awk '{print $3}'`
+set stretch_r = `grep stretch_r $spre".PRM" | grep -v a_stretch_r | tail -1 | awk '{print $3}'`
+set stretch_a = `grep stretch_a $spre".PRM" | grep -v a_stretch_a | tail -1 | awk '{print $3}'`
+set a_stretch_a = `grep a_stretch_a $spre".PRM" | tail -1 | awk '{print $3}'`
+set a_stretch_r = `grep a_stretch_r $spre".PRM" | tail -1 | awk '{print $3}'`
+#echo $rshift $sub_int_r $stretch_r $a_stretch_r $ashift $sub_int_a $stretch_a $a_stretch_a
 #  
 #  make the new PRM files and SLC
 #
-make_s1a_tops $mxml $mtiff $mpre 1 
-make_s1a_tops $sxml $stiff $spre 1 r.grd a.grd
-
-cp $spre".PRM" $spre".PRM0"
-resamp $mpre".PRM" $spre".PRM" $spre".PRMresamp" $spre".SLCresamp" 1
-mv $spre".SLCresamp" $spre".SLC"
-mv $spre".PRMresamp" $spre".PRM"
-fitoffset.csh 3 3 offset.dat >> $spre".PRM"
+make_slc_s1a_tops $mxml $mtiff $mpre 1 0. 0. 0. 0. 0. 0.
+make_slc_s1a_tops $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stretch_a $stretch_r $a_stretch_r
+#
+#   restore the integer rshift and ashift
+#
+update_PRM.csh $spre".PRM" rshift $rshift
+update_PRM.csh $spre".PRM" ashift $ashift
 #
 #   re-extract the lED files
 #

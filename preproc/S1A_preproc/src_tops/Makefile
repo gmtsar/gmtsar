@@ -1,6 +1,6 @@
 include ../../../config.mk
-PROG =  make_s1a_tops
-CSRCS = make_s1a_tops.c
+PROG =  make_slc_s1a_tops
+CSRCS = make_slc_s1a_tops.c
 
 OBJS =  $(CSRCS:.c=.o)
 INCLUDES = -I../include -I$(GMTSARHOME)/gmtsar/include -I$(TIFF_INC) $(GMT_INC)
