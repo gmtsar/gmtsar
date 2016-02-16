@@ -59,7 +59,7 @@
 char    *USAGE = " \n Usage: "
 "SAT_llt2rat master.PRM prec [-bo[s|d]] < inputfile > outputfile  \n\n"
 "             master.PRM   -  parameter file for master image and points to LED orbit file \n"
-"             precise      -  (0) standard processing, (1) - polynomial refinenent for backprojection (slower) \n"
+"             precise      -  (0) standard back geocoding, (1) - polynomial refinenent (slower) \n"
 "             inputfile    -  lon, lat, elevation [ASCII] \n"
 "             outputfile   -  range, azimuth, lon, lat, elevation [ASCII default] \n"
 "             -bos or -bod -  binary single or double precision output \n"
@@ -129,30 +129,7 @@ int main (int argc, char **argv) {
 /* initialize the prm file   */
 	
 	set_prm_defaults(&prm);
-
 	get_sio_struct(fprm1, &prm);
-
-
-/* dubugging  
-	fprintf(stderr,"debug\n");
-	fprintf(stderr,"%s\n",prm.led_file);
-	fprintf(stderr,"%lf\n",prm.fs);
-	fprintf(stderr,"%d\n",prm.num_rng_bins);
-	fprintf(stderr,"%d\n",prm.num_valid_az);
-	fprintf(stderr,"%lf\n",prm.rc);
-	fprintf(stderr,"%lf\n",prm.ra);
-	fprintf(stderr,"%lf\n",prm.prf);
-	fprintf(stderr,"%lf\n",prm.RE);
-	fprintf(stderr,"%lf\n",prm.sub_int_a);
-	fprintf(stderr,"%lf\n",prm.SC_clock_start);
-	fprintf(stderr,"%lf\n",prm.clock_start);
-	fprintf(stderr,"%d\n",prm.nrows);
-	fprintf(stderr,"%d\n",prm.num_patches);
-	fprintf(stderr,"%lf\n",prm.near_range);
-	fprintf(stderr,"rshift = %d\n",prm.rshift);
-	fprintf(stderr,"sub_int_r = %lf\n",prm.sub_int_r);
-	fprintf(stderr,"chirp_ext = %d\n",prm.chirp_ext);
-*/
 
         fclose(fprm1);
 
@@ -172,7 +149,6 @@ int main (int argc, char **argv) {
           }
         }
         prm.fs=rsr;
-
         dr = 0.5*SOL/prm.fs;
         r0 = -10.;
         rf = prm.num_rng_bins + 10.;
@@ -208,17 +184,8 @@ int main (int argc, char **argv) {
         }
 
 /* read in the postion of the orbit */
-/*        fprintf(stderr,"ts=%lf,t1=%lf,nrec=%d\n",ts,t1,nrec);   */
-
        (void)calorb_alos(orb, orb_pos, ts, t1, nrec);
         
-/* look at the orb_pos   
-        for(i=0;i<4;i++) { 
-          for (j=0;j<nrec+2*npad;j=j+100) {
-            fprintf(stderr,"%d,  %lf\n",j,orb_pos[i][j]); }
-        }
-*/
-
 /* read the llt points and convert to xyz.  */
 
         while(scanf(" %lf %lf %lf ",&rln,&rlt,&rht) == 3){
@@ -266,7 +233,6 @@ int main (int argc, char **argv) {
              	tm=tm+dtt;
              	interpolate_ALOS_orbit_slow(orb, tm, &xs, &ys, &zs, &ir);
              	rng0 = sqrt((xp[0]-xs)*(xp[0]-xs) + (xp[1]-ys)*(xp[1]-ys) + (xp[2]-zs)*(xp[2]-zs));
-                //fprintf(stderr," %f %f \n",dtt*prm.prf,rng0);
 
            }
 /* compute the range and azimuth in pixel space */
@@ -288,15 +254,11 @@ int main (int argc, char **argv) {
 	     daa=-0.5*(prm.lambda*prm.fd1)/rdd;
 	     drr=0.5*rdd*daa*daa/dr;
 	     daa=prm.prf*daa;
-             /*fprintf(stderr," rng, rdd, daa, drr %f %f %f %f \n",rng0, rdd, daa, drr); */
 	     xt[0] = xt[0] + drr;
 	     xt[1] = xt[1] + daa;
 	   }
 
-/*	   fprintf(stderr,"xt[0] = %f\n",xt[0]);    */
-
              if((xt[0] < r0 || xt[0] > rf || xt[1] < a0 || xt[1] > af) && (otype > 1)) continue; 
-/*	     fprintf(stderr,"%f %f %f %f %f \n",xt[0],xt[1],rp[2],rp[1],rp[0]); */ 
 
 	   if (otype == 1) {
 	     fprintf(stdout,"%f %f %f %f %f \n",xt[0],xt[1],rp[2],rp[1],rp[0]);
