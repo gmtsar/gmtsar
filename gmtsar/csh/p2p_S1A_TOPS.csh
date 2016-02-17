@@ -144,7 +144,7 @@ unset noclobber
 #############################################
 # 2 - start from focus and align SLC images #
 #############################################
-  
+
   if ($stage <= 2) then
 # 
 # clean up 
@@ -162,11 +162,11 @@ unset noclobber
     ln -s ../raw/$master.LED . 
     ln -s ../raw/$slave.LED .
     
-    cp $slave.PRM $slave.PRM0
-    resamp $master.PRM $slave.PRM $slave.PRMresamp $slave.SLCresamp 1
-    rm $slave.SLC
-    mv $slave.SLCresamp $slave.SLC
-    cp $slave.PRMresamp $slave.PRM
+#    cp $slave.PRM $slave.PRM0
+#    resamp $master.PRM $slave.PRM $slave.PRMresamp $slave.SLCresamp 1
+#    rm $slave.SLC
+#    mv $slave.SLCresamp $slave.SLC
+#    cp $slave.PRMresamp $slave.PRM
     cd ..
     echo "ALIGN - END"
   endif
@@ -174,7 +174,7 @@ unset noclobber
 ##################################
 # 3 - start from make topo_ra    #
 ##################################
-
+#if (6 == 9) then
   if ($stage <= 3) then
 #
 # clean up
