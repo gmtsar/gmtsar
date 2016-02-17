@@ -584,28 +584,10 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     double t_brst, t1, t2;
 
     // get all the parameters needed for the remod_deramp
-    search_tree(xml_tree,"/product/generalAnnotation/productInformation/azimuthSteeringRate/",tmp_c,1,0,1);
-    kpsi=PI*str2double(tmp_c)/180.;
-    search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/dcEstimate/dataDcPolynomial/",tmp_c,1,4,nb);
-    str2dbs(fnc,tmp_c);
-
-    ii = search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
-    if (xml_tree[xml_tree[ii].sibr].sibr < 0){
-        search_tree(xml_tree, "/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthFmRatePolynomial/", tmp_c,1,4,nb+1);
-        str2dbs(fka,tmp_c);
-    }
-    else{
-        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c0/",tmp_c,1,4,nb);
-        fka[0] = str2double(tmp_c);
-        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c1/",tmp_c,1,4,nb);
-        fka[1] = str2double(tmp_c);
-        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c2/",tmp_c,1,4,nb);
-        fka[2] = str2double(tmp_c);
-    }
-
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/radarFrequency/",tmp_c,1,0,1);
     fc = str2double(tmp_c);
-    
+    search_tree(xml_tree,"/product/generalAnnotation/productInformation/azimuthSteeringRate/",tmp_c,1,0,1);
+    kpsi=PI*str2double(tmp_c)/180.;
     search_tree(xml_tree,"/product/imageAnnotation/imageInformation/azimuthTimeInterval/",tmp_c,1,0,1);
     dta = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/productInformation/rangeSamplingRate/",tmp_c,1,0,1);
@@ -614,16 +596,64 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     ts0 = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
     tau0 = str2double(tmp_c);
+    
+    search_tree(xml_tree,"/product/swathTiming/burstList/burst/azimuthTime/",tmp_c,2,4,nb);
+    t_brst = str2double(tmp_c)+dta*(double)lpb/2.0/86400.0;
+
+    // first find the parameters that depends on burst, find the neareast one.
+    search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/",tmp_c,3,0,1); 
+    jj = (int)str2double(tmp_c);
+    t2 = 0.0;
+    ii = 0;
+    while(t2<t_brst && ii < jj){
+        t1 = t2;
+	ii++;
+	search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/dcEstimate/azimuthTime/",tmp_c,2,4,ii);
+	t2 = str2double(tmp_c);
+    }
+    if (t_brst-t1 < t2-t_brst) jj = ii-1;
+    else jj = ii;
+    //fprintf(stderr,"finding the %d DcPolynomial\n",jj);
+
+    search_tree(xml_tree,"/product/dopplerCentroid/dcEstimateList/dcEstimate/dataDcPolynomial/",tmp_c,1,4,jj);
+    str2dbs(fnc,tmp_c);
+
+
+    search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/",tmp_c,3,0,1);
+    jj = (int)str2double(tmp_c);
+    t2 = 0.0;
+    ii = 0;
+    while(t2<t_brst && ii < jj){
+	t1 = t2;
+	ii++;
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthTime/",tmp_c,2,4,ii);
+	t2 = str2double(tmp_c);
+    }
+    if (t_brst-t1 < t2-t_brst) jj = ii-1;
+    else jj = ii;
+    //fprintf(stderr,"finding the %d AziFmRate\n",jj);
+
+    ii = search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/t0/",tmp_c,1,0,1);
+    if (xml_tree[xml_tree[ii].sibr].sibr < 0){
+        search_tree(xml_tree, "/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/azimuthFmRatePolynomial/", tmp_c,1,4,jj);
+        str2dbs(fka,tmp_c);
+    }
+    else{
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c0/",tmp_c,1,4,jj);
+        fka[0] = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c1/",tmp_c,1,4,jj);
+        fka[1] = str2double(tmp_c);
+        search_tree(xml_tree,"/product/generalAnnotation/azimuthFmRateList/azimuthFmRate/c2/",tmp_c,1,4,jj);
+        fka[2] = str2double(tmp_c);
+    }
 
     // find the velocity by linearly interpolating between 2 neareast point
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/",tmp_c,3,0,1);
-    jj = (int)str2double(tmp_c); 
-    search_tree(xml_tree,"/product/swathTiming/burstList/burst/azimuthTime/",tmp_c,2,4,nb);
-    t_brst = str2double(tmp_c)+dta*(double)lpb/2.0/86400.0;
-    
+    jj = (int)str2double(tmp_c);
+
     t2 = 0.0;
     ii = 0;
-    while(t2 < t_brst && ii <= jj){
+    while(t2 < t_brst && ii < jj){
         t1 = t2;
         ii++;
         search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/time/",tmp_c,2,4,ii);
@@ -633,16 +663,21 @@ int dramp_dmod (tree *xml_tree, int nb, fcomplex *cramp, int lpb, int width, dou
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,ii-1);
     vx = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/x/",tmp_c,1,4,ii);
-    vx = (str2double(tmp_c)*(t2-t_brst)+vx*(t_brst-t1))/(t2-t1); 
+    vx = (str2double(tmp_c)*(t2-t_brst)+vx*(t_brst-t1))/(t2-t1);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,ii-1);
     vy = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/y/",tmp_c,1,4,ii);
-    vy = (str2double(tmp_c)*(t2-t_brst)+vy*(t_brst-t1))/(t2-t1); 
+    vy = (str2double(tmp_c)*(t2-t_brst)+vy*(t_brst-t1))/(t2-t1);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,ii-1);
     vz = str2double(tmp_c);
     search_tree(xml_tree,"/product/generalAnnotation/orbitList/orbit/velocity/z/",tmp_c,1,4,ii);
     vz = (str2double(tmp_c)*(t2-t_brst)+vz*(t_brst-t1))/(t2-t1);
 
+    // malloc the memory
+    eta    = (double *) malloc(lpb*sizeof(double));
+    etaref = (double *) malloc(width*sizeof(double));
+    kt     = (double *) malloc(width*sizeof(double));
+    fnct   = (double *) malloc(width*sizeof(double));
     // malloc the memory
     eta    = (double *) malloc(lpb*sizeof(double));
     etaref = (double *) malloc(width*sizeof(double));
