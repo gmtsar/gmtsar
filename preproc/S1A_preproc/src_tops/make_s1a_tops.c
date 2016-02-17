@@ -598,10 +598,10 @@ int dramp_dmod (struct tree *xml_tree, int nb, fcomplex *cramp, int lpb, int wid
                     cramp[k].i=0;
                 }                  
                 else{
-                    dr = R->data[(int)(jj/R->header->inc[GMT_X]+0.5)+R->header->nx*(int)((al_start+ii)/R->header->inc[GMT_Y]+0.5)];
-                    da = A->data[(int)(jj/A->header->inc[GMT_X]+0.5)+A->header->nx*(int)((al_start+ii/3+lpb/3)/A->header->inc[GMT_Y]+0.5)] - (double)bshift + spec_shift;
                     //dr = R->data[(int)(jj/R->header->inc[GMT_X]+0.5)+R->header->nx*(int)((al_start+ii)/R->header->inc[GMT_Y]+0.5)];
-                    //da = A->data[(int)(jj/A->header->inc[GMT_X]+0.5)+A->header->nx*(int)((al_start+ii)/A->header->inc[GMT_Y]+0.5)] - (double)bshift + spec_shift;
+                    //da = A->data[(int)(jj/A->header->inc[GMT_X]+0.5)+A->header->nx*(int)((al_start+ii/3+lpb/3)/A->header->inc[GMT_Y]+0.5)] - (double)bshift + spec_shift;
+                    dr = R->data[(int)(jj/R->header->inc[GMT_X]+0.5)+R->header->nx*(int)((al_start+ii)/R->header->inc[GMT_Y]+0.5)];
+                    da = A->data[(int)(jj/A->header->inc[GMT_X]+0.5)+A->header->nx*(int)((al_start+ii)/A->header->inc[GMT_Y]+0.5)] - (double)bshift + spec_shift;
                     //dr = rng + (double)jj*stretch_r + (double)(al_start+ii)*a_stretch_r;
                     //da = azi + (double)jj*stretch_a + (double)(al_start+ii)*a_stretch_a;
                     eta[0] = ((double)ii - (double)lpb/2.+.5 + da)*dta;
@@ -877,10 +877,10 @@ int shift_burst(fcomplex *cbrst, int al_start, int lpb, int width, struct GMT_GR
 		cbrst[k].i = 0;
             }
             else{
-                kr = (int)floor(jj/incx+0.5)+R->header->nx*(int)floor((al_start+ii)/incy+0.5);
-                ka = (int)floor(jj/incx+0.5)+A->header->nx*(int)floor((al_start+ii/3+lpb/3)/incy+0.5);
                 //kr = (int)floor(jj/incx+0.5)+R->header->nx*(int)floor((al_start+ii)/incy+0.5);
-                //ka = (int)floor(jj/incx+0.5)+A->header->nx*(int)floor((al_start+ii)/incy+0.5);
+                //ka = (int)floor(jj/incx+0.5)+A->header->nx*(int)floor((al_start+ii/3+lpb/3)/incy+0.5);
+                kr = (int)floor(jj/incx+0.5)+R->header->nx*(int)floor((al_start+ii)/incy+0.5);
+                ka = (int)floor(jj/incx+0.5)+A->header->nx*(int)floor((al_start+ii)/incy+0.5);
                 ras[0] = (double)jj+R->data[kr];
                 ras[1] = (double)ii+A->data[ka]  - (double)bshift + spec_shift;
                 //ras[0] = (double)jj + rng + (double)jj*stretch_r + (double)(al_start+ii)*a_stretch_r;
