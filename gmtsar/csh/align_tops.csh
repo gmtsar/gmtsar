@@ -105,8 +105,8 @@ awk '{ printf("%f %f %f \n",$1,$3,$4) }' < offset.dat > a.xyz
 #
 gmt blockmedian r.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > rtmp.xyz
 gmt blockmedian a.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > atmp.xyz
-gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Grtmp.grd -N1000  -r -V &
-gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Gatmp.grd -N1000  -r -V &
+gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Grtmp.grd -N1000  -r &
+gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Gatmp.grd -N1000  -r &
 wait
 gmt grdmath rtmp.grd FLIPUD = r.grd
 gmt grdmath atmp.grd FLIPUD = a.grd

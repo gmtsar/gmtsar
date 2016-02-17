@@ -98,12 +98,12 @@ SAT_llt2rat $spre".PRM" 1 < topo.llt > slave.ratll
 #
 #  paste the files and compute the dr and da
 #
-paste master.ratll slave.ratll | awk '{print( $1, $6-$1, $2, $7-$2, "100")}' > tmp.dat
+paste master.ratll slave.ratll | awk '{print( $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
 #
 #  make sure the range and azimuth are within the bounds of the master
 #
-set rmax = `grep num_rng_bins $mpre".PRM" | awk '{print $3}'`
-set amax = `grep num_lines $mpre".PRM" | awk '{print $3}'`
+set rmax = `grep num_rng_bins $spre".PRM" | awk '{print $3}'`
+set amax = `grep num_lines $spre".PRM" | awk '{print $3}'`
 awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
 #
 #  run fitoffset
