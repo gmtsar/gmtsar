@@ -44,7 +44,7 @@ int rng_shift (void *, fcomplex *, int , int , fcomplex *, int ,  double );
 int rng_interp (fcomplex *, fcomplex *, int, int, int, int, double, double, double);
 double sinc_kernel (double);
 
-char *USAGE = "\nUsage: make_slc_s1a_tops xml_file tiff_file output mode rng_shift azi_shift stretch_a a_stretch_a stretch_r a_stretch_r\n"
+char *USAGE = "\nUsage: make_s1a_tops_6par xml_file tiff_file output mode rng_shift azi_shift stretch_a a_stretch_a stretch_r a_stretch_r\n"
               "         xml_file    - name of xml file \n" 
               "         tiff_file   - name of tiff file \n" 
               "         output      - stem name of output files .PRM, .LED, .SLC \n" 
@@ -55,7 +55,7 @@ char *USAGE = "\nUsage: make_slc_s1a_tops xml_file tiff_file output mode rng_shi
               "         a_stretch_a - additional azimuth shift in azimuth dir \n" 
               "         stretch_r   - additional range shift in range dir \n"
               "         a_stretch_r - additional range shift in azimuth dir \n"
-"\nExample: make_slc_s1a_tops s1a-s1-slc-vv-20140807.xml s1a-s1-slc-vv-20140807.tiff S1A20140807 1 0.4596 .9109 2.18065e-06 -3.63255e-06 1.37343e-05 -3.13352e-05 \n"
+"\nExample: make_s1a_tops_6par s1a-s1-slc-vv-20140807.xml s1a-s1-slc-vv-20140807.tiff S1A20140807 1 0.4596 .9109 2.18065e-06 -3.63255e-06 1.37343e-05 -3.13352e-05 \n"
 "\nOutput: S1A20140807.PRM S1A20140807.LED S1A20140807.SLC\n";
 
 int main(int argc, char **argv){
