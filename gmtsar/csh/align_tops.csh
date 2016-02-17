@@ -76,23 +76,22 @@ ext_orb_s1a $spre".PRM" $4 $spre
 #
 #  Filter and downsample the topography to 12 seconds or about 360 m
 #
-gmt grdfilter $5 -D2 -Fg2 -I12s -Ni -Gflt.grd 
+gmt grdfilter $5 -D3 -Fg2 -I12s -Ni -Gflt.grd 
 gmt grd2xyz --FORMAT_FLOAT_OUT=%lf flt.grd -s > topo.llt
 #
 # map the topography into the range and azimuth of the master and slave using polynomial refinement
+# can do this in parallel
 #
-SAT_llt2rat $mpre".PRM" 1 < topo.llt > master.ratll
-SAT_llt2rat $spre".PRM" 1 < topo.llt > slave.ratll
+SAT_llt2rat $mpre".PRM" 1 < topo.llt > master.ratll &
+SAT_llt2rat $spre".PRM" 1 < topo.llt > slave.ratll &
+wait
 #
 #  paste the files and compute the dr and da
 #
-#paste master.ratll slave.ratll | awk '{print( $1, $6-$1, $2, $7-$2, "100")}' > tmp.dat
 paste master.ratll slave.ratll | awk '{print( $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
 #
-#  make sure the range and azimuth are within the bounds of the master
+#  make sure the range and azimuth are within the bounds of the slave 
 #
-#set rmax = `grep num_rng_bins $mpre".PRM" | awk '{print $3}'`
-#set amax = `grep num_lines $mpre".PRM" | awk '{print $3}'`
 set rmax = `grep num_rng_bins $spre".PRM" | awk '{print $3}'`
 set amax = `grep num_lines $spre".PRM" | awk '{print $3}'`
 awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat > offset.dat
@@ -104,16 +103,17 @@ awk '{ printf("%f %f %f \n",$1,$3,$4) }' < offset.dat > a.xyz
 #
 #  fit a surface to the range and azimuth offsets
 #
-gmt blockmedian r.xyz -R0/$rmax/0/$amax -I16/8 -r > rtmp.xyz
-gmt blockmedian a.xyz -R0/$rmax/0/$amax -I16/8 -r > atmp.xyz
-gmt surface rtmp.xyz -R0/$rmax/0/$amax -I16/8 -T0.1 -Grtmp.grd -N1000  -r -V
-gmt surface atmp.xyz -R0/$rmax/0/$amax -I16/8 -T0.1 -Gatmp.grd -N1000  -r -V
+gmt blockmedian r.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > rtmp.xyz
+gmt blockmedian a.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > atmp.xyz
+gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Grtmp.grd -N1000  -r -V &
+gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Gatmp.grd -N1000  -r -V &
+wait
 gmt grdmath rtmp.grd FLIPUD = r.grd
 gmt grdmath atmp.grd FLIPUD = a.grd
 #
 # clean up the mess
 #
-rm topo.llt master.ratll slave.ratll *tmp* flt.grd r.xyz a.xyz
+#rm topo.llt master.ratll slave.ratll *tmp* flt.grd r.xyz a.xyz
 #
 #  3) make PRM, LED and SLC files for both master and slave that are aligned
 #     at the fractional pixel level but still need a integer alignment from 
