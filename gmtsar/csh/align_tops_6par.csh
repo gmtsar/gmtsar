@@ -64,8 +64,8 @@ echo $spre
 #
 #  1) make PRM and LED files for both master and slave but not the SLC file
 #
-make_slc_s1a_tops $mxml $mtiff $mpre 0 0. 0. 0. 0. 0. 0.
-make_slc_s1a_tops $sxml $stiff $spre 0 0. 0. 0. 0. 0. 0.
+make_s1a_tops_6par $mxml $mtiff $mpre 0 0. 0. 0. 0. 0. 0.
+make_s1a_tops_6par $sxml $stiff $spre 0 0. 0. 0. 0. 0. 0.
 #
 #  replace the LED with the precise orbit
 #
@@ -133,8 +133,8 @@ set a_stretch_r = `grep a_stretch_r $spre".PRM" | tail -1 | awk '{print $3}'`
 #  
 #  make the new PRM files and SLC
 #
-make_slc_s1a_tops $mxml $mtiff $mpre 1 0. 0. 0. 0. 0. 0.
-make_slc_s1a_tops $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stretch_a $stretch_r $a_stretch_r
+make_s1a_tops_6par $mxml $mtiff $mpre 1 0. 0. 0. 0. 0. 0.
+make_s1a_tops_6par $sxml $stiff $spre 1 $sub_int_r $sub_int_a $stretch_a $a_stretch_a $stretch_r $a_stretch_r
 #
 #   restore the integer rshift and ashift
 #
