@@ -88,7 +88,8 @@ wait
 #
 #  paste the files and compute the dr and da
 #
-paste master.ratll slave.ratll | awk '{print( $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
+#paste master.ratll slave.ratll | awk '{print( $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
+paste master.ratll slave.ratll | awk '{printf("%.6f %.6f %.6f %.6f %d\n", $6, $6-$1, $7, $7-$2, "100")}' > tmp.dat
 #
 #  make sure the range and azimuth are within the bounds of the slave 
 #
@@ -98,22 +99,23 @@ awk '{if($1 > 0 && $1 < '$rmax' && $3 > 0 && $3 < '$amax') print $0 }' < tmp.dat
 #
 #  extract the range and azimuth data
 #
-awk '{ printf("%f %f %f \n",$1,$3,$2) }' < offset.dat > r.xyz
-awk '{ printf("%f %f %f \n",$1,$3,$4) }' < offset.dat > a.xyz
+#awk '{ printf("%f %f %f \n",$1,$3,$2) }' < offset.dat > r.xyz
+#awk '{ printf("%f %f %f \n",$1,$3,$4) }' < offset.dat > a.xyz
+awk '{ printf("%.6f %.6f %.6f \n",$1,$3,$2) }' < offset.dat > r.xyz
+awk '{ printf("%.6f %.6f %.6f \n",$1,$3,$4) }' < offset.dat > a.xyz
 #
 #  fit a surface to the range and azimuth offsets
 #
-gmt blockmedian r.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > rtmp.xyz
-gmt blockmedian a.xyz -R0/$rmax/0/$amax -I16/8 -r -bo3d > atmp.xyz
-gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Grtmp.grd -N1000  -r &
-gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I16/8 -T0.5 -Gatmp.grd -N1000  -r &
+gmt blockmedian r.xyz -R0/$rmax/0/$amax -I8/4 -r -bo3d > rtmp.xyz
+gmt blockmedian a.xyz -R0/$rmax/0/$amax -I8/4 -r -bo3d > atmp.xyz
+gmt surface rtmp.xyz -bi3d -R0/$rmax/0/$amax -I8/4 -T0.5 -Grtmp.grd -N1000  -r &
+gmt surface atmp.xyz -bi3d -R0/$rmax/0/$amax -I8/4 -T0.5 -Gatmp.grd -N1000  -r &
 wait
 gmt grdmath rtmp.grd FLIPUD = r.grd
 gmt grdmath atmp.grd FLIPUD = a.grd
 #
 # clean up the mess
 #
-#rm topo.llt master.ratll slave.ratll *tmp* flt.grd r.xyz a.xyz
 #
 #  3) make PRM, LED and SLC files for both master and slave that are aligned
 #     at the fractional pixel level but still need a integer alignment from 
@@ -135,3 +137,4 @@ fitoffset.csh 3 3 offset.dat >> $spre".PRM"
 ext_orb_s1a $mpre".PRM" $2 $mpre
 ext_orb_s1a $spre".PRM" $4 $spre
 #
+rm topo.llt master.ratll slave.ratll *tmp* flt.grd r.xyz a.xyz
