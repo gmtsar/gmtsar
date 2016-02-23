@@ -185,8 +185,15 @@ unset noclobber
 #
 #  there is a bug in xcorr so xsearch and ysearch must be the same
 #
-    xcorr IMG-$master.PRM IMG-$slave.PRM -xsearch 128 -ysearch 128 -nx 32 -ny  64
-    fitoffset.csh 1 2 freq_xcorr.dat >> IMG-$slave.PRM 18
+    xcorr IMG-$master.PRM IMG-$slave.PRM -xsearch 128 -ysearch 128 -nx 64 -ny  256
+
+    awk '{print $4}' < freq_xcorr.dat > tmp.dat
+    set amedian = `sort -n tmp.dat | awk ' { a[i++]=$1; } END { print a[int(i/2)]; }'`
+    set amax = `echo $amedian | awk '{print $1+3}'`
+    set amin = `echo $amedian | awk '{print $1-3}'`
+    awk '{if($4 > '$amin' && $4 < '$amax') print $0}' < freq_xcorr.dat > tmp2.dat
+
+    fitoffset.csh 2 3 tmp2.dat >> IMG-$slave.PRM 25
     resamp IMG-$master.PRM IMG-$slave.PRM IMG-$slave.PRMresamp IMG-$slave.SLCresamp 4
     rm IMG-$slave.SLC
     mv IMG-$slave.SLCresamp IMG-$slave.SLC
