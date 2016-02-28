@@ -36,25 +36,17 @@ April 4, 2013	Converted to use GMT5 and redone the entire install procedure.  Li
    Make sure all the required libraries (e.g., netcdf, GDAL, PCRE) have been installed
    before you start the GMT build/install procedure.
 
-2) Use your package manager to install two needed libraries: libtiff.
-     OSX & macports:	sudo port install tiff
-     Ubuntu 14.04:	sudo apt-get install libgeotiff-dev libhdf5-dev
-   You will also need to have both C (gcc) and C++ (g++) compilers to build GMT5SAR.
+2) Go to the GMT5SAR WIKI and follow the instructions.
+   http://gmt.soest.hawaii.edu/projects/gmt5sar/wiki
 
 3) Download orbit files for ERS and ENVISAT. No need for ALOS orbit data because it is built in raw file.
-
-   http://topex.ucsd.edu/gmtsar/downloads
-
    The file is > 1G and contains all the available orbit for ERS and ENVISAT. It takes a while to download
    but you only need to download it once. Put it anywhere you like; let's refer to this dir as <orbitsdir>
 
-4) Obtain GMT5SAR subversion:
-     If you are a developer you probably want the entire GMT5SAR tree:
-     	svn checkout svn://gmtserver.soest.hawaii.edu/GMT5SAR GMT5SAR
-     otherwise you probably just need to get the current version (trunk):
-     	svn checkout svn://gmtserver.soest.hawaii.edu/GMT5SAR/trunk GMT5SAR
-     in a suitable staging directory.  Then, in the top GMT5SAR directory,
-     create the configure script by running autoconf:
+   http://topex.ucsd.edu/gmtsar/downloads
+
+4) Obtain GMT5SAR subversion. Go to the GMT5SAR WIKI and follow the instructions.
+   http://gmt.soest.hawaii.edu/projects/gmt5sar/wiki
      
 	autoconf
 
