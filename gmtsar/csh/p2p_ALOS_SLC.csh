@@ -20,7 +20,7 @@ unset noclobber
     echo ""
     echo "Usage: p2p_ALOS_SLC.csh master_image slave_image configuration_file "
     echo ""
-    echo "Example: p2p_ALOS_SLC.csh IMG-ALPSRP022200660-H1.1__A IMG-ALPSRP028910660-H1.1__A config.alos.slc.txt"
+    echo "Example: p2p_ALOS_SLC.csh IMG-HH-ALPSRP022200660-H1.1__A IMG-HH-ALPSRP028910660-H1.1__A config.alos.slc.txt"
     echo ""
     echo "         Place the raw L1.1 data in a directory called raw and a dem.grd file in "
     echo "         a parallel directory called topo.  Execute this command at the directory"
@@ -149,38 +149,38 @@ unset noclobber
     
 
 # if images do not match, convert the FBD image to FBS
-    set rng_samp_rate_m = `grep rng_samp_rate IMG-$master.PRM | awk 'NR == 1 {printf("%d", $3)}'`
-    set rng_samp_rate_s = `grep rng_samp_rate IMG-$slave.PRM | awk 'NR == 1 {printf("%d", $3)}'`
+    set rng_samp_rate_m = `grep rng_samp_rate IMG-HH-$master.PRM | awk 'NR == 1 {printf("%d", $3)}'`
+    set rng_samp_rate_s = `grep rng_samp_rate IMG-HH-$slave.PRM | awk 'NR == 1 {printf("%d", $3)}'`
     set t = `echo $rng_samp_rate_m $rng_samp_rate_s | awk '{printf("%1.1f\n", $1/$2)}'`
     if ($t == 1.0) then
         echo "The range sampling rate for master and slave images are: "$rng_samp_rate_m
     else if ($t == 2.0) then
         echo "Convert the slave image from FBD to FBS mode"
-	ALOS_fbd2fbs_SLC IMG-$slave.PRM IMG-$slave"_"FBS.PRM
+	ALOS_fbd2fbs_SLC IMG-HH-$slave.PRM IMG-HH-$slave"_"FBS.PRM
         echo "Overwriting the old slave image"
-        mv IMG-$slave"_"FBS.PRM IMG-$slave.PRM
-	update_PRM.csh IMG-$slave.PRM input_file IMG-$slave.SLC
-        mv IMG-$slave"_"FBS.SLC IMG-$slave.SLC
+        mv IMG-HH-$slave"_"FBS.PRM IMG-HH-$slave.PRM
+	update_PRM.csh IMG-HH-$slave.PRM input_file IMG-HH-$slave.SLC
+        mv IMG-HH-$slave"_"FBS.SLC IMG-HH-$slave.SLC
     else if  ($t == 0.5) then
 	echo "Convert the master image from FBD to FBS mode"
-	ALOS_fbd2fbs_SLC IMG-$master.PRM IMG-$master"_"FBS.PRM
+	ALOS_fbd2fbs_SLC IMG-HH-$master.PRM IMG-HH-$master"_"FBS.PRM
         echo "Overwriting the old master image"
-        mv IMG-$master"_"FBS.PRM IMG-$master.PRM
-	update_PRM.csh IMG-$master.PRM input_file IMG-$master.SLC
-        mv IMG-$master"_"FBS.SLC IMG-$master.SLC
+        mv IMG-HH-$master"_"FBS.PRM IMG-HH-$master.PRM
+	update_PRM.csh IMG-HH-$master.PRM input_file IMG-HH-$master.SLC
+        mv IMG-HH-$master"_"FBS.SLC IMG-HH-$master.SLC
     else
 	echo "The range sampling rate for master and slave images are not convertable"
     	exit 1
     endif
 
-    cp IMG-$slave.PRM IMG-$slave.PRM0
-    ALOS_baseline IMG-$master.PRM IMG-$slave.PRM0 >> IMG-$slave.PRM
-    xcorr IMG-$master.PRM IMG-$slave.PRM -xsearch 64 -ysearch 64 -nx 32 -ny 64
-    fitoffset.csh 2 2 freq_xcorr.dat >> IMG-$slave.PRM 18
-    resamp IMG-$master.PRM IMG-$slave.PRM IMG-$slave.PRMresamp IMG-$slave.SLCresamp 4
-    rm IMG-$slave.SLC
-    mv IMG-$slave.SLCresamp IMG-$slave.SLC
-    cp IMG-$slave.PRMresamp IMG-$slave.PRM
+    cp IMG-HH-$slave.PRM IMG-HH-$slave.PRM0
+    ALOS_baseline IMG-HH-$master.PRM IMG-HH-$slave.PRM0 >> IMG-HH-$slave.PRM
+    xcorr IMG-HH-$master.PRM IMG-HH-$slave.PRM -xsearch 64 -ysearch 64 -nx 32 -ny 64
+    fitoffset.csh 2 2 freq_xcorr.dat >> IMG-HH-$slave.PRM 18
+    resamp IMG-HH-$master.PRM IMG-HH-$slave.PRM IMG-HH-$slave.PRMresamp IMG-HH-$slave.SLCresamp 4
+    rm IMG-HH-$slave.SLC
+    mv IMG-HH-$slave.SLCresamp IMG-HH-$slave.SLC
+    cp IMG-HH-$slave.PRMresamp IMG-HH-$slave.PRM
         
     cd ..
     echo "ALIGN - END"
@@ -203,7 +203,7 @@ unset noclobber
       echo "DEM2TOPO_RA.CSH - START"
       echo "USER SHOULD PROVIDE DEM FILE"
       cd topo
-      cp ../SLC/IMG-$master.PRM master.PRM 
+      cp ../SLC/IMG-HH-$master.PRM master.PRM 
       ln -s ../raw/LED-$master . 
       if (-f dem.grd) then 
         dem2topo_ra.csh master.PRM dem.grd 
@@ -220,7 +220,7 @@ unset noclobber
         echo " "
         echo "OFFSET_TOPO - START"
         cd SLC 
-        slc2amp.csh IMG-$master.PRM 2 amp-$master.grd 
+        slc2amp.csh IMG-HH-$master.PRM 2 amp-$master.grd 
         cd ..
         cd topo
         ln -s ../SLC/amp-$master.grd . 
@@ -257,8 +257,8 @@ unset noclobber
     echo " "
     echo "INTF.CSH, FILTER.CSH - START"
     cd intf/
-    set ref_id  = `grep SC_clock_start ../SLC/IMG-$ref.PRM | awk '{printf("%d",int($3))}' `
-    set rep_id  = `grep SC_clock_start ../SLC/IMG-$rep.PRM | awk '{printf("%d",int($3))}' `
+    set ref_id  = `grep SC_clock_start ../SLC/IMG-HH-$ref.PRM | awk '{printf("%d",int($3))}' `
+    set rep_id  = `grep SC_clock_start ../SLC/IMG-HH-$rep.PRM | awk '{printf("%d",int($3))}' `
     mkdir $ref_id"_"$rep_id
     cd $ref_id"_"$rep_id
     ln -s ../../raw/LED-$ref .
@@ -270,16 +270,16 @@ unset noclobber
     if($topo_phase == 1) then
       if ($shift_topo == 1) then
         ln -s ../../topo/topo_shift.grd .
-        intf.csh IMG-$ref.PRM IMG-$rep.PRM -topo topo_shift.grd  
-        filter.csh IMG-$ref.PRM IMG-$rep.PRM $filter $dec 
+        intf.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM -topo topo_shift.grd  
+        filter.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM $filter $dec 
       else 
         ln -s ../../topo/topo_ra.grd . 
-        intf.csh IMG-$ref.PRM IMG-$rep.PRM -topo topo_ra.grd 
-        filter.csh IMG-$ref.PRM IMG-$rep.PRM $filter $dec 
+        intf.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM -topo topo_ra.grd 
+        filter.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM $filter $dec 
       endif
     else
-      intf.csh IMG-$ref.PRM IMG-$rep.PRM
-      filter.csh IMG-$ref.PRM IMG-$rep.PRM $filter $dec 
+      intf.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM
+      filter.csh IMG-HH-$ref.PRM IMG-HH-$rep.PRM $filter $dec 
     endif
     cd ../..
     echo "INTF.CSH, FILTER.CSH - END"
@@ -292,8 +292,8 @@ unset noclobber
   if ($stage <= 5 ) then
     if ($threshold_snaphu != 0 ) then
       cd intf
-      set ref_id  = `grep SC_clock_start ../SLC/IMG-$ref.PRM | awk '{printf("%d",int($3))}' `
-      set rep_id  = `grep SC_clock_start ../SLC/IMG-$rep.PRM | awk '{printf("%d",int($3))}' `
+      set ref_id  = `grep SC_clock_start ../SLC/IMG-HH-$ref.PRM | awk '{printf("%d",int($3))}' `
+      set rep_id  = `grep SC_clock_start ../SLC/IMG-HH-$rep.PRM | awk '{printf("%d",int($3))}' `
       cd $ref_id"_"$rep_id
       if ((! $?region_cut) || ($region_cut == "")) then
         set region_cut = `gmt grdinfo phase.grd -I- | cut -c3-20`
@@ -332,8 +332,8 @@ unset noclobber
 
   if ($stage <= 6) then
     cd intf
-    set ref_id  = `grep SC_clock_start ../SLC/IMG-$ref.PRM | awk '{printf("%d",int($3))}' `
-    set rep_id  = `grep SC_clock_start ../SLC/IMG-$rep.PRM | awk '{printf("%d",int($3))}' `
+    set ref_id  = `grep SC_clock_start ../SLC/IMG-HH-$ref.PRM | awk '{printf("%d",int($3))}' `
+    set rep_id  = `grep SC_clock_start ../SLC/IMG-HH-$rep.PRM | awk '{printf("%d",int($3))}' `
     cd $ref_id"_"$rep_id
     echo " "
     echo "GEOCODE.CSH - START"
