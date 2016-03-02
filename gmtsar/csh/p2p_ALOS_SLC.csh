@@ -176,7 +176,7 @@ unset noclobber
     cp IMG-HH-$slave.PRM IMG-HH-$slave.PRM0
     ALOS_baseline IMG-HH-$master.PRM IMG-HH-$slave.PRM0 >> IMG-HH-$slave.PRM
     xcorr IMG-HH-$master.PRM IMG-HH-$slave.PRM -xsearch 64 -ysearch 64 -nx 32 -ny 64
-    fitoffset.csh 2 2 freq_xcorr.dat >> IMG-HH-$slave.PRM 18
+    fitoffset.csh 3 3 freq_xcorr.dat >> IMG-HH-$slave.PRM 18
     resamp IMG-HH-$master.PRM IMG-HH-$slave.PRM IMG-HH-$slave.PRMresamp IMG-HH-$slave.SLCresamp 4
     rm IMG-HH-$slave.SLC
     mv IMG-HH-$slave.SLCresamp IMG-HH-$slave.SLC
