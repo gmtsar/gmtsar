@@ -4,8 +4,8 @@ CSRCS = envi_slc_decode.c
 
 
 OBJS =  $(CSRCS:.c=.o)
-INCLUDES = -I../include -I../../../gmtsar/include -I../../../gmtsar -I../../S1A_preproc/include -I$(TIFF_INC)
-CLIBS = -L../../../gmtsar -lgmtsar -L../lib -L../../S1A_preproc/lib  -lxmlC -lm
+INCLUDES = -I../../../gmtsar -I../../S1A_preproc/include -I$(TIFF_INC)
+CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lENVI -L../../S1A_preproc/lib  -lxmlC -lm
 
 LIB_SRC =       epr_api-2.3/src/epr_api.c \
                 epr_api-2.3/src/epr_band.c \
@@ -26,10 +26,9 @@ LIB_SRC =       epr_api-2.3/src/epr_api.c \
                 epr_api-2.3/src/epr_typconv.c
 
 
-all:	BEST envi_slc_decode envisat_dump_data envisat_dump_header
+all:	epr envi_slc_decode envisat_dump_data envisat_dump_header
 
-### create object code BEST library functions ###
-BEST:		$(LIB_SRC)
+epr:		$(LIB_SRC)
 	(cd epr_api-2.3/src/; make)
 
 install:

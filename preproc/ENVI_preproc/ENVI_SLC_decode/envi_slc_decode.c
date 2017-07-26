@@ -10,33 +10,30 @@
 /***************************************************************************
  * Modification history:                                                   *
  *                                                                         *
- * DATE                                                                    *
+ * Date   : 05/17/2010, Anders Hogrelius                                   *
+ *          Added range and azimuth bias for ERS-1 and ERS-2               *
  *                                                                         *
  ***************************************************************************/
 
-#include "tiffio.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <assert.h>
+#include <errno.h>
+#include <time.h>
+#include "tiffio.h"
 #include "PRM.h"
 #include "lib_functions.h"
 #include "stateV.h"
 #include "xmlC.h"
 #include "lib_defs.h"
-#include <assert.h>
-#include <errno.h>
-#include <time.h>
 #include "epr_api-2.3/src/epr_api.h"
 #if defined(WIN32) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif /* if defined(WIN32) && defined(_DEBUG) */
 //#include <typeinfo>
 #include <strings.h>
-
-
-
-
 
 int write_orb(state_vector *sv, FILE *fp, int);
 int dump_data(EPR_ELogLevel log_level, const char *infile, FILE* outstream, int pixflag, unsigned int l0, unsigned int lN, unsigned int p0, unsigned int pN);
@@ -59,9 +56,6 @@ int main(int argc, char **argv){
     
     /* EPR_LogLevel can be set to e_log_debug, e_log_info, e_log_warning or e_log_error */
     enum EPR_LogLevel eloglevel = e_log_error;
-
-
-
 
     if (argc != 2) die (USAGE,"");
       
@@ -151,8 +145,8 @@ int dump_data(EPR_ELogLevel log_level, const char *infile, FILE* outstream, int 
   EPR_SProductId* product_id;
   EPR_SDatasetId* MAIN_PROC_PM_ID;
   EPR_SDatasetId* MDS1;
-  EPR_SRecord*    rec1;
-  EPR_SRecord*    rec5;
+  EPR_SRecord*    rec1 = NULL;
+  EPR_SRecord*    rec5 = NULL;
   EPR_SField      numlines_field;
   EPR_SField      numpixels_field;
   EPR_SField      line_field;
@@ -263,6 +257,8 @@ int dump_data(EPR_ELogLevel log_level, const char *infile, FILE* outstream, int 
     /* this program seemed to fill all memory for some reason?  try to free it */
     epr_free_record(rec5);
     }
+  // below it's closing the file twice, may cause bug on Linux
+  // fclose(outstream);
   epr_close_product(product_id);
   /* Closes product reader API, release all allocated resources */
   epr_close_api();
@@ -330,17 +326,18 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   EPR_SDatasetId* 		GEOLOCATION_GRID_ADS;
   EPR_SRecord*    		mph;
   EPR_SRecord*    		sph;
-  EPR_SRecord*    		rec0;
-  EPR_SRecord*    		rec1;
-  EPR_SRecord*    		rec2;
-  EPR_SRecord*    		rec3;
-  EPR_SRecord*    		rec4;
+  EPR_SRecord*    		rec0 = NULL;
+  EPR_SRecord*    		rec1 = NULL;
+  EPR_SRecord*    		rec2 = NULL;
+  EPR_SRecord*    		rec3 = NULL;
+  EPR_SRecord*    		rec4 = NULL;
 //  EPR_SField*     		azitime0_field;
   EPR_EErrCode    		err_code=e_err_none;
   int             		status;
   char 				tmp_c[200];
   char 				filename[200];
-//  double 			tmp_d;
+  double 			rbias = 0.;
+  double 			tbias = 0.;
   int 				tmp_i;
   double 			c_speed = 299792458.0;
   char*				tmp_string;  
@@ -369,8 +366,10 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   double 			slant_range_time_ns;
   double			slant_range_time_s;
   double			near_range;
-  EPR_SField                    dop_coef_field;
-  double 			dop_coef1;
+  EPR_SField                    geogrid_slant_range_time_field1;
+  EPR_SField                    geogrid_slant_range_time_field2;
+  double                        geogrid_slant_range_time1_ns;
+  double                        geogrid_slant_range_time2_ns;
   EPR_SField      		pass_field;
   const char *			pass;
   char				orbdir[1];
@@ -392,9 +391,25 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   char				orbit_state_vector_time_field_name[50];
   char				orbit_state_vector_value_field_name[50];
   const EPR_STime *		orbit_state_vector_time_value;
-  int				n_orbit_state_vector;
   int				year_for_state_vectors;
   int				day_for_state_vectors;
+  EPR_SField                    zero_doppler_time_field;
+  const EPR_STime *             zero_doppler_time_mjd;
+  EPR_SField                    attach_flag_field;
+  int                           attach_flag_value;
+  EPR_SField                    dop_coef_field;
+  double                        dop_coef_value_D0;
+  double                        dop_coef_value_D1;
+  double                        dop_coef_value_D2;
+  double                        dop_coef_value_D3;
+  double                        dop_coef_value_D4;
+  EPR_SField                    dop_conf_field;
+  double                        dop_conf_value;
+  EPR_SField                    dop_thresh_flag_field;
+  int                           dop_thresh_flag_value;
+  int 				q;
+  double			dr;
+
 
   // define some of the variables
   prm->first_line = 1;
@@ -408,7 +423,6 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   prm->a_stretch_r = 0.0;
   prm->a_stretch_a = 0.0;
   prm->first_sample = 1;
-  prm->fd1 = 0.;
   strasign(prm->dtype,"a",0,0);
 
 
@@ -689,7 +703,7 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
 
   if(strcasecmp(Str_SC_identity, ".N1") == 0)
 	{
-	SC_identity=6;
+	SC_identity=6; 
 	}
   else if(strcasecmp(Str_SC_identity, ".E1") == 0)
 	{
@@ -747,15 +761,102 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   slant_range_time_ns		= 0.0;
   slant_range_time_s		= 0.0;
   near_range			= 0.0;
-  slant_range_time_field	= *(epr_get_field(rec2, "slant_range_time"));
-  slant_range_time_ns 		= epr_get_field_elem_as_double(&slant_range_time_field, 0);   
-  slant_range_time_s		= slant_range_time_ns * 0.000000001;
-  near_range			= slant_range_time_s * c_speed / 2;
-  prm->near_range 		= near_range; //near_range
+//  slant_range_time_field	= *(epr_get_field(rec2, "slant_range_time"));
+//  slant_range_time_ns 		= epr_get_field_elem_as_double(&slant_range_time_field, 0);   
 
-  dop_coef1 = epr_get_field_elem_as_double(&dop_coef_field,1);
-  printf("dop_coef1  %f\n",dop_coef1);
+
+
+  geogrid_slant_range_time_field1        = *(epr_get_field(rec4, "first_line_tie_points.slant_range_times"));
+  geogrid_slant_range_time_field2        = *(epr_get_field(rec4, "last_line_tie_points.slant_range_times"));
+  geogrid_slant_range_time1_ns           = epr_get_field_elem_as_double(&geogrid_slant_range_time_field1, 0);
+  geogrid_slant_range_time2_ns           = epr_get_field_elem_as_double(&geogrid_slant_range_time_field2, 0);
+
+  slant_range_time_ns		= (geogrid_slant_range_time1_ns + geogrid_slant_range_time2_ns) / 2;
+
+
+  slant_range_time_s            = slant_range_time_ns * 0.000000001;
+  near_range                    = slant_range_time_s * c_speed / 2;
+
+  /* convert to pixel space */
+  dr				= 0.5 * c_speed / prm->fs;  
   
+
+  /* make a bias correction the range for ENVI and ERS*/
+  if(SC_identity == 1) {
+     rbias = -10.52 * dr;
+  }
+  else if(SC_identity == 2) {
+     rbias = -5.3 * dr;
+  }
+  else if(SC_identity == 6) {
+     rbias = -0.8 * dr;
+  }
+  else {
+    printf(" SC_identity out of range ");
+  }
+
+  prm->near_range 		= near_range + rbias; //near_range
+
+
+  /* Read Doppler Processing Parameters */
+
+  /* Zero Doppler azimuth time at which estimate applies */
+  zero_doppler_time_field       = *(epr_get_field(rec2, "zero_doppler_time"));
+  zero_doppler_time_mjd         = epr_get_field_elem_as_mjd(&zero_doppler_time_field);
+
+  /* Attachment Flag (always set to zero for this ADSR */
+  attach_flag_field		= *(epr_get_field(rec2, "attach_flag"));  
+  attach_flag_value		= epr_get_field_elem_as_double(&attach_flag_field, 0);
+
+  /* 2-way slant range time origin (t0) */
+  slant_range_time_ns		= 0;
+  slant_range_time_field        = *(epr_get_field(rec2, "slant_range_time"));
+  slant_range_time_ns           = epr_get_field_elem_as_double(&slant_range_time_field, 0);
+
+  /* Doppler centroid coefficients as a function of slant range time: D0, D1, D2, D3, and D4. */
+  dop_coef_field		= *(epr_get_field(rec2, "dop_coef"));
+  dop_coef_value_D0		= epr_get_field_elem_as_double(&dop_coef_field, 0);
+  dop_coef_value_D1             = epr_get_field_elem_as_double(&dop_coef_field, 1);
+  dop_coef_value_D2             = epr_get_field_elem_as_double(&dop_coef_field, 2);
+  dop_coef_value_D3             = epr_get_field_elem_as_double(&dop_coef_field, 3);
+  dop_coef_value_D4             = epr_get_field_elem_as_double(&dop_coef_field, 4);
+
+  /* Doppler Centroid Confidence Measure */
+  dop_conf_field		= *(epr_get_field(rec2, "dop_conf"));
+  dop_conf_value		= epr_get_field_elem_as_double(&dop_conf_field, 0);
+
+  /* Doppler Confidence Below Threshold Flag */
+  dop_thresh_flag_field		= *(epr_get_field(rec2, "dop_thresh_flag"));
+  dop_thresh_flag_value		= epr_get_field_elem_as_double(&dop_thresh_flag_field, 0);
+
+  /*
+  printf("\nINFO:\nDoppler Centroid Coefficients ADSR\n");
+  printf("Zero Doppler azimuth time at which estimate applies: d=%d (days), j=%d (seconds), m=%d (microseconds)\n",zero_doppler_time_mjd->days,zero_doppler_time_mjd->seconds,zero_doppler_time_mjd->microseconds);
+  printf("Attachment Flag (always set to zero for this ADSR): %d\n",attach_flag_value);
+  printf("2-way slant range time origin (t0): %f (ns)\n",slant_range_time_ns);
+  printf("Doppler centroid coefficients as a function of slant range time, D0, D1, D2, D3, and D4: D0=%f (Hz), D1=%f (Hz/s), D2=%f (Hz/s2), D3=%f (Hz/s3), D4=%f (Hz/s4)\n",dop_coef_value_D0,dop_coef_value_D1,dop_coef_value_D2,dop_coef_value_D3,dop_coef_value_D4);
+  printf("Doppler Centroid Confidence Measure: %f\n",dop_conf_value);
+
+  printf("Value between 0 and 1, 0 = poorest confidence, 1= highest confidence\n");
+  printf("If multiple Doppler Centroid estimates were performed, this value is the lowest confidence value attained.\n");
+
+  printf("Doppler Confidence Below Threshold Flag: %d\n",dop_thresh_flag_value);
+
+  printf("0 = confidence above threshold, Doppler Centroid calculated from data\n");
+  printf("1 = confidence below threshold, Doppler Centroid calculated from orbit parameters\n");
+
+  printf("\n");
+  */
+
+
+  /* Set fd1 to the value of D0 for now and make the assumption that it is close enough, we'll make the precise calculations later */
+  /* David noted that this value is about twice of what it is supposed to be, divide by 2 for now */
+  //prm->fd1 = dop_coef_value_D0/2;
+  prm->fd1 = 0;
+
+
+
+  /* End Read Doppler Processing Parameters */
 
   prm->ra = 6378137.00; //equatorial_radius
   prm->rc = 6356752.31; //polar_radius  
@@ -782,10 +883,10 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   prm->SLC_scale = 1.0;
  
 
-  start_time_field		= *(epr_get_field(mph, "SENSING_START"));
+  start_time_field		= *(epr_get_field(sph, "FIRST_LINE_TIME"));
   start_time			= epr_get_field_elem_as_str(&start_time_field);
   strcpy(tmp_c,start_time);
-  for (int q=0; q<strlen(tmp_c); q++)
+  for (q=0; q<strlen(tmp_c); q++)
 	{
 	if(tmp_c[q] == ' ')
 		tmp_c[q] = 'T';
@@ -804,17 +905,30 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   	sprintf(tmp_c,"%s-0%d-%s%s",year,monthtonum(month),day,&tmp_c[11]);
   else
   	sprintf(tmp_c,"%s-%d-%s%s",year,monthtonum(month),day,&tmp_c[11]);
-  
 
   cat_nums(s_name,tmp_c);
   str_date2JD(s_out, s_name);
 
-  //Why doesn't str2double work here?
-  prm->clock_start = atof(s_out)+1;
+  /* make a time bias correction for ENVI and ERS*/
+  if(SC_identity == 1) {
+     tbias = 19.2501/prm->prf/86400.;
+  }
+  else if(SC_identity == 2) {
+     tbias = 0.;
+  }
+  else if(SC_identity == 6) {
+     tbias = -4.25/prm->prf/86400.;
+  }
+  else {
+    printf(" SC_identity out of range ");
+  }
+
+
+  prm->clock_start = atof(s_out)+1+tbias;
   tmp_c[4] = '\0';
   prm->SC_clock_start = prm->clock_start + 1000.*atof(tmp_c);
 		
-  stop_time_field		= *(epr_get_field(mph, "SENSING_STOP"));
+  stop_time_field		= *(epr_get_field(sph, "LAST_LINE_TIME"));
   stop_time			= epr_get_field_elem_as_str(&stop_time_field);
   strcpy(tmp_c,stop_time); 
   for (int q=0; q<strlen(tmp_c); q++)
@@ -894,55 +1008,49 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM * prm, s
   printf("PRM set for Image File...\n");
 
 
-  //Read orbit state vectors 
-  n_orbit_state_vector			= 1;
-  sprintf(orbit_state_vector_time_field_name,"orbit_state_vectors.%d.state_vect_time_1",n_orbit_state_vector);
-  while(epr_get_field(rec1, orbit_state_vector_time_field_name) != NULL)
-	{
+ //Read orbit state vectors, there should always be five of them
+  for(int n_orbit_state_vector=1;n_orbit_state_vector<6;n_orbit_state_vector++)
+{
 	// Time values
 	sprintf(orbit_state_vector_time_field_name,"orbit_state_vectors.%d.state_vect_time_1",n_orbit_state_vector);
 
-	orbit_state_vector_time_field 		= *(epr_get_field(rec1, orbit_state_vector_time_field_name));
-	orbit_state_vector_time_value 		= epr_get_field_elem_as_mjd(&orbit_state_vector_time_field);	
+	orbit_state_vector_time_field           = *(epr_get_field(rec1, orbit_state_vector_time_field_name));
+	orbit_state_vector_time_value           = epr_get_field_elem_as_mjd(&orbit_state_vector_time_field);
 
-	//sv[n_orbit_state_vector-1].yr		= orbit_state_vector_time_value->days;
-	sv[n_orbit_state_vector-1].yr		= year_for_state_vectors;
-	sv[n_orbit_state_vector-1].jd		= day_for_state_vectors; 
-	sv[n_orbit_state_vector-1].sec 	= orbit_state_vector_time_value->seconds;
+	sv[n_orbit_state_vector-1].yr           = year_for_state_vectors;
+	sv[n_orbit_state_vector-1].jd           = day_for_state_vectors;
+	sv[n_orbit_state_vector-1].sec  = orbit_state_vector_time_value->seconds;
 
 	// x pos
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.x_pos_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].x		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;	 
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].x            = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;
 	// y pos
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.y_pos_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].y		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].y            = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;
 	// z pos
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.z_pos_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].z		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].z            = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100;
 
 	// x vel
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.x_vel_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].vx		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;	 
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].vx           = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;
 	// y vel
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.y_vel_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].vy 		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].vy           = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;
 	// z vel
 	sprintf(orbit_state_vector_value_field_name,"orbit_state_vectors.%d.z_vel_1",n_orbit_state_vector);
-	orbit_state_vector_value_field 	= *(epr_get_field(rec1, orbit_state_vector_value_field_name));
-	sv[n_orbit_state_vector-1].vz		= (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;
+	orbit_state_vector_value_field  = *(epr_get_field(rec1, orbit_state_vector_value_field_name));
+	sv[n_orbit_state_vector-1].vz           = (int)epr_get_field_elem_as_double(&orbit_state_vector_value_field, 0)/100000;
 
-	n_orbit_state_vector++;
-	sprintf(orbit_state_vector_time_field_name,"orbit_state_vectors.%d.state_vect_time_1",n_orbit_state_vector);	
+	*n_state_vectors = n_orbit_state_vector;
 	}
 
-  *n_state_vectors = n_orbit_state_vector-1;
-
-  	printf("Ignore message about epr_get_field: field not found, this is expected.\n%d Lines Written for Orbit...\n",n_orbit_state_vector-1);
+  printf("LED set for Image File...\n");
 
 
   /* Close product_id and release rest of the allocated memory */
@@ -961,8 +1069,9 @@ int monthtonum(char * szMonth)
   {
   const char * months[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
   int nMonth = 0;
+  int i;
 
-  for (int i = 0; i < 12; ++i)
+  for (i = 0; i < 12; ++i)
    {
     if(strncasecmp(szMonth, months[i], 3) == 0)
       nMonth = i+1;
