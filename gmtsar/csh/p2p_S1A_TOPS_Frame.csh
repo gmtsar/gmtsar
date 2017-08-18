@@ -14,14 +14,14 @@ unset noclobber
     echo ""
     echo "Usage: p2p_S1A_TOPS.csh Master.SAFE Master.EOF Slave.SAFE Slave.EOF config.s1a.txt mode"
     echo ""
-    echo "Example: p2p_S1A_TOPS.csh S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt "
+    echo "Example: p2p_S1A_TOPS_Frame.csh S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt 12 "
     echo ""
-    echo "	Place the .SAFE file in the raw folder, DEM in the topo folder"
+    echo "	Place the two .SAFE folders and two .EOF files in the raw folder, DEM in the topo folder"
     echo "	During processing, F1, F2, F3 and merge folder will be generated"
     echo "	Final results will be placed in the merge folder, with phase"	
     echo "	, corr and amp [unwrapped phase]."
-    echo "	mode = 11/12, process vv, mode = 21/22, process vh, default is vv"
-    echo "	mode = 11/21, process sequentially, mode = 12/22, process parallely, default is sequentially"
+    echo "	mode = 11 process  3 vv subswaths sequentially, mode = 21 process 3 vh subswaths sequentially"
+    echo "	mode = 12 process  3 vv subswaths in parallel,  mode = 22 process 3 vh subswaths in parallel"
     echo ""
     exit 1
   endif
