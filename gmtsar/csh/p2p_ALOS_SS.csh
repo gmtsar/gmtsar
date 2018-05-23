@@ -270,15 +270,15 @@ unset noclobber
       if ($shift_topo == 1) then
         ln -s ../../topo/topo_shift.grd .
         intf.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM -topo topo_shift.grd  
-        filter.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$repN_"$subswath".PRM $filter $dec 
+        filter_alos_ss.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$repN_"$subswath".PRM $filter $dec 
       else 
         ln -s ../../topo/topo_ra.grd . 
         intf.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM -topo topo_ra.grd 
-        filter.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM $filter $dec 
+        filter_alos_ss.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM $filter $dec 
       endif
     else
       intf.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM
-      filter.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM $filter $dec 
+      filter_alos_ss.csh IMG-HH-"$ref"_"$subswath".PRM IMG-HH-"$rep"_"$subswath".PRM $filter $dec 
     endif
     cd ../..
     echo "INTF.CSH, FILTER.CSH - END"
