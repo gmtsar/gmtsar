@@ -24,28 +24,12 @@ errormessage:
     exit 1
   endif
 #
-# which satellite
+# put the baseline information at the end of the second PRM file
 #
-  set SC = `grep SC_identity $1 | awk '{print $3}'`
-  if ($SC == 1 || $SC == 2 || $SC == 4 || $SC == 6) then
     cp $2 $2"0"
     cp $1 $1"0"
     SAT_baseline $1 $2 | tail -n6 >> $2
     SAT_baseline $1 $1 | grep height >> $1
-  else if ($SC == 5) then
-    cp $2 $2"0"
-    cp $1 $1"0"
-    ALOS_baseline $1 $2 | tail -n6 >> $2
-    ALOS_baseline $1 $1 | grep height >> $1
-  else if ($SC > 6) then
-    cp $2 $2"0"
-    cp $1 $1"0"
-    SAT_baseline $1 $2 | tail -n6 >> $2
-    SAT_baseline $1 $1 | grep height >> $1
-  else
-    echo "Incorrect satellite id in prm file"
-    exit 0
-  endif
 #
 # form the interferogram optionally using topo_ra and modelphase
 # 
