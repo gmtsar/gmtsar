@@ -26,11 +26,21 @@ LIB_SRC =       epr_api-2.3/src/epr_api.c \
                 epr_api-2.3/src/epr_typconv.c
 
 
-all:	epr envi_slc_decode envisat_dump_data envisat_dump_header
-
-epr:		$(LIB_SRC)
+all:		$(LIB_SRC)
 	(cd epr_api-2.3/src/; make)
-
+		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+                -o envi_slc_decode \
+                envi_slc_decode.c \
+                epr_api-2.3/src/*.o $(CLIBS)
+		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+                -o envisat_dump_data \
+                envisat_dump_data.c \
+                epr_api-2.3/src/*.o $(CLIBS)
+		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+                -o envisat_dump_header \
+                envisat_dump_header.c \
+                epr_api-2.3/src/*.o $(CLIBS)
+	
 install:
 	$(INSTALL) $(PROG) $(bindir)
 	$(INSTALL) envisat_dump_data $(bindir)
@@ -40,20 +50,3 @@ clean:
 	rm -f $(OBJS) envi_slc_decode envisat_dump_data envisat_dump_header tags core
 	(cd epr_api-2.3/src/; make clean)
 
-envi_slc_decode:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
-		-o envi_slc_decode \
-		envi_slc_decode.c \
-		epr_api-2.3/src/*.o $(CLIBS)
-
-envisat_dump_data:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
-		-o envisat_dump_data \
-		envisat_dump_data.c \
-		epr_api-2.3/src/*.o $(CLIBS)
-
-envisat_dump_header:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
-		-o envisat_dump_header \
-		envisat_dump_header.c \
-		epr_api-2.3/src/*.o $(CLIBS)
