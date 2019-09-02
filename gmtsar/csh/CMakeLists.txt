@@ -1,3 +1,5 @@
+configure_file (gmtsar_sharedir.csh.in gmtsar_sharedir.csh)
+
 install (PROGRAMS align.csh align_ALOS2_SCAN.csh align_ALOS_SLC.csh align_batch.csh align_batch_ALOS2_SCAN.csh
 	align_batch_ALOS_SLC.csh align_tops.csh align_tops_6par.csh align_tops_esd.csh baseline_table.csh
 	cleanup.csh create_frame_tops.csh dem2topo_ra.csh dem2topo_ra_ALOS2.csh detrend_before_unwrap.csh
