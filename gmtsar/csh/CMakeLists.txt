@@ -11,5 +11,5 @@ install (PROGRAMS align.csh align_ALOS2_SCAN.csh align_ALOS_SLC.csh align_batch.
 	preproc_batch_tops_esd.csh proj_ll2ra.csh proj_ll2ra_ascii.csh proj_model.csh proj_ra2ll.csh
 	proj_ra2ll_ascii.csh sarp.csh slc2amp.csh snaphu.csh snaphu_interp.csh stack.csh stack_corr.csh 
 	update_PRM.csh select_pairs.csh
-	RUNTIME DESTINATION bin
+	DESTINATION bin
 	COMPONENT Runtime)
