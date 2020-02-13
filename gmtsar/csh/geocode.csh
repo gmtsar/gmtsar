@@ -53,7 +53,7 @@ if (-e xphase_mask.grd) then
   gmt psscale -Rxphase_mask.grd -J -DJTC+w5i/0.2i+h -Cxphase.cpt -Bxa0.1+l"Phase" -By+lrad -O >> xphase_mask.ps
   gmt psconvert -Tf -P -Z xphase_mask.ps
   echo "Masked x phase map: xphase_mask.pdf"
-  makecpt -Cgray -T-.6/.6/.1 -N -Z > yphase.cpt
+  gmt makecpt -Cgray -T-.6/.6/.1 -N -Z > yphase.cpt
   gmt grdimage yphase_mask.grd -JX8i -Cyphase.cpt -X.2i -Y.5i -P -K > yphase_mask.ps
   gmt psscale -Ryphase_mask.grd -J -DJTC+w5i/0.2i+h -Cyphase.cpt -Bxa0.1+l"Phase" -By+lrad -O >> yphase_mask.ps
   gmt psconvert -Tf -P -Z yphase_mask.ps
