@@ -137,7 +137,7 @@ echo "Unwrapped phase map: unwrap.pdf"
 #
 # clean up
 #
-rm -f tmp.grd corr_tmp.grd unwrap.out tmp2.grd unwrap_grad.grd phase_tmp.grd
+rm -f tmp.grd corr_tmp.grd unwrap.out tmp2.grd unwrap_grad.grd phase_tmp.grd conncomp.out
 rm -f phase.in corr.in 
 mv -f phase_patch.grd phasefilt_interp.grd
 #
