@@ -143,7 +143,7 @@
     echo ""
     echo "GEOCODE-START"
     proj_ra2ll.csh trans.dat phasefilt.grd phasefilt_ll.grd
-    gmt grdmath corr.grd $threshold_geocode GE 0 NAN mask.grd MUL = mask2.grd $V
+    gmt grdmath corr.grd $threshold_geocode GE 0 NAN mask.grd MUL = mask2.grd
     gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd
     proj_ra2ll.csh trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd
     proj_ra2ll.csh trans.dat corr.grd corr_ll.grd
