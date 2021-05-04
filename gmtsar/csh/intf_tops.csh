@@ -66,7 +66,7 @@
   set range_dec = `grep range_dec $2 | awk '{print $3}'`
   set azimuth_dec = `grep azimuth_dec $2 | awk '{print $3}'`
   set near_interp = `grep near_interp $2 | awk '{print $3}'`
-  set mask_water = `grep mask_water $conf | awk '{print $3}'`
+  set mask_water = `grep mask_water $2 | awk '{print $3}'`
 
 ##################################
 # 1 - start from make topo_ra  #
