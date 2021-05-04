@@ -109,7 +109,7 @@
   set switch_land = `grep switch_land $2 | awk '{print $3}'`
   set defomax = `grep defomax $2 | awk '{print $3}'`
   set near_interp = `grep near_interp $2 | awk '{print $3}'`
-  set mask_water = `grep mask_water $conf | awk '{print $3}'`
+  set mask_water = `grep mask_water $2 | awk '{print $3}'`
 
   # Unwrapping
   if ($region_cut == "") then
