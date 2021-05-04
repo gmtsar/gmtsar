@@ -111,7 +111,7 @@ gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd
 if (-e landmask_ra.grd) then
   gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd $V
   mv tmp.grd unwrap.grd
-  gmt grdmath phasefilt.grd landmask_ra_patch.grd MUL = tmp2.grd -V
+  gmt grdmath phasefilt.grd landmask_ra_patch.grd MUL = tmp2.grd $V
   mv tmp2.grd phasefilt.grd
 endif
 #
