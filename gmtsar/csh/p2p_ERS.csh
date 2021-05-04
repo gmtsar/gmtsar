@@ -76,7 +76,7 @@ if ($#argv < 3) then
   set switch_land = `grep switch_land $3 | awk '{print $3}'`
   set defomax = `grep defomax $3 | awk '{print $3}'`
   set near_interp = `grep near_interp $3 | awk '{print $3}'`
-  set mask_water = `grep mask_water $conf | awk '{print $3}'`
+  set mask_water = `grep mask_water $3 | awk '{print $3}'`
 
 #
 # read file names of raw data
