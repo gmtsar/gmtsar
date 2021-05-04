@@ -78,7 +78,7 @@ unset noclobber
   set range_dec = `grep range_dec $3 | awk '{print $3}'`
   set azimuth_dec = `grep azimuth_dec $3 | awk '{print $3}'`
   set near_interp = `grep near_interp $3 | awk '{print $3}'`
-  set mask_water = `grep mask_water $conf | awk '{print $3}'`
+  set mask_water = `grep mask_water $3 | awk '{print $3}'`
 #
 # read file names of raw data
 #
