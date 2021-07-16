@@ -36,6 +36,8 @@ gmtsar/file_stuff.o
 gmtsar/fitoffset
 gmtsar/fitoffset.o
 gmtsar/geoxyz.o
+gmtsar/geocode_slc
+gmtsar/geocode_slc.o
 gmtsar/get_PRM
 gmtsar/get_PRM.o
 gmtsar/get_locations.o
