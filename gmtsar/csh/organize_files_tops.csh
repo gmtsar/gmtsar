@@ -49,6 +49,7 @@
     set file1 = `echo $line | awk -F"," '{print $1}'`
     set date1 = `echo $file1 | awk '{print substr($1,length($1)-54,8)}'`
     set SAT1 = `echo $file1 | awk '{print substr($1,length($1)-71,3)}'`
+    set orbittype="AUX_POEORB" #assume precise orbits
     
     if ($ii == 0) then
       set file0 = `echo $file1`
