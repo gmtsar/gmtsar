@@ -27,8 +27,7 @@ endif
   	set SNR = $4
  else
   	set SNR = 20.
- 	endif
-endif
+ endif
 
 #
 #  first extract the range and azimuth data
