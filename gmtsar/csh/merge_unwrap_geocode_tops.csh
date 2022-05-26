@@ -130,7 +130,7 @@
     echo "Stitching postitions set to $n1 $n2"
   endif
   
-  if ($n1 > 5 && $n2 > 5) then
+  if ($n1 > 5) then
     merge_swath tmp_phaselist phasefilt.grd $stem $n1 $n2> merge_log
     merge_swath tmp_corrlist corr.grd $n1 $n2 > merge_log_corr
     merge_swath tmp_masklist mask.grd $n1 $n2 > merge_log_mask
