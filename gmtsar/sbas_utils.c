@@ -75,7 +75,8 @@ char *sbas_USAGE = " \n\nUSAGE: sbas intf.tab scene.tab N S xdim ydim [-atm ni] 
                    "-range rng         --  range distance from the radar to the center of the "
                    "interferogram (m) default=866000 \n"
                    "-rms           --  output RMS of the data misfit grids (mm): rms.grd\n"
-                   "-dem           --  output DEM error (m): dem.grd \n\n"
+                   "-dem           --  output DEM error (m): dem_err.grd \n"
+                   "-robust        --  only work with -atm turnned on, estimate velocity with records that has atm correction\n\n"
                    " output: \n"
                    "disp_##.grd        --  cumulative displacement time series (mm) grids\n"
                    "vel.grd        --  mean velocity (mm/yr) grids \n\n"
@@ -87,7 +88,7 @@ void dgelsy_(const int64_t *m, const int64_t *n, const int64_t *nrhs, double *G,
              const int64_t *info);
 
 int parse_command_ts(int64_t agc, char **agv, float *sf, double *wl, double *theta, double *rng, int64_t *flag_rms,
-                     int64_t *flag_dem, int64_t *atm, int64_t *flag_mmap) {
+                     int64_t *flag_dem, int64_t *atm, int64_t *flag_mmap, int64_t *flag_robust) {
 
 	int64_t i;
 
@@ -128,6 +129,10 @@ int parse_command_ts(int64_t agc, char **agv, float *sf, double *wl, double *the
             *flag_mmap = 1;
             fprintf(stderr, "mmap disk space for less use of memory\n");
         }  
+        else if (!strcmp(agv[i], "-robust")) {
+            *flag_robust = 1;
+            fprintf(stderr, "using robust velocity estimate (require -atm)\n");
+        }  
 		else if (!strcmp(agv[i], "-atm")) {
 			i++;
 			if (i == agc)
@@ -152,10 +157,24 @@ int parse_command_ts(int64_t agc, char **agv, float *sf, double *wl, double *the
 int allocate_memory_ts(int64_t **jpvt, double **work, double **d, double **ds, float **bperp, char ***gfile, char ***cfile,
                        int64_t **L, double **time, int64_t **H, double **G, double **A, double **Gs, int64_t **flag, float **dem,
                        float **res, float **vel, float **phi, float **var, float **disp, int64_t n, int64_t m, int64_t lwork,
-                       int64_t ldb, int64_t N, int64_t S, int64_t xdim, int64_t ydim, int64_t **hit, int64_t flag_mmap) {
+                       int64_t ldb, int64_t N, int64_t S, int64_t xdim, int64_t ydim, int64_t **hit, int64_t flag_mmap, int64_t n_atm) {
 
 	int64_t i;
+    double Mem;
 	char **p1, **p2;
+
+    Mem = xdim*ydim*(N*2 + S)*4 + n*4 + lwork*8 + N*8 + N*4 + N*8*2 + 256*N*2 + S*4 + S*8 + N*2*4 + m*n*8*2 + xdim*ydim*4*3 + S*S*4 + S*8;
+    if (n_atm != 0) {
+      Mem = Mem + xdim*ydim*(N*4+S*4) + N*4 + S*8 + S*4;
+    }
+    if (flag_mmap != 0) {
+      Mem = xdim*ydim*S*4 + n*4 + lwork*8 + N*8 + N*4 + N*8*2 + 256*N*2 + S*4 + S*8 + N*2*4 + m*n*8*2 + xdim*ydim*4*3 + S*S*4;
+      if (n_atm != 0) {
+        Mem = Mem + xdim*ydim*S*4 + N*4 + S*8 + S*4;
+      }
+    }
+    Mem = Mem/1024/1024/1024;
+    printf("Required Memory Usage is %.6f GB ...\n", Mem);
 
 	if ((*jpvt = Malloc(int64_t, n)) == NULL)
 		die("memory allocation!", "jpvt");
@@ -363,7 +382,7 @@ int init_G_ts(double *G, double *Gs, int64_t N, int64_t S, int64_t m, int64_t n,
 int64_t lsqlin_sov_ts(int64_t xdim, int64_t ydim, float *disp, float *vel, int64_t *flag, double *d, double *ds, double *time,
                       double *G, double *Gs, double *A, float *var, float *phi, int64_t N, int64_t S, int64_t m, int64_t n,
                       double *work, int64_t lwork, int64_t flag_dem, float *dem, int64_t flag_rms, float *res, int64_t *jpvt,
-                      double wl, double *atm_rms) {
+                      double wl, double *atm_rms, int64_t flag_robust) {
 
 	int64_t i, j, k, p, info = 0, indx;
 	int64_t rank = 0, nrhs = 1, lda, ldb;
@@ -467,7 +486,7 @@ int64_t lsqlin_sov_ts(int64_t xdim, int64_t ydim, float *disp, float *vel, int64
 				sumx = 0;
 				sumy = 0;
 				sumyy = 0;
-				if (count > 2) {
+				if (count > 2 && flag_robust == 1) {
 					for (i = 2; i < S - 2; i++) {
 						if (atm_rms[i] != 0.0) {
 							sumxy = sumxy + time[i] * disp[i * xdim * ydim + j * ydim + k];
@@ -588,7 +607,7 @@ int write_output_ts(void *API, struct GMT_GRID *Out, int64_t agc, char **agv, in
 
 	if (flag_dem == 1) {
 		Out->data = dem;
-		sprintf(outfile, "dem.grd");
+		sprintf(outfile, "dem_err.grd");
 		strcpy(Out->header->title, "");
 		strcpy(Out->header->remark, "");
 		if (GMT_Set_Comment(API, GMT_IS_GRID, GMT_COMMENT_IS_REMARK, "DEM error estimated from SBAS (m)", Out))

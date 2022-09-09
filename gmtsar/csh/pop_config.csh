@@ -10,7 +10,7 @@ if ($#argv != 1) then
   echo "Usage: pop_config.csh SAT"
   echo ""
   echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
-  echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, TSX, RS2"
+  echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, TSX, RS2, GF3"
   echo ""
   exit 1
 endif
@@ -99,6 +99,9 @@ echo "# subtract topo_ra from the phase"
 echo "#  (1 -- yes; 0 -- no)"
 echo "topo_phase = 1"
 echo "# if above parameter = 1 then one should have put dem.grd in topo/"
+echo ""
+echo "# interpolation approach, 0 for surface, 1 for triangulation"
+echo "topo_interp_mode = 0"
 echo ""
 echo "# topo_ra shift (1 -- yes; 0 -- no)"
 
@@ -195,3 +198,11 @@ echo "#####################################"
 echo "# correlation threshold for geocode.csh (0< threshold <=1), set 0 to skip"
 echo "threshold_geocode = .10"
 echo ""
+echo "#####################################"
+echo "#   Other parameters                #"
+echo "#####################################"
+echo ""
+if ($SAT == "S1_TOPS" || $SAT == "ALOS2_SCAN") then
+  echo "# determine stitching location for TOPS and ALOS2SanSAR data using nan-s surrounding images from subswaths"
+  echo "det_stitch = 0"
+endif

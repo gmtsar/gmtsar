@@ -40,11 +40,13 @@
   endif
 
   if ($#argv == 3) then
-    set det_stitch = 1
-  else
-    set det_stitch = 0
+    set det_stitch = $3
     set n1 = 0
     set n2 = 0
+  else
+    set det_stitch = 0
+    set n1 = ""
+    set n2 = ""
   endif
 
   set region_cut = `grep region_cut $2 | awk '{print $3}'`
@@ -112,7 +114,7 @@
       set n1 = `echo $n12 $n21 | awk '{printf("%d",($1+$2)/2)}'`
       set xm2 = `gmt grdinfo $pth2/phasefilt.grd -C | awk '{print $3}'`
       set xc2 = `gmt grdinfo tmp.grd -C | awk '{print $3}'`
-      set n22 = `echo $xm1 $xc1 $incx | awk '{printf("%d",($1-$2)/$3)}'`
+      set n22 = `echo $xm2 $xc2 $incx | awk '{printf("%d",($1-$2)/$3)}'`
 
       set pth2 = `tail -1 $1 | awk -F: '{print $1}'`
       gmt grdcut $pth2"phasefilt.grd" -Z+N -Gtmp.grd
@@ -128,7 +130,8 @@
     echo "Stitching postitions set to $n1 $n2"
   endif
   
-  if ($n1 > 5 && $n2 > 5) then
+  # for two subswath (n1 >5, n2 =0), for three subswath (n1>5, n2>5) subswath merge with pixel offset computed from det_stich flag
+  if ($n1 > 5) then
     merge_swath tmp_phaselist phasefilt.grd $stem $n1 $n2> merge_log
     merge_swath tmp_corrlist corr.grd $n1 $n2 > merge_log_corr
     merge_swath tmp_masklist mask.grd $n1 $n2 > merge_log_mask
@@ -225,13 +228,20 @@
 
     if (-f unwrap.grd) then
       gmt grdmath unwrap.grd mask2.grd MUL = unwrap_mask.grd
+      set wavel = `grep wavelength *.PRM | awk '{print($3)}' | head -1 `
+      gmt grdmath unwrap_mask.grd $wavel MUL -79.58 MUL = los.grd
       proj_ra2ll.csh trans.dat unwrap.grd unwrap_ll.grd
       proj_ra2ll.csh trans.dat unwrap_mask.grd unwrap_mask_ll.grd
+      proj_ra2ll.csh trans.dat los.grd los_ll.grd
       set BT = `gmt grdinfo -C unwrap.grd | awk '{print $7}'`
       set BL = `gmt grdinfo -C unwrap.grd | awk '{print $6}'`
       gmt makecpt -T$BL/$BT/0.5 -Z > unwrap.cpt
       grd2kml.csh unwrap_mask_ll unwrap.cpt
       grd2kml.csh unwrap_ll unwrap.cpt
+      set BT = `gmt grdinfo -C los.grd | awk '{print $7}'`
+      set BL = `gmt grdinfo -C los.grd | awk '{print $6}'`
+      gmt makecpt -T$BL/$BT/2 -Z > los.cpt
+      grd2kml.csh los_ll los.cpt
     endif
     
     echo "GEOCODE END"

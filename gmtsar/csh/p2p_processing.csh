@@ -14,7 +14,7 @@
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
     echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
-    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, TSX, RS2"
+    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, TSX, RS2, GF3"
     echo ""
     echo "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc"
     echo ""
@@ -78,12 +78,16 @@
   set earth_radius = `grep earth_radius $conf | awk '{print $3}'`
   set fd = `grep fd1 $conf | awk '{print $3}'`
   set topo_phase = `grep topo_phase $conf | awk '{print $3}'`
+  set topo_interp_mode = `grep topo_interp_mode $conf | awk '{print $3}'`
+  if ( "x$topo_interp_mode" == "x" ) then
+    set topo_interp_mode = 0
+  endif
   set shift_topo = `grep shift_topo $conf | awk '{print $3}'`
   set switch_master = `grep switch_master $conf | awk '{print $3}'`
   set filter = `grep filter_wavelength $conf | awk '{print $3}'` 
   set compute_phase_gradient = `grep compute_phase_gradient $conf | awk '{print $3}'` 
   set iono = `grep correct_iono $conf | awk '{print $3}'`
-  if ( "x$filter" == "x" ) then 
+  if ( "x$iono" == "x" ) then 
     set iono = 0
   endif
   set iono_filt_rng = `grep iono_filt_rng $conf | awk '{print $3}'`
@@ -91,6 +95,9 @@
   set iono_dsamp = `grep iono_dsamp $conf | awk '{print $3}'`
   set iono_skip_est = `grep iono_skip_est $conf | awk '{print $3}'`
   set spec_div = `grep spec_div $conf | awk '{print $3}'`
+  if ( "x$spec_div" == "x" ) then
+    set spec_div = 0
+  endif
   set spec_mode = `grep spec_mode $conf | awk '{print $3}'`
   #  set filter = 200
   #  echo " "
@@ -127,7 +134,7 @@
   if (!($SLC_factor == "")) then  
     set commandline = "$commandline -SLC_factor $SLC_factor"
   endif
-  if (!($spec_div == "")) then
+  if (!($spec_div == 0)) then
     set commandline = "$commandline -ESD $spec_mode"
   endif
   if (!($skip_master == "")) then
@@ -257,6 +264,23 @@
       endif
       if(! -f raw/$aligned.cos ) then
         echo " no file  raw/"$aligned".cos"
+        exit
+      endif
+    else if ($SAT == "GF3") then
+      if(! -f raw/$master.xml ) then
+        echo " no file  raw/"$master".xml"
+        exit
+      endif
+      if(! -f raw/$aligned.xml ) then
+        echo " no file  raw/"$aligned".xml"
+        exit 
+      endif
+      if(! -f raw/$master.tiff ) then
+        echo " no file  raw/"$master".tiff"
+        exit 
+      endif
+      if(! -f raw/$aligned.tiff ) then
+        echo " no file  raw/"$aligned".tiff"
         exit
       endif
     endif
@@ -485,7 +509,7 @@
           if ($SAT == "ALOS2_SCAN") then
             ln -s ../SLC/freq_alos2.dat
             fitoffset.csh  2 3 freq_alos2.dat 10 >> $aligned.PRM
-          else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW") then
+          else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "TSX") then
             ln -s ../SLC/freq_xcorr.dat .
             fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
           else
@@ -688,7 +712,11 @@
       cp ../SLC/$master.PRM master.PRM 
       ln -s ../raw/$master.LED . 
       if (-f dem.grd) then 
-        dem2topo_ra.csh master.PRM dem.grd 
+        if ($topo_interp_mode == 1) then
+          dem2topo_ra.csh master.PRM dem.grd 1
+        else
+          dem2topo_ra.csh master.PRM dem.grd
+        endif
       else 
         echo "no DEM file found: " dem.grd 
         exit 1
