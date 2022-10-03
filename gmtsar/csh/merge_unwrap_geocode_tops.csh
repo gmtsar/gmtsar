@@ -96,6 +96,12 @@
       set incx = `gmt grdinfo tmp.grd -C | awk '{print $8}'`
       set n21 = `echo $x01 $incx | awk '{printf("%d",$1/$2)}'`
       set n1 = `echo $n12 $n21 | awk '{printf("%d",($1+$2)/2)}'`
+      if ($n1 == 0) then
+              echo "WARNING: Stitching position estimated to be zero: replacing with 34"
+              echo "This may not be the most appropriate value for your dataset -- check merged grids carefully"
+              set n1 = ` echo "34" | awk '{print $1}' `
+              set n2 = ` echo "34" | awk '{print $1}' `
+      endif
       set n2 = 0
       rm tmp.grd
     else if ($nl == 3) then
