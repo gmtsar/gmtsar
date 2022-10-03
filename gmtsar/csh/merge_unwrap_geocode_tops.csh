@@ -97,10 +97,9 @@
       set n21 = `echo $x01 $incx | awk '{printf("%d",$1/$2)}'`
       set n1 = `echo $n12 $n21 | awk '{printf("%d",($1+$2)/2)}'`
       if ($n1 == 0) then
-              echo "WARNING: Stitching position estimated to be zero: replacing with 34"
-              echo "This may not be the most appropriate value for your dataset -- check merged grids carefully"
-              set n1 = ` echo "34" | awk '{print $1}' `
-              set n2 = ` echo "34" | awk '{print $1}' `
+              echo "WARNING: Stitching position estimated to be zero"
+              echo "Check merged grids carefully"
+              set n1 = ""
       endif
       set n2 = 0
       rm tmp.grd
@@ -129,10 +128,10 @@
       set n31 = `echo $x03 $incx | awk '{printf("%d",$1/$2)}'`
       set n2 = `echo $n22 $n31 | awk '{printf("%d",($1+$2)/2)}'`
       if ($n2 == 0) then
-              echo "WARNING: Stitching positions estimated to be zero: replacing with 34  34"
-              echo "This may not be the most appropriate value for your dataset -- check merged grids carefully"
-              set n1 = ` echo "34" | awk '{print $1}' `
-              set n2 = ` echo "34" | awk '{print $1}' `
+              echo "WARNING: Stitching positions estimated to be zero"
+              echo "Check merged grids carefully"
+              set n1 = ""
+              set n2 = ""
       endif
       rm tmp.grd
     else
