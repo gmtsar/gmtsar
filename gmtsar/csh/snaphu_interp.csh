@@ -62,6 +62,10 @@ if (-f mask_def.grd) then
     cp mask_def.grd mask_def_patch.grd
   endif
   gmt grdmath corr_patch.grd mask_def_patch.grd MUL = corr_patch.grd $V
+  # if landmask is available - then mask out corr values higher than the corr threshold in the water areas
+  if (-f landmask_ra_patch.grd) then
+    gmt grdmath corr_patch.grd landmask_ra_patch.grd MUL = corr_patch.grd
+  endif
 endif
 
 #
