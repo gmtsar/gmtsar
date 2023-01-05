@@ -55,70 +55,78 @@ awk 'NR==1{print $0}' $input_file | awk -F, '{for (i=1;i<=NF;i++) print "../"$i}
 
 export now_dir=`pwd`
 
-  parallel_func() {
-    line=$1
-    dir_name=`echo $line | awk -F, '{print $1}' | awk -F: '{print $1}' | awk -F"/" '{print $(NF-1)}'`
+parallel_func() {
+  line=$1
+  dir_name=`echo $line | awk -F, '{print $1}' | awk -F: '{print $1}' | awk -F"/" '{print $(NF-1)}'`
+  mkdir $dir_name
+  cd $dir_name
+  echo $line | awk -F, '{for (i=1;i<=NF;i++) print "../"$i}' > tmp.filelist
+  paste ../tmpm.filelist tmp.filelist | awk '{print $1","$2}' > tmp
+  rm tmp.filelist
 
-    mkdir $dir_name
-    cd $dir_name
-    echo $line | awk -F, '{for (i=1;i<=NF;i++) print "../"$i}' > tmp.filelist
-    paste ../tmpm.filelist tmp.filelist | awk '{print $1","$2}' > tmp
-    rm tmp.filelist
+  for f_name in `awk '{print $0}' < tmp`
+  do
+      mm=`echo $f_name | awk -F, '{print $1}'`
+      pth=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $1}'`
+      f1=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $2}'`
+      f2=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $3}'`
+      cp $mm ./supermaster.PRM
+      rshift=`grep rshift $pth$f1 | tail -1 | awk '{print $3}'`
+      update_PRM supermaster.PRM rshift $rshift
+      fs1=`grep first_sample supermaster.PRM | awk '{print $3}'`
+      fs2=`grep first_sample $pth$f1 | awk '{print $3}'`
+      [[ "$fs2" > "$fs1" ]] && update_PRM supermaster.PRM first_sample $fs2
+      cp supermaster.PRM $pth
+      echo $pth":supermaster.PRM:"$f2 >> tmp.filelist
+  done
 
-    for f_name in `awk '{print $0}' < tmp`
-    do
-        mm=`echo $f_name | awk -F, '{print $1}'`
-        pth=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $1}'`
-        f1=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $2}'`
-        f2=`echo $f_name | awk -F, '{print $2}' | awk -F: '{print $3}'`
-        cp $mm ./supermaster.PRM
-        rshift=`grep rshift $pth$f1 | tail -1 | awk '{print $3}'`
-        update_PRM supermaster.PRM rshift $rshift
-        fs1=`grep first_sample supermaster.PRM | awk '{print $3}'`
-        fs2=`grep first_sample $pth$f1 | awk '{print $3}'`
-        [[ "$fs2" > "$fs1" ]] && update_PRM supermaster.PRM first_sample $fs2
-        cp supermaster.PRM $pth
-        echo $pth":supermaster.PRM:"$f2 >> tmp.filelist
-    done
+  [[ -f ../trans.dat ]] && ln -s ../trans.dat .
+  [[ -f ../raln.grd ]] && ln -s ../raln.grd .
+  [[ -f ../ralt.grd ]] && ln -s ../ralt.grd .
+  [[ -f ../landmask_ra.grd ]] && ln -s ../landmask_ra.grd .
+  ln -s ../dem.grd .
+  ln -s ../"$config_file" .
+  rm tmp
 
-    [[ -f ../trans.dat ]] && ln -s ../trans.dat .
-    [[ -f ../raln.grd ]] && ln -s ../raln.grd .
-    [[ -f ../ralt.grd ]] && ln -s ../ralt.grd .
-    [[ -f ../landmask_ra.grd ]] && ln -s ../landmask_ra.grd .
-    ln -s ../dem.grd .
-    ln -s ../"$config_file" .
-    rm tmp
+  echo `pwd`
+  merge_unwrap_geocode_tops.csh tmp.filelist "$config_file" "$det_stitch"
 
-    echo `pwd`
-    merge_unwrap_geocode_tops.csh tmp.filelist "$config_file" "$det_stitch"
+  if [[ ! -f ../trans.dat && -f trans.dat ]]
+  then
+    mv trans.dat ../
+    ln -s ../trans.dat .
+  fi
 
-    if [[ ! -f ../trans.dat && -f trans.dat ]]
-    then
-      mv trans.dat ../
-      ln -s ../trans.dat .
-    fi
+  if [[ ! -f ../landmask_ra.grd && -f landmask_ra.grd ]]
+  then
+    mv landmask_ra.grd  ../
+    ln -s ../landmask_ra.grd .
+  fi
 
-    if [[ ! -f ../landmask_ra.grd && -f landmask_ra.grd ]]
-    then
-      mv landmask_ra.grd  ../
-      ln -s ../landmask_ra.grd .
-    fi
+  if [[ ! -f ../raln.grd && -f raln.grd ]]
+  then
+    mv raln.grd ../
+    ln -s ../raln.grd .
+  fi
 
-    if [[ ! -f ../raln.grd && -f raln.grd ]]
-    then
-      mv raln.grd ../
-      ln -s ../raln.grd .
-    fi
+  if [[ ! -f ../ralt.grd && -f raln.grd ]]
+  then
+    mv ralt.grd ../
+    ln -s ../ralt.grd .
+  fi
 
-    if [[ ! -f ../ralt.grd && -f raln.grd ]]
-    then
-      mv ralt.grd ../
-      ln -s ../ralt.grd .
-    fi
+  cd $now_dir
+}
 
-    cd $now_dir
-  }
+export -f parallel_func
 
-  export -f parallel_func
+# In case there is no trans.dat,
+# run only on a single product to create it
+# before parallel merging
 
-  parallel parallel_func :::: $input_file
+if [[ ! -f ./trans.dat ]]
+then
+  cat $input_file | head -n 1 | parallel parallel_func
+fi
+
+parallel parallel_func :::: $input_file
