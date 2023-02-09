@@ -1,0 +1,695 @@
+#! /usr/bin/env python3
+"""
+# p2p_processing is part of pyGMTSAR. 
+# It is migrated from p2p_processing.csh.
+# Dunyu Liu, 20230202.
+
+# p2p_processing contains python functions to automatically perform two-path processing on raw(1.0)/SLC(1.1) data
+# Syntax: p2p_processing SAT Image1 Image2
+"""
+
+import sys, os, re, configparser
+
+def check_file_report(fn):
+    # Check if a file exists.
+    # If not, print error message.
+    #
+    if os.path.isfile(fn) == False:
+        print(" no file " + fn)
+        sys.exit()
+
+def grep_value(fn, s): 
+    # grep_value performs similar functions to unix grep. 
+    # Given a file name - fn, and a character string - s, find the value after "=".
+    # The character should be unique in file fn.
+    #
+    with open(fn, 'r') as f:
+        for line in f.readlines():
+            if re.search(s, line):
+                print(line)
+                val = line.split()[2]
+    return val
+
+def p2p_processing():
+    # 
+    # check the number of arguments
+    n = len(sys.argv)
+    # If using p2p_processing A B C D, then a total of 5 input parameters are expected.
+    
+    if n!=4 and n!=5:   
+        print( "")
+        print( "Usage: p2p_processing.csh SAT master_image aligned_image [configuration_file] ")
+        print( "")
+        print( "Example: p2p_processing.csh ALOS IMG-HH-ALPSRP055750660-H1.0__A IMG-HH-ALPSRP049040660-H1.0__A [config.alos.txt]")
+        print( "")
+        print( "    Put the data and orbit files in the raw folder, put DEM in the topo folder")
+        print( "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN")
+        print( "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, TSX, RS2, GF3")
+        print( "")
+        print( "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc")
+        print( "")
+        print( "    If the configuration file is left blank, the program will generate one ")
+        print( "    with default parameters ")
+        print( "")
+        sys.exit("Error: necessary input file(s) not provided ... ...")
+
+    # start
+    # make sure the config exist
+    if n==5:
+        if os.path.isfile(sys.argv[4]) == False:
+            print(" no configure file: ")
+            print(" Leave it blank to generate config file with default values.")
+            sys.exit("Error: the 4th input file should be the config.ini.")
+    
+    #
+    # read parameters from the configure file
+    #
+    
+    SAT = sys.argv[1]
+    print("Satellite is ", SAT)
+
+    if n==5:
+        conf = sys.argv[4]
+    else:
+        print('create configuration file config.ini ... ...')
+        os.system("pop_config " + SAT)
+    
+    print('Load config.ini ... ...')
+    config   = configparser.ConfigParser()
+    config.read('config.ini')
+    stage    = int(config['params']['proc_stage'])
+    s_stage  = config['params']['skip_stage']
+    #s_stage= config
+    print('proc_stage = ', stage)
+    print('skip_stage = ', s_stage)
+
+    skip_1   = 0
+    skip_2   = 0
+    skip_3   = 0
+    skip_4   = 0
+    skip_5   = 0
+    skip_6   = 0
+    
+    if s_stage != None:
+        print(" ")
+        print("Skipping stage ", s_stage, ' ... ...')
+    
+    tmp = config['params']['skip_master'] # tmp is a string. Needs to convert it to numbers for manipulation later.
+    if tmp == None:
+        skip_master = 0
+    else:
+        skip_master = int(tmp)
+
+    if skip_master == 2:
+        skip_4 = 1
+        skip_5 = 1
+        skip_6 = 1
+        print("Skipping stage 4,5,6 as skip_master is set to 2 ...")
+    print("skip_master = ", skip_master)
+
+    num_patches   = config['params']['num_patches']
+    near_range    = config['params']['near_range']
+    earth_radius  = config['params']['earth_radius']
+    fd            = config['params']['fd1']
+    topo_phase    = int(config['params']['topo_phase'])
+    topo_interp_mode = int(config['params']['topo_interp_mode'])
+
+    if topo_interp_mode == None:
+        topo_interp_mode = 0
+
+    shift_topo    = int(config['params']['shift_topo'])
+    switch_master = int(config['params']['switch_master'])
+    filter        = config['params']['filter_wavelength']
+    compute_phase_gradient = config['params']['compute_phase_gradient']
+    iono          = config['params']['correct_iono']
+    if iono == None:
+        iono = 0
+    
+    iono_filt_rng = config['params']['iono_filt_rng']
+    iono_filt_azi = config['params']['iono_filt_azi']
+    iono_dsamp    = config['params']['iono_dsamp']
+    iono_skip_est = config['params']['iono_skip_est']
+    if config.has_option('params','spec_div') == True:
+        spec_div      = config['params']['spec_div']
+    else:
+        spec_div      = 0
+    if config.has_option('params','spec_mode') == True:
+        spec_mode     = config['params']['spec_mode']
+    else:
+        spec_mode     = None
+    dec           = config['params']['dec_factor']
+    threshold_snaphu  = config['params']['threshold_snaphu']
+    threshold_geocode = config['params']['threshold_geocode']
+    region_cut    = config['params']['region_cut']
+    mask_water    = config['params']['mask_water']
+    if config.has_option('params','switch_land')  == True:
+        switch_land   = config['params']['switch_land']
+    else: 
+        switch_land   = None
+    defomax       = config['params']['defomax']
+    if config.has_option('params','range_dec')    == True:
+        range_dec     = config['params']['range_dec']
+    else:
+        range_dec     = None
+    if config.has_option('params','range_dec')    == True:
+        azimuth_dec   = config['params']['azimuth_dec']
+    else:
+        azimuth_dec   = None
+    if config.has_option('params', 'SLC_factor')  == True:
+        SLC_factor    = config['params']['SLC_factor']
+    else: 
+        SLC_factor    = None
+    near_interp   = config['params']['near_interp']
+    master        = sys.argv[2]
+    aligned       = sys.argv[3]
+
+    print(config.items('params'))
+    print(" ")
+
+    # 
+    # Combine preprocess paramters
+    #
+
+    commandline = ""
+    if (earth_radius == None) == False:
+        commandline = " -radius " + earth_radius
+    if (num_patches  == None) == False:
+        commandline = " -npatch " + num_patches
+    if (SLC_factor   == None) == False:
+        commandline = " -SLC_factor " + SLC_factor
+    if (spec_div     == 0)    == False:
+        commandline = " -ESD " + spec_mode
+    if (skip_master  == None) == False:
+        commandline = " -skip_master " + str(skip_master)
+
+    #############################
+    # 1 - start from preprocess #
+    #############################
+    #
+    #   make sure the files exist
+    #
+    
+    if stage == 1 and skip_1 == 0:
+        print(" ")
+        print(" PREPROCESS - START ")
+        print(" ")
+        print(" Working on images " + master + " " + aligned + " ...")
+        if SAT=="ALOS" or SAT=="ALOS2" or SAT=="ALOS_SLC" or SAT=="ALOS_SCAN":
+            if os.path.isfile("raw/"+master) == False:
+                print(" no file raw/" + master)
+                sys.exit()
+            if os.path.isfile("raw/"+aligned) == False:
+                print(" no file raw/" + aligned)
+                sys.exit()
+        elif SAT == "ENVI_SLC":
+            if os.path.isfile("raw/"+master+".N1") == False and \
+               os.path.isfile("raw/"+master+".E1") == False and \
+               os.path.isfile("raw/"+master+".E2") == False:
+                print(" no file raw/" + master)
+                sys.exit()
+            if os.path.isfile("raw/"+aligned+".N1") == False and \
+               os.path.isfile("raw/"+aligned+".E1") == False and \
+               os.path.isfile("raw/"+aligned+".E2") == False:
+                print(" no file raw/" + aligned)
+                sys.exit()
+        elif SAT == "ERS":
+            if os.path.isfile("raw/"+master+".dat") == False:
+                print(" no file raw/" + master + ".dat")
+                sys.exit()
+            if os.path.isfile("raw/"+aligned+".dat") == False:
+                print(" no file raw/" + aligned + ".dat")
+                sys.exit()
+            if os.path.isfile("raw/"+master+".ldr") == False:
+                print(" no file raw/" + master + ".ldr") 
+                sys.exit()
+            fn = "raw/"+aligned+".ldr"
+            if os.path.isfile(fn) == False:
+                print(" no file " + fn)
+                sys.exit()
+        elif SAT == "ENVI":
+            check_file_report("raw/"+master+".baq")
+            check_file_report("raw/"+aligned+".baq")
+        elif SAT == "S1_STRIP" or SAT == "S1_TOPS":   
+            check_file_report("raw/" + master  + ".xml")
+            check_file_report("raw/" + master  + ".tiff")
+            check_file_report("raw/" + aligned + ".xml")
+            check_file_report("raw/" + aligned + ".tiff")
+            if SAT == "S1_TOPS":
+                check_file_report("raw/" + master  + ".EOF")
+                check_file_report("raw/" + aligned + ".EOF")
+        elif SAT == "CSK_RAW" or SAT == "CSK_SLC":
+            check_file_report("raw/" + master  + ".h5")
+            check_file_report("raw/" + aligned + ".h5")
+        elif SAT == "RS2":
+            check_file_report("raw/" + master  + ".xml")
+            check_file_report("raw/" + master  + ".tif")
+            check_file_report("raw/" + aligned + ".xml")
+            check_file_report("raw/" + aligned + ".xml")
+        elif SAT == "TSX":
+            check_file_report("raw/" + master  + ".xml") 
+            check_file_report("raw/" + aligned + ".xml") 
+            check_file_report("raw/" + master  + ".cos") 
+            check_file_report("raw/" + aligned + ".cos")
+        elif SAT == "GF3":
+            check_file_report("raw/" + master  + ".xml") 
+            check_file_report("raw/" + aligned + ".xml")
+
+            check_file_report("raw/" + master  + ".tiff") 
+            check_file_report("raw/" + aligned + ".tiff")
+    
+
+    # 
+    # Start preprocessing
+    # 
+    if SAT == "S1_TOPS":
+        print("Old names:", master, aligned)
+        master   = "S1_" + master[15:15+8] + "_" + master[24,24+6] + "_F" + master[6:7]
+        aligned  = "S1_" + aligned[15:15+8] + "_" + aligned[24,24+6] + "_F" + aligned[6:7]
+        print("New names:", master, aligned)
+    if skip_master == 0 or skip_master == 2:
+        os.system("rm -f raw/"+ master + ".PRM*")
+        os.system("rm -f raw/"+ master + ".SLC")
+        os.system("rm -f raw/"+ master + ".LED")
+    if skip_master == 0 or skip_master == 1:
+        os.system("rm -f raw/"+ aligned + ".PRM*")
+        os.system("rm -f raw/"+ aligned + ".SLC")
+        os.system("rm -f raw/"+ aligned + ".LED")
+    if SAT =="S1_TOPS":
+        master = sys.argv[2]
+        aligned = sys.argv[3]
+    
+    os.chdir("raw") # os.system("cd raw") didn't work.
+    os.system("pwd")
+
+    cmd = "pre_proc.csh " + SAT + " " + master + " " + aligned + " " + commandline
+    print(cmd)
+    os.system(cmd)
+
+    os.chdir("..")
+    os.system("pwd")
+
+    print(" ")
+    print("PREPROCESS - END")
+    print(" ")
+
+    #############################################
+    # 2 - start from focus and align SLC images #
+    #############################################
+    #
+
+    os.system("mkdir -p SLC")
+    if iono == 1:
+        os.system("mkdir -p SLC_L")
+        os.system("mkdir -p SLC_H")
+
+    if SAT == "S1_TOPS":
+        master  = "S1_" + master[15:15+8] + "_" + master[24,24+6] + "_F" + master[6:7]
+        aligned  = "S1_" + aligned[15:15+8] + "_" + aligned[24,24+6] + "_F" + aligned[6:7]
+
+    if stage <=2 and skip_2 ==0:
+        if skip_master == 0 or skip_master == 2:
+            os.system("rm -f SLC/" + master + ".PRM*")
+            os.system("rm -f SLC/" + master + ".SLC")
+            os.system("rm -f SLC/" + master + ".LED")
+        if skip_master == 0 or skip_master == 1:
+            os.system("rm -f SLC/" + aligned + ".PRM*")
+            os.system("rm -f SLC/" + aligned + ".SLC")
+            os.system("rm -f SLC/" + aligned + ".LED")
+        if iono == 1:
+            if skip_master == 0 or skip_master == 2:
+                os.system("rm -f SLC/" + sys.argv[2] + ".tiff")
+                os.system("rm -f SLC/" + sys.argv[2] + ".xml")
+                os.system("rm -f SLC/" + sys.argv[2] + ".EOF")
+
+                os.system("rm -f SLC_L/" + master + ".PRM*")
+                os.system("rm -f SLC_L/" + master + ".SLC")
+                os.system("rm -f SLC_L/" + master + ".LED")
+        
+                os.system("rm -f SLC_L/" + sys.argv[2] + ".tiff")
+                os.system("rm -f SLC_L/" + sys.argv[2] + ".xml")
+                os.system("rm -f SLC_L/" + sys.argv[2] + ".EOF")
+
+                os.system("rm -f SLC_H/" + master + ".PRM*")
+                os.system("rm -f SLC_H/" + master + ".SLC")
+                os.system("rm -f SLC_H/" + master + ".LED")
+         
+                os.system("rm -f SLC_H/" + sys.argv[2] + ".tiff")
+                os.system("rm -f SLC_H/" + sys.argv[2] + ".xml")
+                os.system("rm -f SLC_H/" + sys.argv[2] + ".EOF")
+            
+            if skip_master == 0 or skip_master == 1:
+                os.system("rm -f SLC/" + sys.argv[3] + ".tiff")
+                os.system("rm -f SLC/" + sys.argv[3] + ".xml")
+                os.system("rm -f SLC/" + sys.argv[3] + ".EOF")
+
+                os.system("rm -f SLC_L/" + aligned + ".PRM*")
+                os.system("rm -f SLC_L/" + aligned + ".SLC")
+                os.system("rm -f SLC_L/" + aligned + ".LED")
+        
+                os.system("rm -f SLC_L/" + sys.argv[3] + ".tiff")
+                os.system("rm -f SLC_L/" + sys.argv[3] + ".xml")
+                os.system("rm -f SLC_L/" + sys.argv[3] + ".EOF")
+
+                os.system("rm -f SLC_H/" + aligned + ".PRM*")
+                os.system("rm -f SLC_H/" + aligned + ".SLC")
+                os.system("rm -f SLC_H/" + aligned + ".LED")
+         
+                os.system("rm -f SLC_H/" + sys.argv[3] + ".tiff")
+                os.system("rm -f SLC_H/" + sys.argv[3] + ".xml")
+                os.system("rm -f SLC_H/" + sys.argv[3] + ".EOF")
+            
+
+    # 
+    # focus and align SLC images
+    #
+
+    print(" ")
+    print("ALIGN.CSH - START")
+    print(" ")
+
+    os.chdir("SLC")
+
+    if SAT != "S1_TOPS":
+        if SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
+            if skip_master == 0 or skip_master == 2:
+                os.system("cp ../raw/" + master + ".PRM .")
+                os.system("ln -sf ../raw/" + master + ".raw .")
+                os.system("ln -sf ../raw/" + master + ".LED .")
+
+            if skip_master == 0 or skip_master == 1:
+                os.system("cp ../raw/" + aligned + ".PRM .")
+                os.system("ln -sf ../raw/" + aligned + ".raw .")
+                os.system("ln -sf ../raw/" + aligned + ".LED .")
+                #if iono == 1:
+                    # set chirp extension to zero for ionospheric phase estimation.
+                    # !!! not coded yet.
+
+        else:
+            os.system("cp ../raw/" + master + ".PRM .")
+            os.system("ln -sf ../raw/" + master + ".SLC .")
+            os.system("ln -sf ../raw/" + master + ".LED .")
+
+            os.system("cp ../raw/" + aligned + ".PRM .")
+            os.system("ln -sf ../raw/" + aligned + ".SLC .")
+            os.system("ln -sf ../raw/" + aligned + ".LED .")
+        #
+        if SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
+            if skip_master == 0 or skip_master == 2:
+                cmd = "sarp.csh " + master + ".PRM"
+                os.system(cmd)
+            if skip_master == 0 or skip_master == 1:
+                cmd = "sarp.csh " + aligned + ".PRM"
+
+        # if iono == 1:
+        
+        #
+        if skip_master == 0 or skip_master == 1:
+            print("Align RS2")
+            os.system("cp " + aligned + ".PRM " + aligned + ".PRM0" )
+            cmd = "SAT_baseline " + master + ".PRM " + aligned + ".PRM0 >> " + aligned + ".PRM"
+            os.system(cmd)
+
+            if SAT == "ALOS2_SCAN":
+                cmd = "xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 32 -ysearch 256 -nx 32 -ny 128"
+                os.system(cmd)
+                #
+                #
+            elif SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
+                cmd = "xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50"
+                os.system(cmd)
+                cmd = "fitoffset.csh 3 3 freq_xcorr.dat 18 >> " + aligned + ".PRM"
+                os.system(cmd)
+            else: 
+                cmd = "xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 128 -ysearch 128 -nx 32 -ny 128"
+                os.system(cmd)
+                cmd = "fitoffset.csh 2 2 freq_xcorr.dat 18 >> " + aligned + ".PRM"
+                os.system(cmd)
+        
+            cmd = "resamp " + master + ".PRM " + aligned + ".PRM " + aligned + ".PRMresamp " + aligned + ".SLCresamp 4"
+            os.system(cmd)
+            os.remove(aligned + ".SLC")
+            os.system("mv " + aligned + ".SLCresamp " + aligned + ".SLC")
+            os.system("cp " + aligned + ".PRMresamp " + aligned + ".PRM")
+            
+            #if iono == 1:
+            
+    elif SAT == "S1_TOPS":
+        if skip_master == 0 or skip_master == 2:
+            os.system("cp ../raw/" + master + ".PRM .")
+            os.system("ln -sf ../raw/" + master + ".SLC .")
+            os.system("ln -sf ../raw/" + master + ".LED .")
+
+        if skip_master == 0 or skip_master == 1:
+            os.system("cp ../raw/" + aligned + ".PRM .")
+            os.system("ln -sf ../raw/" + aligned + ".SLC .")
+            os.system("ln -sf ../raw/" + aligned + ".LED .")
+            
+        # if iono == 1:
+
+    ###
+    if region_cut != None:
+        print("Cutting SLC image to " + region_cut)
+        if skip_master == 0 or skip_master == 2:
+            os.system("cut_slc " + master + ".PRM junk1 " + region_cut)
+            os.system("mv junk1.PRM " + master + ".PRM")
+            os.system("mv junk1.SLC " + master + ".SLC")
+
+        if skip_master == 0 or skip_master == 1:
+            os.system("cut_slc " + aligned + ".PRM junk2 " + region_cut)
+            os.system("mv junk2.PRM " + aligned + ".PRM")
+            os.system("mv junk2.SLC " + aligned + ".SLC")
+
+        # if iono == 1
+
+    os.chdir("..")
+    print(" ")
+    print("ALIGN.CSH - END")
+    print(" ")
+
+    ###############################
+    # 3 - start from make topo_ra #
+    ###############################
+    #
+    if topo_phase == 1:
+        print(topo_phase)
+    if stage <=3 and skip_3 == 0:
+    # 
+    # clean up
+    #
+        os.system("cleanup.csh topo")
+        
+        # 
+        # make topo_ra if there is dem.grd
+        #
+
+        if topo_phase == 1: 
+            print(" ")
+            print("DEM2TOPO_RA.CSH - START")
+            print("USER SHOULD PROVIDE DEM FILE")
+            os.chdir("topo")
+            os.system("cp ../SLC/" + master + ".PRM master.PRM")
+            os.system("ln -sf ../raw/" + master + ".LED .")
+            if os.path.isfile("dem.grd") == True:
+                if topo_interp_mode == 1:
+                    os.system("dem2topo_ra.csh master.PRM dem.grd 1")
+                else:
+                    os.system("dem2topo_ra.csh master.PRM dem.grd")
+            else:
+                print("no DEM file found: ", dem.grd)
+                sys.exit(1)
+
+            os.chdir("..")
+            print("DEM2TOPO_RA.CSH - END")
+        
+            #
+            # shift topo_ra
+            #
+            if shift_topo == 1:
+                print(" ")
+                print("OFFSET_TOPO - START")
+                os.chdir("SLC")
+                # rng_samp_rate =
+                # rng =
+                os.system("slc2amp.csh " + master + ".PRM " + rmg + " amp-" + master + ".grd")
+                os.chdir("..")
+                os.chdir("topo")
+                os.system("ln -sf ../SLC/amp-"+master+".grd .")
+                os.system("offset_topo amp-"+master+".grd topo_ra.grd 0 0 7 topo_shift.grd")
+                os.chdir("  ")
+                print("OFFSET_TOPO - END")
+            elif shift_topo == 0:
+                print("NO TOPO_RA SHIFT ")
+            else:
+                print("Wrong parameter: shift_topo " + shift_topo)
+                sys.exit(1)
+        elif topo_phase == 0:
+            print("NO TOPO_RA is SUBSTRACTED")
+        else:
+            print("Wrong parameter: topo_phase " + topo_phase)
+            sys.exit(1)
+
+    ################################################
+    # 4 -start from make and filter interferograms #
+    ################################################
+    #
+
+    #
+    # select the master
+    #
+
+    if switch_master == 0:
+        ref = master
+        rep = aligned
+    elif switch_master == 1:
+        ref = aligned
+        rep = master
+    else:
+        print("Wrong parameter: switch_master " + switch_master)
+
+
+    if stage <= 4 and skip_4 == 0:
+    # 
+    # clean up
+    #
+        os.system("mkdir -p intf")
+        os.system("cleanup.csh intf")
+
+        # 
+        # make and filter interferograms
+        #
+
+        print(" ")
+        print("INTF.CSH, FILTER.CSH - START")
+        
+        os.chdir("intf")
+        ref_id = int(float(grep_value("../raw/"+ref+".PRM", "SC_clock_start")))
+        rep_id = int(float(grep_value("../raw/"+rep+".PRM", "SC_clock_start")))
+
+        print("ref_id = ", ref_id)
+        print("rep_id = ", rep_id)
+
+        os.system("mkdir " + str(ref_id) + "_" + str(rep_id))
+    
+        os.chdir(str(ref_id) + "_" + str(rep_id))
+
+        os.system("ln -sf ../../SLC/"+ref + ".LED .")
+        os.system("ln -sf ../../SLC/"+rep + ".LED .")
+        os.system("ln -sf ../../SLC/"+ref + ".SLC .")
+        os.system("ln -sf ../../SLC/"+rep + ".SLC .")
+        
+        os.system("cp ../../SLC/" + ref + ".PRM .")
+        os.system("cp ../../SLC/" + rep + ".PRM .")
+        
+        if topo_phase == 1:
+            if shift_topo == 1:
+                os.system("ln -s ../../topo/topo_shift.grd .")
+                os.system("intf.csh " + ref + ".PRM " + rep + ".PRM -topo topo_shift.grd")
+                if range_dec == None and azimuth_dec == None:
+                    cmd = "filter.csh " + ref + ".PRM " + rep + ".PRM " + str(filter) + " " + str(dec) + " " + str(compute_phase_gradient)
+                    print(cmd)
+                    os.system(cmd)
+            else:
+
+                os.system("ln -s ../../topo/topo_ra.grd .")
+                os.system("intf.csh " + ref + ".PRM " + rep + ".PRM -topo topo_ra.grd")
+                if range_dec == None and azimuth_dec == None:
+                    cmd = "filter.csh " + ref + ".PRM " + rep + ".PRM " + str(filter) + " " + str(dec) + " " + str(compute_phase_gradient)
+                    print(cmd)
+                    os.system(cmd)
+
+        else:
+            print("NO TOPOGRAPHIC PHASE REMOVAL PORFORMED")
+            os.system("intf.csh " + ref + ".PRM " + rep + ".PRM")
+
+            if range_dec == None and azimuth_dec == None:
+                cmd = "filter.csh " + ref + ".PRM " + rep + ".PRM " + str(filter) + " " + str(dec) + " " + str(compute_phase_gradient)
+                print(cmd)
+                os.system(cmd)
+        os.chdir("../..")
+        
+        #iono
+        
+        print("INTF.CSH, FILTER.CSH - END")
+
+    ###############################
+    # 5 - start from unwrap phase #
+    ###############################
+
+    if stage <=5 and skip_5 == 0:
+        if threshold_snaphu != 0:
+            os.chdir("intf")
+            ref_id = int(float(grep_value("../raw/"+ref+".PRM", "SC_clock_start")))
+            rep_id = int(float(grep_value("../raw/"+rep+".PRM", "SC_clock_start")))
+            os.chdir(str(ref_id) + "_" + str(rep_id))
+        
+            #
+            # landmark
+            #
+
+            if mask_water == 1 or switch_land == 1:
+                r_cut = "gmt grdinfo phase.grd -I- | cut -c3-20"
+                os.chdir("../../topo")
+                if os.path.isfile(landmask_ra.grd) == False:
+                    os.system("landmask.csh " + r_cut)
+
+                os.chdir("../intf")
+                os.chdir(str(ref_id) + " " + str(rep_id))
+                os.system("ln -sf ../../topo/landmask_ra.grd .")
+
+            print(" ")
+            print("SNAPHU.CSH - START")
+            print("threshold_snaphu: ", threshold_snaphu)
+
+            if near_interp == 1:
+                os.system("snaphu_interp.csh " + str(threshold_snaphu) + " " + str(defomax))
+            else:
+                os.system("snaphu.csh " + str(threshold_snaphu) + " " + str(defomax))
+
+            print("SNAPHU.CSH - END")
+            os.chdir("../..")
+        else:
+            print(" ")
+            print("SKIP UNWRAP PAHSE")
+
+
+    ##########################
+    # 6 - start from geocode #
+    ##########################
+
+    if stage <=6 and skip_6 == 0:
+        if threshold_geocode != 0:
+            os.chdir("intf")
+            ref_id = int(float(grep_value("../raw/" + ref + ".PRM", "SC_clock_start"))) 
+            rep_id = int(float(grep_value("../raw/" + rep + ".PRM", "SC_clock_start")))
+            os.chdir(str(ref_id) + "_" + str(rep_id))
+            print(" ")
+            print("GEOCODE.CSH - START")
+            if os.path.isfile("rain.grd") == True: 
+                os.remove("rain.grd")
+            if os.path.isfile("ralt.grd") == True:
+                os.remove("ralt.grd")
+            if os.path.isfile("trans.dat") == True:
+                os.remove("trans.dat")
+            if topo_phase == 1:
+                os.system("ln -sf ../../topo/trans.dat .")
+                print("threshold_geocode: ", threshold_geocode)
+                os.system("geocode.csh " + str(threshold_geocode))
+            else:
+                print(" topo_ra is needed to geocode")
+                sys.exit(1)
+
+            print("GEOCODE.CSH - END")
+            os.chdir("../..")
+        else:
+            print(" ")
+            print("SKIP_GEOCODE")
+            print(" ")
+
+    print("Finishing p2p_processing ... ...")
+        
+
+def _main_func(description):
+    p2p_processing()
+
+if __name__ == "__main__":
+    _main_func(__doc__)
