@@ -204,6 +204,13 @@ void read_optional_args(void *API, int argc, char **argv, struct PRM *tp, int *t
 	}
 }
 
+fcomplex Cexpd (double theta) {
+  fcomplex z;
+  z.r = cos(theta);
+  z.i = sin(theta);
+  return z;
+}
+
 int main(int argc, char **argv) {
 	int j, k, istart;
 	int topoflag, modelflag;
@@ -519,7 +526,7 @@ if (topoflag > 0) {
 				                   integers */
 				pha = pha - M->data[xm + M->header->n_columns * ym];
 			}
-			pshif = Cexp(pha);
+			pshif = Cexpd(pha);
 			intfp[k] = Cmul(intfp[k], pshif);
 		}
 }
