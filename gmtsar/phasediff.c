@@ -526,7 +526,8 @@ if (topoflag > 0) {
 				                   integers */
 				pha = pha - M->data[xm + M->header->n_columns * ym];
 			}
-			pshif = Cexpd(pha);
+			// pshif = Cexpd(pha); switch to this if one wants calculation with further precision
+			pshif = Cexp(pha);
 			intfp[k] = Cmul(intfp[k], pshif);
 		}
 }
