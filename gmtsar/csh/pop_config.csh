@@ -70,12 +70,12 @@ if ($SAT == "S1_TOPS") then
 endif
 echo ""
 
-if ($SAT == "ALOS_SLC") then
+if ($SAT == "ALOS_SLC" || $SAT == "ALOS2") then
   echo "# SLC scale factor to convert float to int "
   echo "SLC_factor = 0.02"
   echo ""
 else 
-  if ($SAT == "ALOS2" || $SAT == "ALOS2_SCAN") then
+  if ($SAT == "ALOS2_SCAN") then
     echo "# SLC scale factor to convert float to int"
     echo "SLC_factor = 2.0"
     echo ""
