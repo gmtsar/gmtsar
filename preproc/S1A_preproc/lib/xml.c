@@ -430,15 +430,18 @@ int cat_nums(char *str_out, char *str) {
 			str_out[j++] = str[i];
 		}
         // to account for single digits time such as 5:6:7.123456
-        else if (str[i] == 'T' || str[i] == ':' || str[i] == '.') {
-            sep2 = i;
-            if (sep2 - sep1 == 2) {
-              str_out[j] = str_out[j-1];
-              str_out[j-1] = '0';
-              j++;
-              sep2++;
+        else if (j > 0) {
+            if (str[i] == 'T' || str[i] == ':' || str[i] == '.') {
+              //printf("correction %c (%d)\n",str[i],i);
+              sep2 = i;
+              if (sep2 - sep1 == 2) {
+                str_out[j] = str_out[j-1];
+                str_out[j-1] = '0';
+                j++;
+                sep2++;
+              }
+              sep1 = i;
             }
-            sep1 = i;
         }
 		i++;
 	}

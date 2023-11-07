@@ -26,7 +26,7 @@ int pop_led(tree *, state_vector *);
 int write_orb(state_vector *sv, FILE *fp, int);
 int write_slc(TIFF *, FILE *, char *);
 
-char *USAGE = "\n\nUsage: make_slc_lt1 name_of_xml_file name_of_tiff_file name_output\n"
+char *USAGE = "\nUsage: make_slc_lt1 name_of_xml_file name_of_tiff_file name_output\n"
               "\nExample: make_slc_lt1 LT1A_MONO_KSC_STRIP2_006353_E112.2_N33.4_20230328_SLC_HH_S2A_0000087472.meta.xml LT1A_MONO_KSC_STRIP2_006353_E112.2_N33.4_20230328_SLC_HH_S2A_0000087472.tiff LT1A_20230328\n"
               "\nOutput: LT1A_20230328.SLC LT1A_20230328.PRM LT1A_20230328.LED\n";
 
