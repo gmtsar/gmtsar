@@ -249,3 +249,8 @@ preproc/GF3_preproc/include
 preproc/GF3_preproc/lib
 preproc/GF3_preproc/src/make_slc_gf3
 preproc/GF3_preproc/src/make_slc_gf3.o
+preproc/ALOS_preproc/ALOS_baseline/ALOS_baseline
+preproc/LT1_preproc/include
+preproc/LT1_preproc/lib
+preproc/LT1_preproc/src/make_slc_lt1
+preproc/LT1_preproc/src/make_slc_lt1.o

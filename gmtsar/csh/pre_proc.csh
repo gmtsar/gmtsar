@@ -421,10 +421,18 @@ echo $commandline
     echo ""
     if ($SAT == "CSK_SLC") then     
       if ($skip_master == 0 || $skip_master == 2) then
-        make_slc_csk $master.h5 $master
+        if ($SLC_factor == 0) then
+          make_slc_csk $master.h5 $master 
+        else
+          make_slc_csk $master.h5 $master $SLC_factor
+        endif
       endif
       if ($skip_master == 0 || $skip_master == 1) then
-        make_slc_csk $aligned.h5 $aligned
+        if ($SLC_factor == 0) then
+          make_slc_csk $aligned.h5 $aligned 
+        else 
+          make_slc_csk $aligned.h5 $aligned $SLC_factor
+        endif
       endif
     else if ($SAT == "TSX") then 
       if ($skip_master == 0 || $skip_master == 2) then

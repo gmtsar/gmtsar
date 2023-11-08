@@ -68,18 +68,19 @@ if ($SAT == "S1_TOPS") then
   echo "# spectral diversity mode, run align_tops_esd.csh to figure out the mode specification"
   echo "spec_mode = 1"
 endif
-echo ""
 
 if ($SAT == "ALOS_SLC" || $SAT == "ALOS2") then
   echo "# SLC scale factor to convert float to int "
   echo "SLC_factor = 0.02"
   echo ""
-else 
-  if ($SAT == "ALOS2_SCAN") then
-    echo "# SLC scale factor to convert float to int"
-    echo "SLC_factor = 2.0"
-    echo ""
-  endif
+else if ($SAT == "ALOS2_SCAN") then
+  echo "# SLC scale factor to convert float to int"
+  echo "SLC_factor = 2.0"
+  echo ""
+else if ($SAT == "CSK_SLC") then
+  echo "# SLC scale factor to convert float to int"
+  echo "SLC_factor = 1.0"
+  echo ""
 endif
 
 echo "################################################"
