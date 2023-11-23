@@ -682,10 +682,9 @@ num)
 
 int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 
-	char str[200];
+	char str[200],c[100],c2[100];
 
 	if (strncmp(T[ct].name, "OutOfSpace", 10) == 0) {
-		char c[100];
 		cat_nums(c, T[ct].name);
 		if (mode == 1) {
 			fprintf(fp, "<%s>\n", STR[(int)str2double(c)]);
@@ -695,15 +694,19 @@ int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 			fprintf(fp, "</%s>\n", str);
 		}
 		else {
-			sscanf(STR[(int)str2double(c)], "%s ", str);
-			if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
-				char c2[100];
-				cat_nums(c2, T[T[ct].firstchild].name);
-				fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], STR[(int)str2double(c2)], str);
-			}
-			else {
-				fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], T[T[ct].firstchild].name, str);
-			}
+            if (T[ct].name[strlen(T[ct].name)-1] == '/') {
+                fprintf(fp, "<%s>\n", T[ct].name);
+            }
+            else {
+			    sscanf(STR[(int)str2double(c)], "%s ", str);
+			    if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
+				    cat_nums(c2, T[T[ct].firstchild].name);
+				    fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], STR[(int)str2double(c2)], str);
+			    }
+			    else {
+				    fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], T[T[ct].firstchild].name, str);
+			    }
+            }
 		}
 	}
 	else {
@@ -715,15 +718,19 @@ int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 			fprintf(fp, "</%s>\n", str);
 		}
 		else {
-			sscanf(T[ct].name, "%s ", str);
-			if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
-				char c2[100];
-				cat_nums(c2, T[T[ct].firstchild].name);
-				fprintf(fp, "<%s>%s</%s>\n", T[ct].name, STR[(int)str2double(c2)], str);
-			}
-			else {
-				fprintf(fp, "<%s>%s</%s>\n", T[ct].name, T[T[ct].firstchild].name, str);
-			}
+            if (T[ct].name[strlen(T[ct].name)-1] == '/') {
+                fprintf(fp, "<%s>\n", T[ct].name);
+            }
+            else {
+			    sscanf(T[ct].name, "%s ", str);
+			    if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
+				    cat_nums(c2, T[T[ct].firstchild].name);
+				    fprintf(fp, "<%s>%s</%s>\n", T[ct].name, STR[(int)str2double(c2)], str);
+			    }
+			    else {
+				    fprintf(fp, "<%s>%s</%s>\n", T[ct].name, T[T[ct].firstchild].name, str);
+			    }
+            }
 		}
 	}
 
