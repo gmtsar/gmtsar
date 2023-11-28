@@ -52,12 +52,12 @@ if ($2 == 1) then
       echo "Finding orbits for ${line}..."
       set date1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print substr($6,1,8)}' `                
       set SAT1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print $1}' `                 
-      set yr = `echo $date1 | awk -F"_" '{print substr($1,1,4)}'`
-      set mo = `echo $date1 | awk -F"_" '{print substr($1,5,2)}'`
 
       # get the orbit file names 
       set n1 = ` date --date="$date1 - 1 day" +%Y%m%d `
       set n2 = ` date --date="$date1 + 1 day" +%Y%m%d `
+      set yr = `echo $n1 | awk -F"_" '{print substr($1,1,4)}'`
+      set mo = `echo $n1 | awk -F"_" '{print substr($1,5,2)}'`
 
       echo "Required orbit file dates: ${n1} to  ${n2}..." 
   
