@@ -1,7 +1,11 @@
 #!/bin/csh -f
-
-# For running on linux machine
-
+#
+# Run on linux machines
+#
+# Written 11/28/2023 by Xiaohua to fix the problem caused by ESA moving its service to
+# fix the problem caused by ESA moving its service to a new website
+#   https://step.esa.int/auxdata/orbits/Sentinel-1
+#
 # Written 04/05/2022 by Katherine Guns with aid from code snippets by Xiaohua Xu 
 # and from ESA's website pages:
 #   https://scihub.copernicus.eu/userguide/BatchScripting
@@ -10,7 +14,7 @@
 
 if ($#argv != 2) then
     echo ""
-    echo "Usage: download_sentinel_orbits_linux.csh safefilelist mode"
+    echo "Usage: download_sentinel_orbits.csh safefilelist mode"
     echo "  Downloads precise or restituted orbits for specific Sentinel-1 *.SAFE data files  "
     echo ""
     echo "safefilelist:"
@@ -24,7 +28,7 @@ if ($#argv != 2) then
     echo "            (only recent data (~last couple weeks) requires restituted"
     echo "            orbits, because precise orbits are not yet finalized)"
     echo ""
-    echo "Example: download_sentinel_orbits_linux.csh SAFEfile.list 1"
+    echo "Example: download_sentinel_orbits.csh SAFEfile.list 1"
     echo ""
     echo "Note: "
     echo "  (1) Files listed in safefilelist should be the .SAFE directory with absolute path."
@@ -39,64 +43,37 @@ endif
 
 if ($2 == 1) then
     echo " Downloading Precise Orbits (POEORB)..."
-    set ii = 0
     #start working with SAFE file list
     foreach line (` awk -F"/" '{print $(NF)}' $1`)   #pull the name of the SAFE file from end of path
-      set orbittype="AUX_POEORB"
+      set orbittype="POEORB"
       echo " "
-      echo "--------------------- "
+      echo "------------------------------------------ "
+      echo " "
       echo "Finding orbits for ${line}..."
-      set date1 = `echo $line | awk -F"_" '{print substr($6,1,8)}' `                
-      set SAT1 = ` echo $line | awk -F"_" '{print $1}' `                 
+      set date1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print substr($6,1,8)}' `                
+      set SAT1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print $1}' `                 
 
-      # get the orbit file names with Linux date utility 
+      # get the orbit file names 
       set n1 = ` date --date="$date1 - 1 day" +%Y%m%d `
       set n2 = ` date --date="$date1 + 1 day" +%Y%m%d `
+      set yr = `echo $n1 | awk -F"_" '{print substr($1,1,4)}'`
+      set mo = `echo $n1 | awk -F"_" '{print substr($1,5,2)}'`
 
       echo "Required orbit file dates: ${n1} to  ${n2}..." 
   
-      # Format SAFEfile date constraints for ESA database query
-      set startorbtime = ` echo $n1 | awk '{printf "%d-%s-%sT00:00:00.000Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
-      set endorbtime = ` echo $n2 | awk '{printf "%d-%s-%sT23:59:59.999Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
+      wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo -O tmp_orbit.html
 
-      echo ${startorbtime}
-      echo ${endorbtime}
+      set orbit = `grep $n1 tmp_orbit.html | grep $n2 | awk -F'"' '{print $2}'`
+      set file = `echo $orbit | awk '{print substr($1,1,length($1)-4)}'`
 
-      echo "Querying ESA POD Hub archive..."
-      # Run the query
-      wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT1}_* AND producttype:${orbittype}"
-
-      echo "Checking query for existing orbit file..."
-      
-      set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
-      set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' ` 
-      
-      grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' > esaID.tmp
-      set IDlinecount = ` wc -l esaID.tmp | awk '{print $1}' `
-      if ( ${IDlinecount} == "2" ) then
-        set esaID = ` grep "uuid" orbitquery.txt | awk 'NR == 2 {print substr($2,13,36)}' `
+      if (! -e $file) then
+        wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo/$orbit
+        unzip $orbit $file
+        rm $orbit
       endif
-      rm esaID.tmp
-      
-      if (! -f $orbit) then
-        if (${esaID} == "") then
-          echo "Query Failed -- possible issues:"
-          echo " (1) couldn't connect to ESA POD hub (check manually)"
-          echo " (2) an orbit file for those dates does not exist yet"
-          echo "     -- check the resistited orbit files             "
-          exit 1
-        else
-          echo "Query successful -- downloading orbit file..."
-          wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
-          echo "...orbit file ${orbit} downloaded"
-        endif  
-      else  
-        echo "...orbit file already exists"
-        echo " "
-      endif
+      rm tmp_orbit.html
     end
-    # clean up
-    rm orbitquery.txt
+      
 endif
 
 #----------------------------
@@ -105,61 +82,45 @@ endif
 
 if ($2 == 2) then
     echo " Downloading temporary Restituted Orbits (RESORB)..."
-    set ii = 0
     #start working with SAFE file list
     foreach line (` awk -F"/" '{print $(NF)}' $1`)   #pull the name of the SAFE file from end of path
-      set orbittype="AUX_RESORB"
+      set orbittype="RESORB"
       echo " "
-      echo "--------------------- "
+      echo "------------------------------------------ "
+      echo " "
       echo "Finding orbits for ${line}..."
-      set date1 = `echo $line | awk -F"_" '{print substr($6,1,8)}' `                
-      set datetime1 = `echo $line | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($6,10,2),substr($6,12,2),substr($6,14,2),substr($6,1,4),substr($6,5,2),substr($6,7,2)}' `                
-      set datetime2 = `echo $line | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($7,10,2),substr($7,12,2),substr($7,14,2),substr($7,1,4),substr($7,5,2),substr($7,7,2)}' `                
-      set SAT1 = ` echo $line | awk -F"_" '{print $1}' `                 
+      set date1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print substr($6,1,8)}' `                
+      set yr = `echo $date1 | awk -F"_" '{print substr($1,1,4)}'`
+      set mo = `echo $date1 | awk -F"_" '{print substr($1,5,2)}'`
+      set datetime1 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($6,10,2),substr($6,12,2),substr($6,14,2),substr($6,1,4),substr($6,5,2),substr($6,7,2)}' ` 
+      set datetime2 = `echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($7,10,2),substr($7,12,2),substr($7,14,2),substr($7,1,4),substr($7,5,2),substr($7,7,2)}' ` 
+      set SAT1 = ` echo $line | awk -F'/' '{print $NF}' | awk -F"_" '{print $1}' `                 
 
-      # get the orbit file names with Linux date utility 
-      set n1 = ` date --date="$datetime1 - 3 hour" +%Y-%m-%dT%H:%M:%S `
-      set n2 = ` date --date="$datetime2 + 3 hour" +%Y-%m-%dT%H:%M:%S `
+      wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo -O tmp_orbit.html
 
-      echo "Required orbit file dates: ${n1} to  ${n2}..." 
-  
-      # Format SAFEfile date constraints for ESA database query
-      set startorbtime = ` echo $n1 | awk '{printf "%s.000Z",$1}' `
-      set endorbtime = ` echo $n2 | awk '{printf "%s.000Z",$1}' ` 
-      
-      echo "Querying ESA POD Hub archive..."
-      # Run the query
-      wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT1}_* AND producttype:${orbittype}"
+      awk -F'"' 'NR>4 {print $2}' tmp_orbit.html | grep $date1 > tmp_orbit.list 
+      set start = `date --date="$datetime1 - 1 hour" +%s`
+      set end = `date --date="$datetime2 + 1 hour" +%s`
+      foreach rec (`cat tmp_orbit.list`)
+        set t1 = `echo $rec | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($7,11,2),substr($7,13,2),substr($7,15,2),substr($7,2,4),substr($7,6,2),substr($7,8,2)}' `
+        set t2 = `echo $rec | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($8,10,2),substr($8,12,2),substr($8,14,2),substr($8,1,4),substr($8,5,2),substr($8,7,2)}'`
+        set tstart = `date --date="$t1" +%s`
+        set tend = `date --date="$t2" +%s`
 
-      echo "Checking query for existing restituted orbit file..."
-      
-      set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
-      set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' `  
-      
-      grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' > esaID.tmp
-      set IDlinecount = ` wc -l esaID.tmp | awk '{print $1}' `
-      if ( ${IDlinecount} == "2" ) then
-        set esaID = ` grep "uuid" orbitquery.txt | awk 'NR == 2 {print substr($2,13,36)}' `
-      endif
-      rm esaID.tmp
-      
-      if (! -f $orbit) then
-        if (${esaID} == "") then
-          echo "Query Failed -- possible issues:"
-          echo " (1) couldn't connect to ESA POD hub (check manually)"
-          echo " (2) an orbit file for those dates does not exist yet"
-          echo " "
-          exit 1
-        else
-          echo "Query successful -- downloading restituted orbit file..."
-          wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
-          echo "...restituted orbit file ${orbit} downloaded"
-        endif  
-      else  
-        echo "...restituted orbit file already exists"
-        echo " "
-      endif
+        set orbit = `echo $rec`
+        set file = `echo $orbit | awk '{print substr($1,1,length($1)-4)}'`
+
+        set crita = `echo $tstart $start | awk '{printf("%d",$1/$2)}'`
+        set critb = `echo $tend $end | awk '{printf("%d",$1/$2)}'`
+
+        if ($crita == 0 && $critb == 1) then
+          if (! -e $file) then
+            wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo/$orbit
+            unzip $orbit $file
+            rm $orbit
+          endif
+        endif
+      end
+      rm tmp_orbit.list tmp_orbit.html
     end
-    # clean up
-    rm orbitquery.txt
 endif
