@@ -12,21 +12,23 @@
  ***************************************************************************/
 
 #include "PRM.h"
-#include "lib_defs.h"
-#include "lib_functions.h"
-#include "stateV.h"
-#include "tiffio.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "ctype.h" 
+#include "gmtsar.h" 
+#include "lib_defs.h" 
+#include "lib_functions.h" 
+#include "stateV.h" 
+#include "tiffio.h" 
+#include <math.h> 
+#include <stdio.h> 
+#include <stdlib.h> 
+#include <string.h> 
 
 int pop_prm(struct PRM *, tree *, char *);
 int pop_led(tree *, state_vector *);
 int write_orb(state_vector *sv, FILE *fp, int);
-int write_slc(TIFF *, FILE *, char *);
+int write_slc(TIFF *, FILE *, char *, double);
 
-char *USAGE = "\nUsage: make_slc_lt1 name_of_xml_file name_of_tiff_file name_output\n"
+char *USAGE = "\nUsage: make_slc_lt1 name_of_xml_file name_of_tiff_file name_output [SLC_factor]\n"
               "\nExample: make_slc_lt1 LT1A_MONO_KSC_STRIP2_006353_E112.2_N33.4_20230328_SLC_HH_S2A_0000087472.meta.xml LT1A_MONO_KSC_STRIP2_006353_E112.2_N33.4_20230328_SLC_HH_S2A_0000087472.tiff LT1A_20230328\n"
               "\nOutput: LT1A_20230328.SLC LT1A_20230328.PRM LT1A_20230328.LED\n";
 
@@ -39,9 +41,15 @@ int main(int argc, char **argv) {
 	tree *xml_tree;
 	state_vector sv[2000];
 	int ch, n = 0, nc = 0, nlmx = 0;
+    double SLC_factor = 1.0;
 
 	if (argc < 4)
 		die(USAGE, "");
+    
+    if (argc == 5) {
+        SLC_factor = atof(argv[4]);
+        printf("Setting SLC_factor to %.2f\n", SLC_factor);
+    }
 
 	if ((XML_FILE = fopen(argv[1], "rb")) == NULL)
 		die("Couldn't open xml file: \n", argv[1]);
@@ -98,19 +106,20 @@ int main(int argc, char **argv) {
 	strcat(tmp_str, ".SLC");
 	if ((OUTPUT_SLC = fopen(tmp_str, "wb")) == NULL)
 		die("Couldn't open slc file: \n", tmp_str);
-	write_slc(TIFF_FILE, OUTPUT_SLC, prm.orbdir);
+	write_slc(TIFF_FILE, OUTPUT_SLC, prm.orbdir, SLC_factor);
 
 	TIFFClose(TIFF_FILE);
 	fclose(OUTPUT_SLC);
 }
 
-int write_slc(TIFF *tif, FILE *slc, char *orbdir) {
+int write_slc(TIFF *tif, FILE *slc, char *orbdir, double SLC_factor) {
 
 	uint32 width, height, widthi;
 	int i, j;
 	uint16 s = 0, nsamples;
 	uint16 *buf;
 	short *tmp;
+    int nclip=0;
 
 	// get the width and the height of the file, make width dividable by 4
 	TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &widthi);
@@ -125,10 +134,19 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir) {
     for (i = 0; i < height; i++) {
     	TIFFReadScanline(tif, buf, i, s);
 		for (j = 0; j < width * 2; j++) {
-				tmp[j] = (short)buf[j];
+            if (SLC_factor == 1.0) {
+                tmp[j] = (short)buf[j];
+            }
+            else {
+                if ((int)(buf[j]*SLC_factor) > I2MAX)
+                    nclip++;
+		        tmp[j] = (short)clipi2((short)buf[j]*SLC_factor);
+            }
+
 		}
 		fwrite(tmp, sizeof(short), width * 2, slc);
     }
+    printf("Number of clipped short int is %d\n",nclip);
 /*
 	if (strcmp(orbdir, "A") == 0) {
 		printf("Fliping upside down for Ascending Image...\n");

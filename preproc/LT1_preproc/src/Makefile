@@ -3,8 +3,8 @@ PROG =  make_slc_lt1
 CSRCS = make_slc_lt1.c
 
 OBJS =  $(CSRCS:.c=.o)
-INCLUDES = -I../include -I../../../gmtsar -I$(TIFF_INC)
-CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lxmlC -L$(TIFF_LIB) -ltiff -lm
+INCLUDES = -I../include -I../../../gmtsar -I$(TIFF_INC) $(GMT_INC)
+CLIBS = -L../../../gmtsar -lgmtsar $(GMT_LIB) -L../lib -lxmlC -L$(TIFF_LIB) -ltiff -lm
 
 $(PROG): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CLIBS) 

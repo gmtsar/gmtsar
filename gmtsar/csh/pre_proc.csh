@@ -461,10 +461,18 @@ echo $commandline
       endif
     else if ($SAT == "LT1") then
       if ($skip_master == 0 || $skip_master == 2) then
-        make_slc_lt1 $master.xml $master.tiff $master
+        if ($SLC_factor == 0) then
+          make_slc_lt1 $master.xml $master.tiff $master
+        else 
+          make_slc_lt1 $master.xml $master.tiff $master $SLC_factor
+        endif
       endif
       if ($skip_master == 0 || $skip_master == 1) then
-        make_slc_lt1 $aligned.xml $aligned.tiff $aligned
+        if ($SLC_factor == 0) then
+          make_slc_lt1 $aligned.xml $aligned.tiff $aligned
+        else
+          make_slc_lt1 $aligned.xml $aligned.tiff $aligned $SLC_factor
+        endif
       endif
     else 
       if ($skip_master == 0 || $skip_master == 2) then
