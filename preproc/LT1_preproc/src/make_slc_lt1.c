@@ -138,7 +138,7 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir, double SLC_factor) {
                 tmp[j] = (short)buf[j];
             }
             else {
-                if ((int)(buf[j]*SLC_factor) > I2MAX)
+                if ((int)((short)buf[j]*SLC_factor) > I2MAX)
                     nclip++;
 		        tmp[j] = (short)clipi2((short)buf[j]*SLC_factor);
             }
