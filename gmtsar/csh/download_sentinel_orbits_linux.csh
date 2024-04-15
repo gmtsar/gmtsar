@@ -64,9 +64,14 @@ if ($2 == 1) then
       wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo -O tmp_orbit.html
 
       set orbit = `grep $n1 tmp_orbit.html | grep $n2 | awk -F'"' '{print $2}'`
+      if ("x" == $orbit"x") then
+        echo "[ERROR]: No precise orbit exist for date $date1 "
+        exit 1
+      endif
       set file = `echo $orbit | awk '{print substr($1,1,length($1)-4)}'`
 
       if (! -e $file) then
+        echo "Downloading precise orbit $file ..."
         wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo/$orbit
         unzip $orbit $file
         rm $orbit
@@ -99,8 +104,8 @@ if ($2 == 2) then
       wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo -O tmp_orbit.html
 
       awk -F'"' 'NR>4 {print $2}' tmp_orbit.html | grep $date1 > tmp_orbit.list 
-      set start = `date --date="$datetime1 - 1 hour" +%s`
-      set end = `date --date="$datetime2 + 1 hour" +%s`
+      set start = `date --date="$datetime1 - 50 minute" +%s`
+      set end = `date --date="$datetime2 + 50 minute" +%s`
       foreach rec (`cat tmp_orbit.list`)
         set t1 = `echo $rec | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($7,11,2),substr($7,13,2),substr($7,15,2),substr($7,2,4),substr($7,6,2),substr($7,8,2)}' `
         set t2 = `echo $rec | awk -F"_" '{printf "%s:%s:%s %s-%s-%s",substr($8,10,2),substr($8,12,2),substr($8,14,2),substr($8,1,4),substr($8,5,2),substr($8,7,2)}'`
@@ -112,8 +117,8 @@ if ($2 == 2) then
 
         set crita = `echo $tstart $start | awk '{printf("%d",$1/$2)}'`
         set critb = `echo $tend $end | awk '{printf("%d",$1/$2)}'`
-
         if ($crita == 0 && $critb == 1) then
+          echo "Downloading restituted orbit $file ..." 
           if (! -e $file) then
             wget https://step.esa.int/auxdata/orbits/Sentinel-1/$orbittype/$SAT1/$yr/$mo/$orbit
             unzip $orbit $file

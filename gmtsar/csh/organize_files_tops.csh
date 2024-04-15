@@ -88,44 +88,54 @@
         echo "Required orbit file dates: ${n1} to  ${n2}..."
 
         # Format SAFEfile date constraints for ESA database query
-        set startorbtime = ` echo $n1 | awk '{printf "%d-%s-%sT00:00:00.000Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
-        set endorbtime = ` echo $n2 | awk '{printf "%d-%s-%sT23:59:59.999Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
+#        set startorbtime = ` echo $n1 | awk '{printf "%d-%s-%sT00:00:00.000Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
+#        set endorbtime = ` echo $n2 | awk '{printf "%d-%s-%sT23:59:59.999Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
 
         #echo "Querying ESA POD Hub orbit archive..."
         # Run the query
-        wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT0}_* AND producttype:${orbittype}"
+#        wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT0}_* AND producttype:${orbittype}"
 
-        echo "Checking query for existing orbit file..."
+#        echo "Checking query for existing orbit file..."
 
-        set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
-        set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' `           
-        if (! -f $orbit) then
+#        set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
+#        set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' `           
+#        if (! -f $orbit) then
           # IF esaID is empty that means no uuid was found corresponding to the date window 
-          if (${esaID} == "") then
-            echo "Query Failed -- possible issues:"
-            echo " - an orbit file for those dates may not exist yet"
-            echo "     --> check the resistited orbit files (AUX_RESORB) "
-            echo ""
-            echo " SKIP $date0, as precise orbit file may not exist ..."
-            echo ""
-            echo $file1 > tmprecord
-            set file0 = `echo $file1`
-            set date0 = `echo $date1`
-            set SAT0 = `echo $SAT1`
-            continue
-          else
-            if (-f $orb_dir/$SAT0/$orbit) then
-              ln -s $orb_dir/$SAT0/$orbit
-            else
-              echo "Query successful -- downloading orbit file..."
-              wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
-              echo "...orbit file ${orbit} downloaded"
-            endif
-          endif  
-        else  
-          echo "...orbit file already exists..."
-          echo " "
+#          if (${esaID} == "") then
+#            echo "Query Failed -- possible issues:"
+#            echo " - an orbit file for those dates may not exist yet"
+#            echo "     --> check the resistited orbit files (AUX_RESORB) "
+#            echo ""
+#            echo " SKIP $date0, as precise orbit file may not exist ..."
+#            echo ""
+#            echo $file1 > tmprecord
+#            set file0 = `echo $file1`
+#            set date0 = `echo $date1`
+#            set SAT0 = `echo $SAT1`
+#            continue
+#          else
+#            if (-f $orb_dir/$SAT0/$orbit) then
+#              ln -s $orb_dir/$SAT0/$orbit
+#            else
+#              echo "Query successful -- downloading orbit file..."
+#              wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
+#              echo "...orbit file ${orbit} downloaded"
+#            endif
+#          endif  
+#        else  
+#          echo "...orbit file already exists..."
+#          echo " "
+#        endif
+
+        cat tmprecord | awk 'NR==1{print $1}' > tmp_safelist
+        download_sentinel_orbits.csh tmp_safelist 1
+        set orbit = `ls *EOF | grep $n1 | grep $n2 | tail -1`
+        if ("x" == $orbit"x") then
+          download_sentinel_orbits.csh tmp_safelist 2 > tmp_download_log
+          set orbit = `grep "restituted" tmp_download_log | awk '{print $4}'`
         endif
+        echo "Downloaded orbit file $orbit"
+        rm tmp_safelist tmp_download_log
 
         # compute azimuth for the start and end 
         set pin1 = `head -1 $2 | awk '{print $1,$2}'` 
@@ -216,40 +226,49 @@
   echo "Required orbit file dates: ${n1} to  ${n2}..."
 
   # Format SAFEfile date constraints for ESA database query
-  set startorbtime = ` echo $n1 | awk '{printf "%d-%s-%sT00:00:00.000Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
-  set endorbtime = ` echo $n2 | awk '{printf "%d-%s-%sT23:59:59.999Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
+#  set startorbtime = ` echo $n1 | awk '{printf "%d-%s-%sT00:00:00.000Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
+#  set endorbtime = ` echo $n2 | awk '{printf "%d-%s-%sT23:59:59.999Z",substr($1,1,4),substr($1,5,2),substr($1,7,2)}' `
 
   # Run the query
-  wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT0}_* AND producttype:${orbittype}"
+#  wget --no-check-certificate --user={gnssguest} --password={gnssguest} --output-document=orbitquery.txt "https://scihub.copernicus.eu/gnss/search?q=beginPosition:[${startorbtime} TO ${endorbtime}] AND endPosition:[${startorbtime} TO ${endorbtime}] AND platformname:Sentinel-1 AND filename:${SAT0}_* AND producttype:${orbittype}"
 
-  echo "Checking query for existing orbit file..."
+#  echo "Checking query for existing orbit file..."
       
-  set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
-  set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' `           
-  if (! -f $orbit) then
+#  set orbit = ` grep "title" orbitquery.txt | tail -1 | awk '{printf "%s.EOF",substr($1,8,73)}' `
+#  set esaID = ` grep "uuid" orbitquery.txt | awk '{print substr($2,13,36)}' `           
+#  if (! -f $orbit) then
     # IF esaID is empty that means no uuid was found corresponding to the date window 
-    if (${esaID} == "") then
-      echo "Query Failed -- possible issues:"
-      echo " - an orbit file for those dates may not exist yet"
-      echo "     --> check the resistited orbit files (AUX_RESORB)"
-      echo ""
-      echo " SKIP $date0, as precise orbit file may not exist ..."
-      echo ""
-      exit 1  
-    else
-      if (-f $orb_dir/$SAT0/$orbit) then
-        ln -s $orb_dir/$SAT0/$orbit
-      else
-        echo "Query successful -- downloading orbit file..."
-        wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
-        echo "...orbit file ${orbit} downloaded"
-      endif
-    endif  
-  else  
-    echo "...orbit file already exists..."
-    echo " "
-  endif
+#    if (${esaID} == "") then
+#      echo "Query Failed -- possible issues:"
+#      echo " - an orbit file for those dates may not exist yet"
+#      echo "     --> check the resistited orbit files (AUX_RESORB)"
+#      echo ""
+#      echo " SKIP $date0, as precise orbit file may not exist ..."
+#      echo ""
+#      exit 1  
+#    else
+#      if (-f $orb_dir/$SAT0/$orbit) then
+#        ln -s $orb_dir/$SAT0/$orbit
+#      else
+#        echo "Query successful -- downloading orbit file..."
+#        wget --content-disposition --continue --user={gnssguest} --password={gnssguest} "https://scihub.copernicus.eu/gnss/odata/v1/Products('${esaID}')/"`echo '$'`"value"
+#        echo "...orbit file ${orbit} downloaded"
+#      endif
+#    endif  
+#  else  
+#    echo "...orbit file already exists..."
+#    echo " "
+#  endif
 
+  cat tmprecord | awk 'NR==1{print $1}' > tmp_safelist
+  download_sentinel_orbits.csh tmp_safelist 1
+  set orbit = `ls *EOF | grep $n1 | grep $n2 | tail -1`
+  if ("x" == $orbit"x") then
+    download_sentinel_orbits.csh tmp_safelist 2 > tmp_download_log
+    set orbit = `grep "restituted" tmp_download_log | awk '{print $4}'`
+  endif
+  echo "Downloaded orbit file $orbit"
+  rm tmp_safelist tmp_download_log
 
   # check the start and the end, make sure the start comes later than the first line of the first file and the end comes before the last line of the last file
   set pin1 = `head -1 $2 | awk '{print $1,$2}'` 
