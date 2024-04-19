@@ -66,7 +66,7 @@ endif
 # -----------------------------------
 #
 # pull the lon/lat, pull the height, input into SAT_look to get look direction
- awk '{print $2,$3}' $gnssenu | gmt grdtrack -G$dem -N > tmp.llh 
+ awk '{print $2,$3}' $gnssenu | gmt grdtrack -G$dem > tmp.llh 
  SAT_look $PRM < tmp.llh > tmp.lltn
 #
 # -----------------------------------
