@@ -1,5 +1,11 @@
 #! /usr/bin/env python3
 
+workAbsoluteDir = '/scratch/gmtsar.py.dev/py.test/'
+pythonCommandListPath = workAbsoluteDir+'pythonREADME/'
+
+rawDir = 'raw'
+SLCDir = 'SLC'
+
 intfDirList = {
                 'S1_Ridgecrest_EQ': ['F1/intf/2019184_2019196', 'F2/intf/2019184_2019196', 
                                     'F3/intf/2019184_2019196', 'merge', 'H_res'],
@@ -29,8 +35,5 @@ caseNameList = [
                 'CSK_SLC_Italy'
                 ]
 
-workAbsoluteDir = '/scratch/gmtsar.py.dev/py.test/'
-pythonCommandListPath = '/scratch/gmtsar.py.dev/pythonREADME/'
-rawDir = 'raw'
-SLCDir = 'SLC'
+
 

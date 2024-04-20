@@ -13,7 +13,8 @@ apt install git make vim
 
 cd /usr/local
 rm -rf GMTSAR
-git clone https://github.com/gmtsar/gmtsar GMTSAR
+#git clone https://github.com/gmtsar/gmtsar GMTSAR
+git clone https://github.com/dunyuliu/gmtsar.py.docker GMTSAR
 #chmod -R 777 GMTSAR
 
 cd GMTSAR
@@ -33,6 +34,9 @@ echo "Setting up environments ... ..."
 
 export GMTSAR=/usr/local/GMTSAR
 export PATH=$GMTSAR/bin:"$PATH"
+
+cp $GMTSAR/gmtsar/python/utils/* $GMTSAR/bin # move python utilities to GMTSAR's bin
+
 export PATH=/home/pyGMTSAR:"$PATH"
 alias  psconvert="gmt psconvert"
 alias  ln="ln -f"
