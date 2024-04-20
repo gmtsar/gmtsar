@@ -35,9 +35,9 @@ echo "Setting up environments ... ..."
 export GMTSAR=/usr/local/GMTSAR
 export PATH=$GMTSAR/bin:"$PATH"
 
+chmod -R 755 $GMTSAR/gmtsar/python/utils
 cp $GMTSAR/gmtsar/python/utils/* $GMTSAR/bin # move python utilities to GMTSAR's bin
 
-export PATH=/home/pyGMTSAR:"$PATH"
 alias  psconvert="gmt psconvert"
 alias  ln="ln -f"
 cd $HOME
