@@ -19,3 +19,4 @@ clean:
 	rm -f *.o $(LIB)
 
 spotless:	clean
+	$(RM) lib

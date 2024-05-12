@@ -27,3 +27,4 @@ clean:
 	done
 
 spotless:	clean
+	$(MAKE) -C lib spotless

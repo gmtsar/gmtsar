@@ -104,4 +104,8 @@ spotless:
 		(cd preproc/$${d}_preproc; $(MAKE) spotless); \
 	done
 	rm -rf $(sharedir) bin share
+	$(RM) gmtsar/csh/gmtsar_sharedir.csh \
+	preproc/ENVI_preproc/scripts/ENVI_SLC_pre_process \
+	preproc/ENVI_preproc/scripts/ENVI_pre_process \
+	preproc/ERS_preproc/scripts/ERS_pre_process
 	rm -rf config.log config.status config.mk configure autom4te.cache

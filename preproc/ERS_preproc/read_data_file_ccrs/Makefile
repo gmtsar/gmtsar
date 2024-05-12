@@ -13,7 +13,7 @@ $(PROG): $(OBJS)
 all:	$(PROG)
 
 clean:
-	rm -f $(OBJS) tags core *.c.*
+	rm -f $(OBJS) tags core *.c.* $(PROG)
 
 install:
 	$(INSTALL) $(PROG) $(bindir)/$(PROG)
