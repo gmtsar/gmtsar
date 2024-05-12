@@ -49,8 +49,8 @@ install-preproc:
 	for d in $(PREPROCESSORS); do \
 		(cd preproc/$${d}_preproc; $(MAKE) install); \
 	done
-	$(INSTALL) preproc/ERS_preproc/scripts/virgin.PRM $(sharedir)
-	$(INSTALL) preproc/ENVI_preproc/scripts/virgin_envisat.PRM $(sharedir)
+	$(INSTALL) -m 0644 preproc/ERS_preproc/scripts/virgin.PRM $(sharedir)
+	$(INSTALL) -m 0644 preproc/ENVI_preproc/scripts/virgin_envisat.PRM $(sharedir)
 
 install-main:
 	for d in $(DIRS); do \
