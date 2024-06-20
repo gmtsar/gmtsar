@@ -137,6 +137,7 @@
   set SLC_factor = `grep SLC_factor $conf | awk '{print $3}'`
   set near_interp = `grep near_interp $conf | awk '{print $3}'`
   set geometric_coreg = `grep geometric_coreg $conf | awk '{print $3}'`
+  set skip_master = `grep skip_master $conf | awk '{print $3}'`
   set master = ` echo $2`
   set inputlist =  ` echo $3 `
   echo ""
@@ -208,6 +209,7 @@
         #echo "pre_proc.csh $SAT $master $aligned $commandline -skip_master 0"
         #pre_proc.csh $SAT $master $aligned $commandline -skip_master 0
         rm tmp_conf_$aligned
+      
       else
         sed "s/.*proc_stage.*/proc_stage = 1/g" $conf | sed "s/.*skip_stage.*/skip_stage = 2,3,4,5,6/g" | sed "s/.*skip_master.*/skip_master = 1/g" > tmp_conf_$aligned
         p2p_processing.csh $SAT $master $aligned tmp_conf_$aligned
@@ -249,7 +251,7 @@
     echo ""
 
     set ii = 0
-    if ($geometric_coreg == 0 || $SAT == "S1_TOPS" ) then
+    if ($SAT == "S1_TOPS" ) then
       foreach aligned (`cat $inputlist`)
         if ($SAT == "S1_TOPS") then
           set orb = `echo $aligned | awk -F':' '{print $2}'`
@@ -269,10 +271,31 @@
         set ii = `echo $ii | awk '{print $ii+1}'`
       end
     else
-      if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW") then
-        align_batch.csh RAW 1 $inputlist
-      else 
-        align_batch.csh SLC 1 $inputlist
+      if ($geometric_coreg == 0) then
+        #if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW") then
+        foreach aligned (`cat $inputlist`)
+          if ($ii == 0) then
+            if ($skip_master == 1) then
+              echo "setting skip_master = $skip_master "
+            else
+              sed "s/.*proc_stage.*/proc_stage = 2/g" $conf | sed "s/.*skip_stage.*/skip_stage = 3,4,5,6/g" | sed "s/.*skip_master.*/skip_master = 2/g" > tmp_conf_$aligned
+              p2p_processing.csh $SAT $master $aligned tmp_conf_$aligned
+              rm tmp_conf_$aligned
+            endif
+          else
+            sed  "s/.*proc_stage.*/proc_stage = 2/g" $conf | sed "s/.*skip_stage.*/skip_stage = 3,4,5,6/g" | sed "s/.*skip_master.*/skip_master = 1/g" > tmp_conf_$aligned
+            p2p_processing.csh $SAT $master $aligned tmp_conf_$aligned
+            rm tmp_conf_$aligned
+          endif
+          set ii = `echo $ii | awk '{print $ii+1}'`
+        end
+        #endif
+      else
+        if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW") then
+          align_batch.csh RAW 1 $inputlist
+        else
+          align_batch.csh SLC 1 $inputlist
+        endif
       endif
     endif
 
