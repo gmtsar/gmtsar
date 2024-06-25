@@ -7,7 +7,7 @@ INCLUDES = -I../include -I../../../gmtsar $(GMT_INC) $(HDF5_CPPFLAGS)
 CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lxmlC $(GMT_LIB) $(HDF5_LDFLAGS) $(HDF5_LIBS) -lm
 
 $(PROG): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CLIBS) 
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(CLIBS) 
 
 all:	$(PROG)
 
