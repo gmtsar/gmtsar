@@ -49,8 +49,8 @@ install-preproc:
 	for d in $(PREPROCESSORS); do \
 		(cd preproc/$${d}_preproc; $(MAKE) install); \
 	done
-	$(INSTALL) preproc/ERS_preproc/scripts/virgin.PRM $(sharedir)
-	$(INSTALL) preproc/ENVI_preproc/scripts/virgin_envisat.PRM $(sharedir)
+	$(INSTALL) -m 0644 preproc/ERS_preproc/scripts/virgin.PRM $(sharedir)
+	$(INSTALL) -m 0644 preproc/ENVI_preproc/scripts/virgin_envisat.PRM $(sharedir)
 
 install-main:
 	for d in $(DIRS); do \
@@ -59,9 +59,9 @@ install-main:
 	$(INSTALL) -d $(sharedir)
 	$(INSTALL) -d $(sharedir)/filters
 	$(INSTALL) -d $(sharedir)/snaphu/config
-	$(INSTALL) gmtsar/filters/[bfgsxy]* $(sharedir)/filters
-	$(INSTALL) gmtsar/csh/snaphu.conf.* $(sharedir)/snaphu/config
-	$(INSTALL) gmtsar/*.grd $(sharedir)
+	$(INSTALL) -m 0644 gmtsar/filters/[bfgsxy]* $(sharedir)/filters
+	$(INSTALL) -m 0644 gmtsar/csh/snaphu.conf.* $(sharedir)/snaphu/config
+	$(INSTALL) -m 0644 gmtsar/*.grd $(sharedir)
 
 install-orbits:
 	wget $(ORBITS_URL) 2>/dev/null || curl -O $(ORBITS_URL)
