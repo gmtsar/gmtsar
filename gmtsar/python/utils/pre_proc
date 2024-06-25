@@ -1,0 +1,406 @@
+#! /usr/bin/env python3
+"""
+# pre_proc is part of pyGMTSAR. 
+# It is migrated from pre_proc.csh, originally written by Xiaohua Xu, Jan, 2018.
+# Dunyu Liu, 20230424.
+
+# pre_proc preprocesses the data to Raw or SLC or aligned SLC depending on which satellite to use.
+# Syntax: ??
+"""
+
+import sys, os, re, configparser
+import subprocess, glob
+from gmtsar_lib import * 
+
+def preprocAlos(SAT, master, aligned, skip_master, cmdAppendix):
+    print(' ')
+    print('PREPROC: Pre-Process ALOS data -START')
+    print(' ')
+    
+    masterCut = master[7:]
+    alignedCut = aligned[7:]
+
+    if not(check_file_report('IMG-HH-'+masterCut) and \
+       check_file_report('IMG-HH-'+alignedCut) and \
+       check_file_report('LED-'+masterCut) and \
+       check_file_report('LED-'+alignedCut)):
+        print('PREPROC: Error : Can not find input file at current directory!')
+        print(' ')
+ 
+    print('PREPROC: upack the master if necessary')
+    if not(check_file_report('IMG-HH-'+masterCut+'.raw') and  \
+           check_file_report('IMG-HH-'+masterCut+'.PRM')) :
+        print('PREPROC: pre_process master image')
+        if (skip_master == 0 or skip_master == 2): 
+            run('ALOS_pre_process IMG-HH-'+masterCut+' LED-'+masterCut+' '+cmdAppendix)
+    
+    NEAR = float(grep_value('IMG-HH-'+masterCut+'.PRM', 'near_range', 3))
+    RAD  = float(grep_value('IMG-HH-'+masterCut+'.PRM', 'earth_radius', 3))
+    FD1  = float(grep_value('IMG-HH-'+masterCut+'.PRM', 'fd1', 3))
+    num_patches = int(grep_value('IMG-HH-'+masterCut+'.PRM', 'num_patches', 3))        
+    
+    print('PREPROC: unpack the alignedCut image using the same earth radius and near range as the masterCut image')
+    
+    if skip_master == 0 or skip_master == 1:
+        run('ALOS_pre_process IMG-HH-'+alignedCut+' LED-'+alignedCut+ \
+              ' -fd1 '+str(FD1)+' -near '+str(NEAR) + ' -radius '+str(RAD) +\
+              ' -npatch '+str(num_patches) + ' -fd1 '+str(FD1))
+        print('PREPROC: check the range sampling rate of the alignedCut images and \
+           do conversion if necessary')
+        fdb2fbs(SAT, masterCut, alignedCut, prefix='IMG-HH-')
+
+def preprocCskraw(master, aligned, skip_master, RAD, FD1):
+    print('PREPROC: pre-process CSK Raw data - START')
+    if skip_master==0 or skip_master==2:
+        processedFile = master
+        run('make_raw_csk '+processedFile+'.h5 '+processedFile)
+        file_shuttle(processedFile+'.PRM',processedFile+'.PRM0', 'mv')
+        run('calc_dop_orb '+processedFile+'.PRM0 '+processedFile+'.log '+str(RAD)+' '+str(FD1))
+        run('cat '+processedFile+'.PRM0 '+processedFile+'.log > '+processedFile+'.PRM')
+        append_new_line(processedFile+'.PRM', 'fdd1 = 0')
+        append_new_line(processedFile+'.PRM', 'fddd1 = 0')
+    if skip_master==0 or skip_master==1:
+        processedFile = aligned
+        run('make_raw_csk '+processedFile+'.h5 '+processedFile)
+        file_shuttle(processedFile+'.PRM',processedFile+'.PRM0', 'mv')
+        run('calc_dop_orb '+processedFile+'.PRM0 '+processedFile+'.log '+str(RAD)+' '+str(FD1))
+        run('cat '+processedFile+'.PRM0 '+processedFile+'.log > '+processedFile+'.PRM')
+        append_new_line(processedFile+'.PRM', 'fdd1 = 0')
+        append_new_line(processedFile+'.PRM', 'fddd1 = 0')
+    
+    updatePrm(master, aligned, skip_master, 'num_patches')
+    updatePrm(master, aligned, skip_master, 'fd1')
+    print('PREPROC: pre-process CSK Raw data - END')
+        
+def preprocErs(master, aligned, skip_master, NEAR, RAD, num_patches, FD1):
+    print('PREPROC: Pre-Process ERS data - START')
+    print('PREPROC: set 0 for master to use its own value')
+    
+    if (skip_master == 0 or skip_master == 2):
+        run('ERS_pre_process '+master+' '+str(NEAR)+' '+str(RAD)+' '+str(num_patches)+' '+str(FD1))
+    
+    NEAR = grep_value(master+'.PRM','near_range',3)
+    RAD  = grep_value(master+'.PRM','earth_radius',3)
+    FD1  = grep_value(master+'.PRM','fd1',3)
+    num_patches = grep_value(master+'.PRM','num_patches',3)
+    
+    if (skip_master == 0 or skip_master == 1):
+        run('ERS_pre_process '+aligned+' '+str(NEAR)+' '+str(RAD)+' '+str(num_patches)+' '+str(FD1))
+
+    updatePrm(master, aligned, skip_master, 'num_patches')
+    updatePrm(master, aligned, skip_master, 'fd1')
+
+    # if (skip_master == 0):
+        # fd1 = grep_value(master+'.PRM', 'fd1', 3)
+        # fd1 = grep_value(aligned+'.PRM', 'fd1', 3)
+        # fda = 0.5*(grep_value(master+'.PRM', 'fd1', 3)+grep_value(aligned+'.PRM', 'fd1', 3))
+        # print('PREPROC: use average Doppler', fda)
+        
+        # run('update_PRM '+master+'.PRM fd1 '+str(fda))
+        # run('update_PRM '+aligned+'.PRM fd1 '+str(fda))
+        
+    # elif (skip_master == 1):
+        # fda = grep_value(master+'.PRM', 'fd1', 3)
+        # run('update_PRM '+aligned+'.PRM fd1 '+str(fda))
+
+    print('PREPROC: Pre-Process ERS data - END')
+    
+def updatePrm(master, aligned, skip_master, var):
+    if var=='num_patches':
+        varNameInPrmFile = 'patch'
+    elif var=='fd1':
+        varNameInPrmFile = 'fd1'
+    else:
+        sys.exit('Wrong variable for updatePrm')
+        
+    if (skip_master == 0):
+        numM = grep_value(master+'.PRM', varNameInPrmFile, 3)
+        numA = grep_value(aligned+'.PRM', varNameInPrmFile, 3)
+        if var=='num_patches':
+            print('PREPROC: check patch number, if different, use the smaller one')
+            if (numM<numA):
+                run('update_PRM '+aligned+'.PRM '+var+' '+str(numM))
+            elif (numM>numA):
+                run('update_PRM '+master+'.PRM '+var+' '+str(numA))
+        elif var=='fd1':
+            print('PREPROC: set the Doppler to be the average of the two')
+            fda = 0.5*(numM+numA)
+            run('update_PRM '+master+'.PRM '+var+' '+str(fda))
+            run('update_PRM '+aligned+'.PRM '+var+' '+str(fda))
+    elif (skip_master == 1):
+        numM = grep_value(master+'.PRM', varNameInPrmFile, 3)
+        run('update_PRM '+aligned+'.PRM '+var+' '+str(numM))
+        
+def preprocEnvi(master, aligned, skip_master, NEAR, RAD, num_patches, FD1):
+    print('PREPROC: Pre-Process ENVISAT data - START')
+    if (skip_master == 0 or skip_master == 2):
+        run('ENVI_pre_process '+master+' '+str(NEAR)+' '+str(RAD)+' '+str(num_patches)+' '+str(FD1))
+    
+    NEAR = grep_value(master+'.PRM', 'near_range', 3)
+    RAD  = grep_value(master+'.PRM', 'earth_radius', 3)
+        
+    if (skip_master == 0 or skip_master == 1):
+        run('ENVI_pre_process '+aligned+' '+str(NEAR)+' '+str(RAD)+' '+str(num_patches)+' '+str(FD1))
+        
+    updatePrm(master, aligned, skip_master, 'num_patches')
+    updatePrm(master, aligned, skip_master, 'fd1')
+    print('PREPROC: Pre-Process ENVISAT data - END')
+
+def preprocEnvislc(master, aligned, skip_master, RAD):
+    print('PREPROC: Pre-process ENVISAT SLC data - START')
+    if skip_master==0 or skip_master==2:
+        run('ENVI_SLC_pre_process '+master+' '+str(RAD))
+    NEAR = grep_value(master+'.PRM', 'near_range', 3)
+    RAD = grep_value(master+'.PRM', 'earth_radius', 3)
+    if skip_master==0 or skip_master==1:
+        run('ENVI_SLC_pre_process '+aligned+' '+str(RAD))
+    print('PREPROC: Pre-process ENVISAT SLC data - END')    
+        
+def preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix):
+    print(' ')
+    print('PREPROC: processing ALOS SLC data - START')
+    print(' ')
+    masterCut = master[4:]
+    alignedCut = aligned[4:]
+    masterLed = master[7:]
+    alignedLed = aligned[7:]
+    
+    if check_file_report('IMG-'+masterCut)==False or \
+        check_file_report('IMG-'+alignedCut)==False or \
+        check_file_report('LED-'+masterLed)==False or \
+        check_file_report('LED-'+alignedLed)==False:
+        print(' ')
+        print('PREPROC: ERROR - cannot find input file at raw/ for ALOS_SLC/ALOS2/ALOS_SCAN')
+    
+    print(' ')
+    print('PREPROC: running ALOS_pre_process_SLC')
+    additionalFlag = ''
+    if SAT=='ALOS_SLC':
+        additionalFlag = '-ALOS1'
+    if skip_master==0 or skip_master==2:
+        run('ALOS_pre_process_SLC '+'IMG-'+masterCut+' LED-'+masterLed+' '+cmdAppendix+' '+additionalFlag)
+    if skip_master==0 or skip_master==1:
+        run('ALOS_pre_process_SLC IMG-'+alignedCut+' LED-'+alignedLed+' '+cmdAppendix+' '+additionalFlag)
+    
+    print(' ')
+    print('PREPROC: make FBD FBS conversion')
+    if skip_master==0 or skip_master==1:
+        fdb2fbs(SAT, masterCut, alignedCut, prefix='IMG-')
+    print(' ')
+    print('PREPROC: processing ALOS SLC data - END')
+    print(' ')
+    
+def fdb2fbs(SAT, master, aligned, prefix=''):
+    rng_samp_rate_m = float(grep_value(prefix+master+'.PRM', 'rng_samp_rate', 3))
+    rng_samp_rate_s = float(grep_value(prefix+aligned+'.PRM', 'rng_samp_rate', 3))
+    t = rng_samp_rate_m/rng_samp_rate_s
+    
+    if SAT=='ALOS':
+        fileFormat = '.raw'
+        scriptName = 'ALOS_fbd2fbs'
+    else:
+        fileFormat = '.SLC'
+        scriptName = 'ALOS_fbd2fbs_SLC'
+        
+    masterOrAligned = -999
+    if t == 1.0:
+        masterOrAligned = 0
+        print('PREPROC: The range sampling rate for master and aligned are: ', rng_samp_rate_m)
+    elif t == 2.0:
+        masterOrAligned = 2
+        imageName = aligned
+    elif t == 0.5:
+        masterOrAligned = 1
+        imageName = master
+    else:
+        print('PREPROC: The range sampling rate for master and aligned images are not convertable')
+    
+    if masterOrAligned>=1:
+        print('PREPROC: Convert the '+imageName+' image from FBD to FBS mode')
+        run(scriptName+' '+prefix+imageName+'.PRM '+prefix+imageName+'_FBS.PRM')
+        print('PREPROC: Overwriting the old '+imageName+' image')
+        file_shuttle(prefix+imageName+'_FBS.PRM', prefix+imageName+'.PRM', 'mv')
+        run('update_PRM '+prefix+imageName+'.PRM input_file '+prefix+imageName+fileFormat)
+        file_shuttle(prefix+imageName+'_FBS'+fileFormat, prefix+imageName+fileFormat, 'mv')
+        message = prefix+imageName+' is converted to FBS mode'
+        print(message)
+        with open(f'ALOS_fbd2fbs_log_{imageName}','w') as f:
+            f.write(f'{message}\n')
+
+def preprocOthers(SAT, master, aligned, skip_master, RAD): 
+    print(' ')
+    print('PREPROC: processing CSK/TSX/RS2/S1_STRIP/GF3/LT1 SLC data - START ... ...')
+    print(' ')
+    
+    if SAT=='CSK_SLC':
+        if skip_master==0 or skip_master==2:
+            run('make_slc_csk '+master+'.h5 '+master)
+        if skip_master==0 or skip_master==1:
+            run('make_slc_csk '+aligned+'.h5 '+aligned)
+    elif SAT=='TSX':
+        if skip_master==0 or skip_master==2:
+            run('make_slc_tsx '+master+'.xml '+master+'.cos '+master)
+        if skip_master==0 or skip_master==1:
+            run('make_slc_tsx '+aligned+'.xml '+aligned+'.cos '+aligned)
+    elif SAT=='RS2':
+        if skip_master==0 or skip_master==2:
+            run('make_slc_rs2 '+master+'.xml '+master+'.tif '+master)
+            file_shuttle(master+'.LED','save-'+master+'.LED','mv')
+            run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
+        if skip_master==0 or skip_master==1:
+            run('make_slc_rs2 '+aligned+'.xml '+aligned+'.tif '+aligned)
+            file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
+            run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
+    elif SAT=='GF3':
+        if skip_master==0 or skip_master==2:
+            run('make_slc_gf3 '+master+'.xml '+master+'.tiff '+master)
+        if skip_master==0 or skip_master==1:
+            run('make_slc_gf3 '+aligned+'.xml '+aligned+'.tiff '+aligned)
+    elif SAT=='LT1':
+        if skip_master==0 or skip_master==2:
+            run('make_slc_lt1 '+master+'.xml '+master+'.tiff '+master)
+        if skip_master==0 or skip_master==1:
+            run('make_slc_lt1 '+aligned+'.xml '+aligned+'.tiff '+aligned) 
+    else:
+        if skip_master==0 or skip_master==2:
+            run('make_slc_s1a '+master+'.xml '+master+'.tif '+master)
+            file_shuttle(master+'.LED','save-'+master+'.LED','mv')
+            run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
+        if skip_master==0 or skip_master==1:
+            run('make_slc_s1a '+aligned+'.xml '+aligned+'.tif '+aligned)
+            file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
+            run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
+    
+    print('PREPROC: set the num_lines to be the min of the master and aligned ... ...')
+    if skip_master==0:
+        m_lines = int(grep_value('../raw/'+master+'.PRM','num_lines',3))
+        s_lines = int(grep_value('../raw/'+aligned+'.PRM','num_lines',3))
+        if s_lines < m_lines:
+            run('update_PRM '+master+'.PRM num_lines '+str(s_lines))
+            run('update_PRM '+master+'.PRM num_valid_az '+str(s_lines))
+            run('update_PRM '+master+'.PRM nrows '+str(s_lines))
+        else:
+            run('update_PRM '+aligned+'.PRM num_lines '+str(m_lines))
+            run('update_PRM '+aligned+'.PRM num_valid_az '+str(m_lines))
+            run('update_PRM '+aligned+'.PRM nrows '+str(m_lines))
+    else:
+        if skip_master==1:
+            m_lines = int(grep_value('../raw/'+master+'.PRM','num_lines',3))
+            run('update_PRM '+aligned+'.PRM num_lines '+str(m_lines))
+            run('update_PRM '+aligned+'.PRM num_valid_az '+str(m_lines))
+            run('update_PRM '+aligned+'.PRM nrows '+str(m_lines))
+    print(' ')
+    print('PREPROC: calculate SC_vel and SC_height ... ...')
+    print('PREPROC: set the Doppler to be zero ... ...')
+    if skip_master==0 or skip_master==2:
+        file_shuttle(master+'.PRM',master+'.PRM0','cp')
+        run('calc_dop_orb '+master+'.PRM0 '+master+'.log '+str(RAD)+' 0')
+        run('cat '+master+'.PRM0 '+master+'.log > '+master+'.PRM')
+        append_new_line(master+'.PRM','fdd1 = 0')
+        append_new_line(master+'.PRM','fddd1 = 0')
+    
+    if skip_master==0 or skip_master==1:
+        file_shuttle(aligned+'.PRM',aligned+'.PRM0','cp')
+        run('calc_dop_orb '+aligned+'.PRM0 '+aligned+'.log '+str(RAD)+' 0')
+        run('cat '+aligned+'.PRM0 '+aligned+'.log >'+aligned+'.PRM')
+        append_new_line(aligned+'.PRM','fdd1 = 0')
+        append_new_line(aligned+'.PRM','fddd1 = 0')
+        delete('*.log')
+        delete('*.PRM0')
+    print(' ')
+    print('PREPROC: pre-processing CSK/TSX/RS2/S1_STRIP/GF3/LT1 SLC data - END ... ...')
+    print(' ')
+        
+def preprocS1tops(master, aligned, skip_master, ESD_mode):
+    print(' ')
+    print('PREPROC: Pre-Process S1_TOPS data - START')
+    print(' ')
+    if check_file_report('../topo/dem.grd')==False:
+        print('PREPROC: missing file ../topo/dem.grd')
+    
+    run('ln -s ../topo/dem.grd .')
+    if ESD_mode==0:
+        additionalFlag=''
+        scriptName='align_tops.csh'
+    else:
+        additionalFlag=str(ESD_mode)
+        scriptName='align_tops_esd.csh'
+    
+    if skip_master==0:
+        run(scriptName+' '+master+' '+master+'.EOF '+aligned+' '+aligned+'.EOF dem.grd '+additionalFlag)
+    elif skip_master==1:
+        run(scriptName+' '+master+' 0 '+aligned+' '+aligned+'.EOF dem.grd '+additionalFlag)
+    elif skip_master==2:
+        run(scriptName+' '+master+' '+master+'.EOF '+aligned+' 0 dem.grd '+additionalFlag)
+    else:
+        print('PREPROC: ERROR, Wrong skip_master parameter for TOPS data; should be 0,1,2')
+    print(' ')
+    print('PREPROC: Pre-Process S1_TOPS data - END')
+    
+
+def pre_proc():
+    numOfArg = len(sys.argv)
+    if not(numOfArg==4 or numOfArg==6 or numOfArg==8 or numOfArg==10 or numOfArg==12 or numOfArg==14):   
+        print(' ')
+        print(' Usage: pre_proc SAT master_stem aligned_stem [-near near_range] [-radius RE] [-npatch num_patches] [-fd1 DOPP] [-ESD mode] [-skip_master 1]')
+        print(' ')
+        print(' Example: pre_proc ALOS IMG-HH-ALPSRP099496420-H1.0__A IMG-HH-ALPSRP220276420-H1.0__A')
+        print(' ')
+    arg = sys.argv[1:]
+    print('PREPROC: arg of cmd pre_proc is', arg)
+    SAT = arg[0] 
+    NEAR = assign_arg(arg,'-near')
+    RAD = assign_arg(arg,'-radius')
+    num_patches = assign_arg(arg,'-npatch')
+    FD1 = assign_arg(arg, '-fd1')
+    SLC_factor = assign_arg(arg, '-SLC_factor')
+    ESD_mode = assign_arg(arg, '-ESD')
+    skip_master = assign_arg(arg, '-skip_master')
+    
+    varDict = {'-near':NEAR, '-radius':RAD, '-npatch':num_patches,
+        '-fd1':FD1, '-SLC_factor':SLC_factor}
+    cmdAppendix = ''
+    for varName, varValue in varDict.items():
+        if varValue != 0:
+            cmdAppendix += f'{varName} {varValue} '
+
+    print('cmdAppendix is', cmdAppendix)
+    
+    if (skip_master!=0):
+        print(' ')
+        print('PREPROC: skip_master set to '+str(skip_master))
+        print(' ')
+    
+    master = sys.argv[2]
+    aligned = sys.argv[3]
+    
+    print('PREPROC: master is ', master)
+    print('PREPROC: aligned is ', aligned)
+
+    if SAT=='ALOS':
+        preprocAlos(SAT, master, aligned, skip_master, cmdAppendix)
+    elif SAT=='ERS':
+        preprocErs(master, aligned, skip_master, NEAR, RAD, num_patches, FD1)
+    elif SAT=='ENVI':
+        preprocEnvi(master, aligned, skip_master, NEAR, RAD, num_patches, FD1)
+    elif SAT=='ENVI_SLC':
+        preprocEnvislc(master, aligned, skip_master, RAD)
+    elif SAT=='ALOS_SLC' or SAT=='ALOS2' or SAT=='ALOS2_SCAN':
+        preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix)
+    elif SAT=='CSK_RAW':
+        preprocCskraw(master, aligned, skip_master, RAD, FD1)
+    elif SAT=='CSK_SLC' or SAT=='TSX' or SAT=='S1_STRIP' \
+            or SAT=='RS2' or SAT=='GF3' or SAT=='LT1':
+        preprocOthers(SAT, master, aligned, skip_master, RAD)
+    elif SAT=='S1_TOPS':
+        print('S1_TOPS not tested yet')
+        preprocS1tops(master, aligned, skip_master, ESD_mode)
+    print('PREPROC: FINISHED ... ...')
+    
+def _main_func(description):
+    sys.path.append('/xx1/dliu/iga49539/orbits/')
+    pre_proc()
+
+if __name__ == '__main__':
+    _main_func(__doc__)
+

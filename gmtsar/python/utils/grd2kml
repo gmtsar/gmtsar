@@ -1,0 +1,60 @@
+#! /usr/bin/env python3
+"""
+# grd2kml is part of GMTSAR. 
+# This Python script is migrated from grd2kml.csh by Dunyu Liu on 20231109.
+# grd2kml.csh was originally written by David Sandwell on 20100210. 
+
+# Purpose: to convert a grd file to a kml file for Google Earth.
+"""
+
+import sys, os, re, configparser
+import subprocess, glob, shutil
+from gmtsar_lib import * 
+
+def grd2kml():
+    
+    def Error_Message():
+        print( " ")
+        print( "Usage: grd2kml.csh grd_file_stem cptfile [-R<west>/<east>/<south>/<north>] ")  
+        print( " ")
+        print( "Example: grd2kml.csh phase phase.cpt ")
+        print( " ")
+        
+    print('GRD2KML - START ... ...')
+    n = len(sys.argv)
+    print('GRD2KML: input arguments are ', sys.argv)
+    
+    if n<3 or n>4:
+        print('GRD2KML: Wrong # of input arguments; # should be less 2/3 ... ...')
+        Error_Message()
+    
+    V  = '-V'
+    VS = '-S -V'
+    
+    DX = subprocess.run(["gmt","grdinfo",sys.argv[1]+".grd","-C"], stdout=subprocess.PIPE).stdout.decode('utf-8').strip().split()[7]
+    print('GRD2KML: DX is ', DX)
+    DPI= subprocess.run(["gmt","gmtmath","-Q",DX,"INV","RINT","="],stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
+    print('GRD2KML: DPI is ', DPI)
+    
+    run('gmt set COLOR_MODEL = hsv')
+    run('gmt set PS_MEDIA = A2')
+    
+    if n==4: 
+        run('gmt grdimage '+sys.argv[1]+'.grd -C'+sys.argv[2]+' '+sys.argv[3]+' -Jx1id -P -Y2i -X2i -Q '+V+' > '+sys.argv[1]+'.ps') 
+    elif n==3:
+        run('gmt grdimage '+sys.argv[1]+'.grd -C'+sys.argv[2]+' -Jx1id -P -Y2i -X2i -Q '+V+' > '+sys.argv[1]+'.ps')
+    
+    print('GRD2KML: now make the kml and png ... ...')
+    print('GRD2KML: make '+sys.argv[1]+'.kml and '+sys.argv[1]+'.png ... ...')
+    
+    run('gmt psconvert '+sys.argv[1]+'.ps -W+k+t'+'''"'''+sys.argv[1]+'''"'''+' -E'+DPI+' -TG -P '+VS+' -F'+sys.argv[1])
+    run('rm -f '+sys.argv[1]+'.ps grad.grd ps2raster* psconvert*')
+    
+    print("GRD2KML - END ... ...")
+
+def _main_func(description):
+    grd2kml()
+
+if __name__ == "__main__":
+    _main_func(__doc__)
+
