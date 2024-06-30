@@ -222,18 +222,6 @@ if test -x "$GMT_CONF" && test "X$GMT_INC" = "X" && test "X$GMT_LIB" = "X" ; the
 	AC_MSG_RESULT($GMT_LIB)
 	GMT_LIB_PATH=`echo $GMT_LIB | sed 's/^-L//;s/\ .*//'`
 	rpath="$GMT_LIB_PATH"
-	AC_MSG_CHECKING(for cpu found)
-	if test "$host_cpu" = "aarch64" && test "$os" = "Linux"; then
-		GCC_64=""
-		LDFLAGS="$LDFLAGS"
-	else
-		bits=`$GMT_CONF --bits`
-		GCC_64="-m${bits}"
-		LDFLAGS="$LDFLAGS -m${bits}"
-	fi
-	AC_MSG_RESULT(found ${host_cpu})
-	AC_MSG_CHECKING(for 32/64-bit GMT installation)
-	AC_MSG_RESULT(found ${bits}-bit)
 fi
 dnl
 dnl ------------------------------------------------------------------
@@ -355,11 +343,11 @@ dnl
 AC_MSG_CHECKING(C compiler options for GMTSAR)
 if test "$GCC" = "yes"; then		# GNU cc options
 	if test "$chip" = "alpha" ; then	# Alpha PC
-		CFLAGS="$CFLAGS -mieee -Wall $GCC_64"
-		CXXFLAGS="$CXXFLAGS -mieee -Wall $GCC_64"
+		CFLAGS="$CFLAGS -mieee -Wall"
+		CXXFLAGS="$CXXFLAGS -mieee -Wall"
 	else				# MacOSX, Linux, ...
-		CFLAGS="$CFLAGS -Wall $GCC_64"
-		CXXFLAGS="$CXXFLAGS -Wall $GCC_64"
+		CFLAGS="$CFLAGS -Wall"
+		CXXFLAGS="$CXXFLAGS -Wall"
 	fi
 	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=c99"
 	CXXFLAGS="$CXXFLAGS -fPIC"
