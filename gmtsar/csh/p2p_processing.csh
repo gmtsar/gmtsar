@@ -508,7 +508,7 @@
           set amin = `echo $amedian | awk '{print $1-3}'`
           awk '{if($4 > '$amin' && $4 < '$amax') print $0}' < freq_xcorr.dat > freq_alos2.dat
           fitoffset.csh 2 3 freq_alos2.dat 10 >> $aligned.PRM
-        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1") then
+        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" || $SAT == "ALOS_SLC") then
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
         else
