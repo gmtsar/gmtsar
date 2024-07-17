@@ -2,7 +2,7 @@ include ../../config.mk
 #
 #   make all the files
 #
-DIRS	= src_slc src_raw
+DIRS	= src_slc src_raw src_slc2
 
 all:
 	$(LN_S) -f ../S1A_preproc/include include

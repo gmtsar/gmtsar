@@ -167,6 +167,8 @@ preproc/CSK_preproc/src_raw/make_raw_csk
 preproc/CSK_preproc/src_raw/make_raw_csk.o
 preproc/CSK_preproc/src_slc/make_slc_csk
 preproc/CSK_preproc/src_slc/make_slc_csk.o
+preproc/CSK_preproc/src_slc2/make_slc_csk2
+preproc/CSK_preproc/src_slc2/make_slc_csk2.o
 preproc/ENVI_preproc/ASA_CAT/asa_cat
 preproc/ENVI_preproc/ASA_CAT/asa_cat.o
 preproc/ENVI_preproc/Dop_orbit/calc_dop_orb_envi
