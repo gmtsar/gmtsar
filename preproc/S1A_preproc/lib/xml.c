@@ -195,6 +195,7 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 
 		// create tree
 		// first node
+
 		if (count == 0) {
 			strcpy(list[count].name, tmp_char);
 			level[lev_ct] = count;
@@ -242,6 +243,10 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 		// go to parent level
 
 		else if (count != 0 && have_slash == 1) {
+
+            // in case the above attributes are empty, increase the level so it can properly go back
+            if (strncmp(tmp_char, lev_rec[lev_ct], strlen(tmp_char)) == 0) lev_ct++;
+
 			// fprintf(stderr,"%s\n",tmp_char);
 			if (strncmp(lev_rec[lev_ct - 1], "OutOfSpace", 10) == 0) {
 				cat_nums(tmp_s, lev_rec[lev_ct - 1]);
