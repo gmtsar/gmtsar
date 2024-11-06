@@ -223,8 +223,9 @@
             set res_shift = `sort -n tmp2 | awk ' { a[i++]=$1; } END { print a[int(i/2)]; }' | awk '{print $1/2.0/3.141592653/'$spec_sep'}'`
             echo "Updating azimuth shift with mapping the residual da ...(mapping $res_shift)"
             awk '{print $1,$2,$3}' < ddphase > test
-    
-            gmt blockmedian test -R0/$rmax/0/$amax -I400/100 | gmt greenspline -Gtest.grd -R0/$rmax/0/$amax -I400/100 -D1 -Cn900 -r -V
+            set rmax2 = `echo $rmax | awk '{print $1+1000}'`
+            set amax2 = `echo $amax | awk '{print $1+1000}'`
+            gmt blockmedian test -R-1000/$rmax2/-1000/$amax2 -I400/100 | gmt greenspline -Gtest.grd -R-1000/$rmax2/-1000/$amax2 -I400/100 -D1 -Cn900 -r -V
             gmt grdfilter test.grd -D0 -Fg8000/1500 -Gtest2.grd -V
             gmt grdsample test2.grd -Gtest_b.grd -Ra.grd -nc 
 
