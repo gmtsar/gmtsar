@@ -103,7 +103,7 @@ spotless:
 	for d in $(PREPROCESSORS); do \
 		(cd preproc/$${d}_preproc; $(MAKE) spotless); \
 	done
-	rm -rf $(sharedir) bin share
+	rm -rf bin share
 	$(RM) gmtsar/csh/gmtsar_sharedir.csh \
 	preproc/ENVI_preproc/scripts/ENVI_SLC_pre_process \
 	preproc/ENVI_preproc/scripts/ENVI_pre_process \
