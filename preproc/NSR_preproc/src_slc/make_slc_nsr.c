@@ -97,7 +97,7 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 
 int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
 
-    int i, j, width, height;
+    int i, j, width, height, width2;
     short *tmp;
     float *buf;
     hsize_t dims[10];
@@ -111,10 +111,10 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
     strcpy(type,&mode[1]);
 
     if (strcmp(freq, "A") == 0) {
-      strcpy(Group,"/science/LSAR/SLC/swaths/frequencyA");
+      strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
     }
     else if (strcmp(freq, "B") == 0) {
-      strcpy(Group,"/science/LSAR/SLC/swaths/frequencyB");
+      strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyB");
     }
     else {
       fprintf(stderr,"Invalid frequency type\n");
@@ -138,19 +138,28 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
 
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
 
-    width = width - width%4;
+    width2 = width - width%4;
     height = height - height%4;
 
-    printf("Writing SLC..Image Size: %d X %d...\n", width, height);
+    printf("Writing SLC..Image Size: %d X %d...\n", width2, height);
 
     // stored sequentially
-
+/*
     for (i = height; i >= 0; i--) {
         for (j = 0; j < width*2; j += 2) {
             tmp[j] = (short)(buf[i * width*2 + j]*dfact);
             tmp[j + 1] = (short)(buf[i * width*2 + j + 1]*dfact);
         }
-        fwrite(tmp, sizeof(short), width * 2, slc);
+        fwrite(tmp, sizeof(short), width2 * 2, slc);
+    }
+*/
+
+    for (i = 0; i < height; i++) {
+        for (j = 0; j < width; j++) {
+            tmp[j*2] = (short)(buf[i * width * 2 + j*2]*dfact);
+            tmp[j*2 + 1] = (short)(buf[i * width * 2 +  j*2 + 1]*dfact);
+        }
+        fwrite(tmp, sizeof(short), width2 * 2, slc);
     }
 
     // stored r and then i
@@ -182,7 +191,7 @@ int pop_led_hdf5(hid_t input, state_vector *sv) {
     double t[200], t0, t_tmp;
     double x[600], v[600];
 
-    hdf5_read(tmp_c, input, "/science/LSAR/SLC/metadata/orbit", "time", "units", 'c');
+    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/metadata/orbit", "time", "units", 'c');
 
     cat_nums(date,tmp_c);
     str_date2JD(tmp_c, date);
@@ -191,11 +200,11 @@ int pop_led_hdf5(hid_t input, state_vector *sv) {
     date[4] = '\0';
     iy = (int)str2double(date);
 
-    hdf5_read(&count, input, "/science/LSAR/SLC/metadata/orbit", "time", "", 'n');
+    hdf5_read(&count, input, "/science/LSAR/RSLC/metadata/orbit", "time", "", 'n');
 
-    hdf5_read(t, input, "/science/LSAR/SLC/metadata/orbit", "time", "", 'd');
-    hdf5_read(x, input, "/science/LSAR/SLC/metadata/orbit", "position", "", 'd');
-    hdf5_read(v, input, "/science/LSAR/SLC/metadata/orbit", "velocity", "", 'd');
+    hdf5_read(t, input, "/science/LSAR/RSLC/metadata/orbit", "time", "", 'd');
+    hdf5_read(x, input, "/science/LSAR/RSLC/metadata/orbit", "position", "", 'd');
+    hdf5_read(v, input, "/science/LSAR/RSLC/metadata/orbit", "velocity", "", 'd');
 
     // fprintf(stderr,"%.15f\n",x[3]);
 
@@ -256,7 +265,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     prm->first_sample = 1;
     prm->st_rng_bin = 1;
     strasign(prm->dtype, "a", 0, 0);
-    prm->SC_identity = 8; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS
+    prm->SC_identity = 14; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS
                              (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a*/
     prm->ra = 6378137.00; // equatorial_radius
     prm->rc = 6356752.31; // polar_radius
@@ -274,10 +283,10 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     prm->xmq = 127.5;
 
     if (strcmp(freq, "A") == 0) {
-        strcpy(group,"/science/LSAR/SLC/swaths/frequencyA");
+        strcpy(group,"/science/LSAR/RSLC/swaths/frequencyA");
     } 
     else if (strcmp(freq, "B") == 0) {
-        strcpy(group,"/science/LSAR/SLC/swaths/frequencyB");
+        strcpy(group,"/science/LSAR/RSLC/swaths/frequencyB");
     }
     else {
         fprintf(stderr,"Invalid frequency type\n");
@@ -288,31 +297,35 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     prm->fs = c_speed/2.0/tmp_d[0];
 
     // three strings are Group, Dataset and Attributes with the last being datatype
-    hdf5_read(tmp_d, input, group, "acquiredCenterFrequency", "", 'd'); 
-    prm->lambda = c_speed/tmp_d[0]; // this is wrong
+    hdf5_read(tmp_d, input, group, "processedCenterFrequency", "", 'd'); 
+    prm->lambda = c_speed/tmp_d[0]; // this needs to be checked
 
-
-    hdf5_read(tmp_d, input, group, "nominalAcquisitionPRF", "", 'd'); 
-    prm->chirp_slope = tmp_d[0]; // this is wrong
 
     hdf5_read(tmp_d, input, group, "nominalAcquisitionPRF", "", 'd'); 
     prm->pulsedur = tmp_d[0]; // this is wrong
-    hdf5_read(tmp_d, input, group, "nominalAcquisitionPRF", "", 'd'); 
-    prm->prf = tmp_d[0]; // this is wrong
 
-        // SLC
-    hdf5_read(tmp_d, input, "/science/LSAR/SLC/swaths/frequencyB", "nominalAcquisitionPRF", "", 'd'); 
-    prm->near_range = tmp_d[0] * c_speed / 2;
+    hdf5_read(tmp_d, input, group, "processedRangeBandwidth", "", 'd'); 
+    prm->chirp_slope = tmp_d[0]; // this is wrong
+
+    hdf5_read(tmp_d, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTimeSpacing", "", 'd'); 
+    prm->prf = 1.0/tmp_d[0]; // this needs to be checked
+
+    hdf5_read(t, input, group, "slantRange", "", 'd'); 
+    prm->near_range = t[0];// * c_speed / 2;
 //fprintf(stderr,"%.2f\n",prm->near_range);    
 //exit(1);
 
-    hdf5_read(tmp_c, input, "/science/LSAR/SLC/swaths", "zeroDopplerTime", "units", 'c'); 
+    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "units", 'c'); 
     cat_nums(date,tmp_c);
     strcpy(iy,date);
     iy[4] = '\0';
     yr = str2double(iy);
     str_date2JD(tmp_c, date);
-    hdf5_read(t, input, "/science/LSAR/SLC/swaths", "zeroDopplerTime", "", 'd'); 
+    t0 = str2double(tmp_c);
+    hdf5_read(t, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "", 'd'); 
+//printf("%.12lf\n",t[0]);
+    hdf5_read(tmp_c, input, "/science/LSAR/identification", "zeroDopplerStartTime", "", 's'); 
+//printf("%s\n",tmp_c);
     prm->clock_start = t0 + t[0]/86400.0;
     prm->SC_clock_start = prm->clock_start + yr*1000.0;
 
@@ -320,7 +333,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     prm->fddd1 = 0.0;
 
     //hdf5_read(tmp_c, input, "/", "", "mission_name", 'c'); 
-    hdf5_read(tmp_c, input, "/science/LSAR/SLC/metadata/attitude", "attitudeType", "description", 'c'); 
+    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/metadata/attitude", "attitudeType", "description", 'c'); 
 
     if (strcmp(tmp_c, "ASCENDING") == 0) {
         strasign(prm->orbdir, "A", 0, 0);
@@ -364,6 +377,10 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
 
 int main(int argc, char **argv) {
 
+    if (argc < 4) {
+        die(USAGE, "");
+    }
+
     FILE *OUTPUT_PRM, *OUTPUT_SLC, *OUTPUT_LED;
     char tmp_str[200],mode[10];
     struct PRM prm;
@@ -372,9 +389,6 @@ int main(int argc, char **argv) {
     hid_t file; 
 
     strcpy(mode,argv[3]);
-
-    if (argc < 4)
-        die(USAGE, "");
 
     if ((file = H5Fopen(argv[1], H5F_ACC_RDONLY, H5P_DEFAULT)) < 0)
         die("Couldn't open HDF5 file: \n", argv[1]);
