@@ -54,7 +54,10 @@ def filter():
     print('FILTER: define filter and decimation variables ... ...')
     
     #sharedir = 'gmtsar_sharedir.csh'
-    sharedir = '/usr/local/GMTSAR/share/gmtsar'
+    #sharedir = '/usr/local/GMTSAR/share/gmtsar' for Ubuntu 
+    #sharedir = '/opt/homebrew/Cellar/gmtsar/6.5/share/gmtsar' for MacOS with homebrew
+    sharedir = subprocess.run(['gmtsar_sharedir.csh'], capture_output=True, text=True).stdout.strip()
+    print('sharedir in filter is', sharedir)
     filter3  = sharedir + '/filters/fill.3x3'
     filter4  = sharedir + '/filters/xdir'
     filter5  = sharedir + '/filters/ydir'
