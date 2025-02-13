@@ -254,3 +254,5 @@ preproc/LT1_preproc/include
 preproc/LT1_preproc/lib
 preproc/LT1_preproc/src/make_slc_lt1
 preproc/LT1_preproc/src/make_slc_lt1.o
+gmtsar/python/utils/.DS_Store
+.DS_Store
