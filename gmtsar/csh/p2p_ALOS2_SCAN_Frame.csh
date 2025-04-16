@@ -369,7 +369,7 @@ endif
     proj_ra2ll.csh trans.dat corr.grd corr_ll.grd
     gmt makecpt -Crainbow -T-3.15/3.15/0.05 -Z > phase.cpt
     set BT = `gmt grdinfo -C corr.grd | awk '{print $7}'`
-    gmt makecpt -Cgray -T0/$BT/0.05 -Z > corr.cpt
+    gmt makecpt -Cgray -T0/$BT/0.05 -Z -M --COLOR_NAN=red > corr.cpt
     grd2kml.csh phasefilt_ll phase.cpt
     grd2kml.csh corr_ll corr.cpt
 
