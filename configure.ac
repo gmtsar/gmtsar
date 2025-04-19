@@ -349,7 +349,7 @@ if test "$GCC" = "yes"; then		# GNU cc options
 		CFLAGS="$CFLAGS -Wall"
 		CXXFLAGS="$CXXFLAGS -Wall"
 	fi
-	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=c99"
+	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=gnu99"
 	CXXFLAGS="$CXXFLAGS -fPIC"
 elif test "$os" = "SunOS" ; then	# Sun Workshop CC options
 	CFLAGS="$CFLAGS -Xc"
