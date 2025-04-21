@@ -58,9 +58,9 @@ intf - contains subdirectories with the possible interferograms (only 1 for this
 
 3) MAKE DEM 
 
-Go to the following web site and construct a file dem.grd that encloses the SAR frame.
-      https://topex.ucsd.edu/gmtsar/demgen
-
+Enter the following command to make a NETCDF file of heights above the ellipsoid from SRTM.  This used the GMT dem 
+generation facility.
+	make_dem.csh W E S N [mode]
 Place the file dem.grd in the /topo directory. 
 
 4) EXAMPLE RUNS
