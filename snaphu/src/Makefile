@@ -1,10 +1,10 @@
-#	$Id: Makefile 33 2013-04-06 05:37:15Z pwessel $
-#
-#	makefile for snaphu directory
-#
 # Makefile for statistical-cost network-flow algorithm for phase unwrapping 
 # Curtis W. Chen
-# Copyright 2002 Board of Trustees, Leland Stanford Jr. University
+# Copyright 2002,2017 Board of Trustees, Leland Stanford Jr. University
+
+# Specify your compiler (CC), whatever compiler flags (CFLAGS) you
+# need, and the directory (BINDIR) in which the produced binary should
+# be written.
 #
 # If you want to copy the man page and executable to a system directory, 
 # specify the appropriate directories in the INSTALLDIR and MANDIR 
@@ -13,46 +13,49 @@
 # If you specify -D NO_CS2, the program will be compiled without the
 # CS2 MCF solver module.
 
-include ../../config.mk
+CC		=	cc
+OPTIMFLAGS	=	-O3
+DEBUGFLAGS	=	-ggdb
+CFLAGS		=	-arch x86_64 $(OPTIMFLAGS) -Wall # -arch arm64 -Wuninitialized -m64 -D NO_CS2
+LIBS		=	-lm 
+BINDIR		=	../bin
+INSTALLDIR	=	/usr/local/bin
+MANDIR		=	/usr/local/man
+SNAPHU		=	$(BINDIR)/snaphu
+SNAPHUMAN	=	../man/man1/snaphu.1
+OBJS		=	snaphu_tile.o \
+			snaphu_solver.o \
+			snaphu_io.o \
+			snaphu_util.o \
+			snaphu_cost.o \
+			snaphu_cs2.o 
 
-PROGS_C		= snaphu.c
-LIB_C		= snaphu_tile.c \
-		  snaphu_solver.c \
-		  snaphu_io.c \
-		  snaphu_util.c \
-		  snaphu_cost.c \
-		  snaphu_cs2.c 
-PROGS_O         = $(PROGS_C:.c=.o)
-PROGS           = $(PROGS_C:.c=)
-MANDIR		= /usr/local/man
-SNAPHUMAN	= ../man/man1/snaphu.1
-LIB_O         = $(LIB_C:.c=.o)
 
-#-------------------------------------------------------------------------------
-#	software targets
-#-------------------------------------------------------------------------------
+.PHONY:	all
+all:		$(SNAPHU)
 
-all:		$(PROGS)
+$(SNAPHU):	snaphu.c $(OBJS) snaphu.h Makefile 
+		$(CC) $(CFLAGS) \
+		snaphu.c \
+		$(OBJS) \
+		-o $(SNAPHU) \
+		$(LIBS)
 
-install:	all
-		$(INSTALL) -d $(bindir)
-		$(INSTALL) $(PROGS) $(bindir)
+.PHONY:	gdebug
+gdebug:		snaphu.c snaphu_tile.c snaphu_solver.c snaphu_io.c snaphu_util.c snaphu_cost.c snaphu_cs2.c snaphu.h
+		$(CC) $(DEBUGFLAGS) snaphu.c snaphu_tile.c snaphu_solver.c snaphu_io.c snaphu_util.c snaphu_cost.c snaphu_cs2.c -o $(SNAPHU) $(LIBS)
 
-install-man:
-		cp $(SNAPHUMAN) $(MANDIR)/man1
+install:	$(SNAPHU)
+		cp $(SNAPHU) $(INSTALLDIR);
+		cp $(SNAPHUMAN) $(MANDIR)/man1/
 
-uninstall:
-		cd $(bindir); rm $(PROGS)
+clean:
+		@rm -f *.o
 
-spotless::	clean
+Clean:
+		@rm -f *.o *~ #*#
 
-clean:	
-		rm -f *.o *% core tags $(PROGS)
+clobber:
+		@rm -f $(SNAPHU)
 
-#-------------------------------------------------------------------------------
-#	program rules
-#-------------------------------------------------------------------------------
-
-$(PROGS):	$(PROGS_O) $(LIB_O)
-		$(CC) $(LDFLAGS) $@.o $(LIB_O) $(LIBS) -o $@
-
+# end of Makefile
