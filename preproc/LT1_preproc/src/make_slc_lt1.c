@@ -120,6 +120,7 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir, double SLC_factor) {
 	uint16 *buf;
 	short *tmp;
     int nclip=0;
+    double rsum=0., nsum=0., rmad, tfac;
 
 	// get the width and the height of the file, make width dividable by 4
 	TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &widthi);
@@ -130,6 +131,7 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir, double SLC_factor) {
 	width = widthi - widthi % 4;
 	tmp = (short *)malloc(width * 2 * sizeof(short));
 	printf("Writing SLC..Image Size: %d X %d...\n", width, height);
+
 
     for (i = 0; i < height; i++) {
     	TIFFReadScanline(tif, buf, i, s);
@@ -142,11 +144,18 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir, double SLC_factor) {
                     nclip++;
 		        tmp[j] = (short)clipi2((short)buf[j]*SLC_factor);
             }
-
+            rsum = rsum + fabs((double)tmp[j]);
+            nsum = nsum + 1;
 		}
 		fwrite(tmp, sizeof(short), width * 2, slc);
     }
     printf("Number of clipped short int is %d\n",nclip);
+    rmad = rsum / nsum;
+    tfac = 1000./ rmad;
+    if (tfac < 0.33 || tfac > 3.0) {
+        fprintf(stderr, " %f (%f / %f) mean absolute deviation after scaling is \n", rmad, rsum, nsum);
+        fprintf(stderr, " ERROR *** reset SCL_factor to something closer to %f \n", tfac * SLC_factor);
+    }
 /*
 	if (strcmp(orbdir, "A") == 0) {
 		printf("Fliping upside down for Ascending Image...\n");

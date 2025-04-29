@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
 		if (i == 0)
 			fs0 = r[0].fs;
 		if (r[i].fs != fs0) {
-			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistant.\nYou "
+			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistent.\nYou "
 			                "need to do FBD/FBS conversion.\n\n");
 		}
 

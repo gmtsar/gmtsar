@@ -192,7 +192,7 @@ int write_slc(FILE *input, FILE *slc, int rows, int cols) {
 
 		// printf("Writing %u Bytes to SLC...\n",(tnl-4)*(rtnb-8));
 		if (i != 1) {
-			printf("Swaping Bytes...\n");
+			printf("Swapping Bytes...\n");
 		}
 		tk = tnl - 4;
 		for (k = 0; k < tk; k++) {

@@ -9,7 +9,7 @@
 #
 # set a local directory that stores S1A and S1B orbits. e.g. orb_dir/S1A and orb_dir/S1B
 #
-source ~/.cshrc
+# source ~/.cshrc
 
 set orb_dir = "/geosat2/InSAR_Processing/Sentinel_Orbits"
 

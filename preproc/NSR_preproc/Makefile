@@ -27,3 +27,4 @@ clean:
 	done
 
 spotless:	clean
+	$(RM) lib include

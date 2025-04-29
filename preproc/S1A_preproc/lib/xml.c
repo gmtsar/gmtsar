@@ -19,7 +19,7 @@
 
 /* global variables needed for the xml library */
 int N = 0;
-int MAX_TREE_SIZE = 600000; // size of the tree in maximum
+int MAX_TREE_SIZE = 2000000; // size of the tree in maximum
 int MAX_CHAR_SIZE = 60000;  // size of char arrays in maximum
 char STR[4000][60000];
 
@@ -195,6 +195,7 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 
 		// create tree
 		// first node
+
 		if (count == 0) {
 			strcpy(list[count].name, tmp_char);
 			level[lev_ct] = count;
@@ -242,6 +243,10 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 		// go to parent level
 
 		else if (count != 0 && have_slash == 1) {
+
+            // in case the above attributes are empty, increase the level so it can properly go back
+            if (strncmp(tmp_char, lev_rec[lev_ct], strlen(tmp_char)) == 0) lev_ct++;
+
 			// fprintf(stderr,"%s\n",tmp_char);
 			if (strncmp(lev_rec[lev_ct - 1], "OutOfSpace", 10) == 0) {
 				cat_nums(tmp_s, lev_rec[lev_ct - 1]);
@@ -496,9 +501,13 @@ int str_date2JD(char *str_JD, char *str_date) {
 double str2double(char *str) {
 	int i, n, m;
 	double value = 0.0, value1 = 0.0, value2 = 0.0, sgn = 1.0;
-	char tmp1[100], tmp2[100], tmp[100], str_tmp[100];
+	char tmp1[100], tmp2[100], tmp[100], str_tmp[100], str_tmp2[100];
 
 	strasign(str_tmp, str, 0, strlen(str));
+    while (str_tmp[0] == ' ') {
+        strcpy(str_tmp2,str_tmp);
+        strasign(str_tmp, str_tmp2, 1, strlen(str));
+    }
 
 	// decide the sign
 	if (str_tmp[0] == '-' || str_tmp[0] == '+') {

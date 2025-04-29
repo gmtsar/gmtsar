@@ -167,6 +167,8 @@ preproc/CSK_preproc/src_raw/make_raw_csk
 preproc/CSK_preproc/src_raw/make_raw_csk.o
 preproc/CSK_preproc/src_slc/make_slc_csk
 preproc/CSK_preproc/src_slc/make_slc_csk.o
+preproc/CSK_preproc/src_slc2/make_slc_csk2
+preproc/CSK_preproc/src_slc2/make_slc_csk2.o
 preproc/ENVI_preproc/ASA_CAT/asa_cat
 preproc/ENVI_preproc/ASA_CAT/asa_cat.o
 preproc/ENVI_preproc/Dop_orbit/calc_dop_orb_envi
@@ -254,5 +256,10 @@ preproc/LT1_preproc/include
 preproc/LT1_preproc/lib
 preproc/LT1_preproc/src/make_slc_lt1
 preproc/LT1_preproc/src/make_slc_lt1.o
+<<<<<<< HEAD
 gmtsar/python/utils/.DS_Store
 .DS_Store
+=======
+preproc/LT1_preproc/src_orbit/ext_orb_lt1
+preproc/LT1_preproc/src_orbit/ext_orb_lt1.o
+>>>>>>> upstream/master

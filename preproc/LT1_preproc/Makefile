@@ -2,7 +2,7 @@ include ../../config.mk
 #
 #   make all the files
 #
-DIRS	= lib src
+DIRS	= src src_orbit
 
 all:
 	$(LN_S) -f ../S1A_preproc/include include
@@ -25,3 +25,4 @@ clean:
 	done
 
 spotless:	clean
+	$(RM) lib include

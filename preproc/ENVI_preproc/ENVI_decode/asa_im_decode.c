@@ -518,7 +518,7 @@ int main(int argc, char *argv[]) {
 		       "<near_range>\n\n");
 		printf("       asa_im      input image file(s) (multiple files if merging "
 		       "along-track)\n");
-		printf("       asa_ins     input auxilary instrument characterization data "
+		printf("       asa_ins     input auxiliary instrument characterization data "
 		       "file\n");
 		printf("       out         output raw data file\n");
 		printf("       outType     output file type (1=byte,4=float)\n");
@@ -537,7 +537,7 @@ int main(int argc, char *argv[]) {
 		printf("missing lines within a data set and between adjacent along-track "
 		       "data sets are filled with zeroes in float mode and 0.*127.5+127.5 "
 		       "+ .5 = 128 for byte mode\n\n");
-		printf("auxilary data files can be found at "
+		printf("auxiliary data files can be found at "
 		       "http://envisat.esa.int/services/auxiliary_data/asar/\n\n");
 		printf("Envisat ASAR Product Handbook, Issue 1.1, 1 December 2002 can be "
 		       "found at "

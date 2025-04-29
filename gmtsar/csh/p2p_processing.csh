@@ -14,7 +14,7 @@
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
     echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
-    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, TSX, RS2, GF3, LT1"
+    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
     echo ""
     echo "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc"
     echo ""
@@ -223,7 +223,7 @@
           echo " no file  raw/"$aligned".EOF"
         endif
       endif
-    else if ($SAT == "CSK_RAW" || $SAT == "CSK_SLC") then
+    else if ($SAT == "CSK_RAW" || $SAT == "CSK_SLC" || $SAT == "CSG") then
       if(! -f raw/$master.h5 ) then
         echo " no file  raw/"$master".h5"
         exit
@@ -508,7 +508,7 @@
           set amin = `echo $amedian | awk '{print $1-3}'`
           awk '{if($4 > '$amin' && $4 < '$amax') print $0}' < freq_xcorr.dat > freq_alos2.dat
           fitoffset.csh 2 3 freq_alos2.dat 10 >> $aligned.PRM
-        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1") then
+        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" ||  $SAT == "ALOS_SLC") then
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
         else

@@ -46,19 +46,19 @@ clean:
 	(cd epr_api-2.3/src/; make clean)
 
 envi_slc_decode:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+		$(CC) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) $(LDFLAGS) \
 		-o envi_slc_decode \
 		envi_slc_decode.c \
 		epr_api-2.3/src/*.o $(CLIBS)
 
 envisat_dump_data:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+		$(CC) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) $(LDFLAGS) \
 		-o envisat_dump_data \
 		envisat_dump_data.c \
 		epr_api-2.3/src/*.o $(CLIBS)
 
 envisat_dump_header:
-		$(CC) $(CFLAGS) $(INCLUDES) $(LFLAGS) \
+		$(CC) $(CPPFLAGS) $(CFLAGS) $(INCLUDES) $(LDFLAGS) \
 		-o envisat_dump_header \
 		envisat_dump_header.c \
 		epr_api-2.3/src/*.o $(CLIBS)

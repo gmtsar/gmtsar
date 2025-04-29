@@ -10,7 +10,7 @@ if ($#argv != 1) then
   echo "Usage: pop_config.csh SAT"
   echo ""
   echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
-  echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, TSX, RS2, GF3"
+  echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
   echo ""
   exit 1
 endif
@@ -69,15 +69,15 @@ if ($SAT == "S1_TOPS") then
   echo "spec_mode = 1"
 endif
 
-if ($SAT == "ALOS_SLC" || $SAT == "ALOS2" ) then
+if ($SAT == "ALOS_SLC") then
   echo "# SLC scale factor to convert float to int "
   echo "SLC_factor = 0.02"
   echo ""
-else if ($SAT == "ALOS2_SCAN") then
+else if ($SAT == "ALOS2_SCAN" || $SAT == "ALOS2") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 2.0"
   echo ""
-else if ($SAT == "CSK_SLC") then
+else if ($SAT == "CSK_SLC" || $SAT == "CSG") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 1.0"
   echo ""
