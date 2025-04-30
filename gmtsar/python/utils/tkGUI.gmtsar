@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 import tkinter as tk
 from tkinter import ttk
-import subprocess, os, signal, sys, threading, time
+import subprocess, os, signal, sys, threading, time, datetime
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as FigureCanvas
@@ -52,19 +52,21 @@ class MyWindow(tk.Tk):
                             'ALOS2_SCAN_SSAF': 'ALOS2',
                             'NISAR_SIM_ALOS': 'ALOS',
                             'ENVI_Baja_EQ': 'ENVI',
-                            'ENVI_Baja_EQ_SLC': 'ENVI',
+                            'ENVI_Baja_EQ_SLC': 'ENVI_SLC',
                             'ERS_Hector_EQ': 'ERS',
                             'ALOS_Baja_EQ': 'ALOS', 
                             'ALOS_ERSDAC_L1.0': 'ALOS', 
-                            'ALOS_SLC_L1.1': 'ALOS', 
+                            'ALOS_SLC_L1.1': 'ALOS_SLC', 
                             'ALOS-ionosphere-correction': 'ALOS', 
                             'TSX_SLC_Hawaii': 'TSX',
                             'S1_Ridgecrest': 'S1_TOPS',
                             'S1A_SLC_TOPS_LA': 'S1_TOPS_Frame',
                             'S1A_SLC_TOPS_Greece': 'S1_TOPS_Frame',
-                            'S1A_SLC_TOPS_Italy': 'S1_TOPS_Frame'}
+                            'S1A_SLC_TOPS_Italy': 'S1_TOPS_Frame',
+                            'CSK_RAW_Hawaii': 'CSK_RAW',
+                            'CSK_SLC_Italy': 'CSK_SLC'}
                             #'ALL': 'ALOS'}
-        self.download_file_list = list(self.sample_dict.keys())
+        self.download_file_list = sorted(list(self.sample_dict.keys()), key=str.lower)
 
         # Create frame1 for system controls
         self.frame1 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
@@ -98,7 +100,7 @@ class MyWindow(tk.Tk):
         # downloader
         runDownloader = ttk.Button(self.frame1, text="Download", command=self.download_data)
         runDownloader.grid(row=3, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
-        self.downloader = ttk.Combobox(self.frame1, values=list(self.sample_dict.keys()), state='readonly')
+        self.downloader = ttk.Combobox(self.frame1, values=self.download_file_list)
         self.downloader.set('RS2_SLC_Hawaii')
         self.downloader.grid(row=3, column=2, rowspan=1, columnspan=6, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
 
@@ -123,7 +125,7 @@ class MyWindow(tk.Tk):
         SATLabel = ttk.Label(self, text="Choose SAT")
         SATLabel.grid(row=ConfigBlockStartRow, column=2, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
         
-        self.SAT = ttk.Combobox(self, values=list(set([v for v in self.sample_dict.values()])), state='readonly')
+        self.SAT = ttk.Combobox(self, values=sorted(list(set([v for v in self.sample_dict.values()])), key=str.lower), state='readonly')
         self.SAT.grid(row=ConfigBlockStartRow, column=5, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
         self.SAT.set('RS2')
 
@@ -207,7 +209,7 @@ class MyWindow(tk.Tk):
     def updateDropdownMenu(self):
         self.navigateButton.menu.delete(0,'end')
         currentDir = self.currentPath.get()
-        for item in self.getDirectoryContents(currentDir):
+        for item in sorted(self.getDirectoryContents(currentDir), key=str.lower):
             self.navigateButton.menu.add_command(
                 label=item,
                 command = lambda item=item:self.changeDirectory(item)
@@ -384,39 +386,11 @@ class MyWindow(tk.Tk):
         filepath = self.locate_result_filepath(filename)
         self.display_image(filepath+'.'+self.plotting_method)
 
-    def load_rsa(self):
-        figure_files = [f for f in os.listdir() if f.endswith('.'+self.plotting_method) and 'ContourRSA_T' in f]
-        self.total_rsa_files = len(figure_files)
-
-        id = self.update_rsa_id()
-        if figure_files:
-            self.display_image(figure_files[id])
-
-    def load_scaling(self):
-        figure_files = [f for f in os.listdir() if f.endswith('.'+self.plotting_method) and 'gmRSA_T' in f]
-        self.total_rsa_scaling_files = len(figure_files)
-
-        id = self.update_rsa_scaling_id()
-        if figure_files:
-            self.display_image(figure_files[id])
-
     def load_snapshot(self):
         figure_files = [f for f in os.listdir() if f.endswith('.'+self.plotting_method) and 'gMap' in f]
         latest_file = max(figure_files, key=os.path.getmtime)
         self.display_image(latest_file)
-
-    def update_rsa_id(self):
-        self.rsa_index += 1
-        if self.rsa_index >= self.total_rsa_files:
-            self.rsa_index = 0
-        return self.rsa_index
     
-    def update_rsa_scaling_id(self):
-        self.scaling_fig_index += 1
-        if self.scaling_fig_index >= self.total_rsa_scaling_files:
-            self.scaling_fig_index = 0
-        return self.scaling_fig_index
-      
     def update_snapshot_id(self):
         self.snapshot_index += 1
         if self.snapshot_index >= self.total_snapshot_files:
@@ -440,43 +414,57 @@ class MyWindow(tk.Tk):
         sat = self.downloader.get()
         filename = sat+'.tar.gz'
         self.download_if_missing(filename)
-        self.extract_if_missing(filename[:-7])
 
     def download_if_missing(self, filename):
-        if not os.path.exists(filename):
-            print(f"Downloading {filename}...")
-            cmd = f"wget http://topex.ucsd.edu/gmtsar/tar/{filename}"
-            self.run_subprocess(cmd.split())
-            print(f"{filename} downloaded.")
-        else:
-            print(f"{filename} already exists. Skipping download.")
-    
+        print(f"Downloading {filename}...")
+        cmd = f"wget -c http://topex.ucsd.edu/gmtsar/tar/{filename}"
+        self.run_subprocess(cmd.split())
+        print(f"{filename} downloaded.")
+        self.extract_if_missing(filename[:-7])
+       
     def extract_if_missing(self, foldername):
         if not os.path.exists(foldername):
             print(f"Extracting {foldername}...")
-            #subprocess.run(f"mkdir {foldername}", shell=True)
             self.run_subprocess(['mkdir', foldername])
             cmd = f"tar -xzf {foldername}.tar.gz -C {foldername}"
-            #subprocess.run(cmd, shell=True)
             self.run_subprocess(cmd.split())
             print(f"{foldername} extracted.")
         else:
-            print(f"{foldername} already exists. Skipping extraction.")
+            if os.listdir(foldername):
+                print(f"{foldername} already exists. Skipping extraction.")
+            else:
+                print(f"{foldername} is empty. Extracting again...")
+                cmd = f"tar -xzf {foldername}.tar.gz -C {foldername}"
+                self.run_subprocess(cmd.split())
+                print(f"{foldername} extracted.")
 
     def find_image_pair(self):
         print(self.dataRootPath.get())
         dir = self.dataRootPath.get() + '/raw/'
-        raw_iamge_files = [f for f in os.listdir(dir)] # remove after only the last dot
-        print(raw_iamge_files)
+        raw_image_files = [f for f in os.listdir(dir)] # remove after only the last dot
+        print(raw_image_files)
         filename_image_pair = []
         if self.SAT.get() == 'RS2':
-            filename_image_pair = [os.path.splitext(f)[0] for f in raw_iamge_files if f.endswith('.PRM')]
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.PRM')]
+        elif self.SAT.get() == 'CSK_RAW' or self.SAT.get() == 'CSK_SLC':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.h5')]
         elif self.SAT.get() == 'ALOS':
             filename_image_pair = []
-            for file in raw_iamge_files:
-                if os.path.splitext(file)[1] == ".0__A" and file.startswith('IMG-'):
+            for file in raw_image_files:
+                if (os.path.splitext(file)[1] == ".0__A" or os.path.splitext(file)[1] == ".1__A") and file.startswith('IMG-'):
                     filename_image_pair.append(file)
+        elif self.SAT.get() == 'TSX':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.cos')]
+        elif self.SAT.get() == 'ALOS2':
+            pass
+        elif self.SAT.get() == 'ALOS_SLC':
+            pass
+        elif self.SAT.get() == 'ENVI':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.baq')]
+        elif self.SAT.get() == 'ENVI_SLC':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.N1')]
 
+        filename_image_pair = sorted(filename_image_pair, key=str.lower)
         if len(filename_image_pair) != 2:
             raise ValueError("There should be exactly two raw image files in the directory but get "+str(len(filename_image_pair)))
         
@@ -488,14 +476,23 @@ class MyWindow(tk.Tk):
         print('Cleaned result directories intf/, SLC/ ...')
 
 class stdoutRedirector:
-    def __init__(self, widget):
+    def __init__(self, widget, logfile_path='stdout.log'):
         self.widget = widget
+        self.log_file = open(logfile_path, 'a')
 
     def write(self, string):
+        timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+        log_entry = timestamp + string if string.strip() else string
+
+        # write to GUI widget
         self.widget.configure(state='normal')
         self.widget.insert(tk.END, string)
         self.widget.configure(state='disabled')
         self.widget.yview(tk.END)
+
+        # write to log file
+        self.log_file.write(log_entry)
+        self.log_file.flush()
 
     def flush(self):
         pass
