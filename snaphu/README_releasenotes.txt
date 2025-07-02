@@ -1,3 +1,26 @@
+Notable changes in v2.0.7 since v2.0.6:
+---------------------------------------
+
+* Fix bug that causes "out of memory" error when when there are no
+  connected components in the first two tiles.
+
+
+Notable changes in v2.0.6 since v2.0.5:
+---------------------------------------
+
+* Change conditions for breaking out of outermost loop over flow
+  increments in optimizer to avoid possible infinite loop issue.
+
+
+Notable changes in v2.0.5 since v2.0.4:
+---------------------------------------
+
+* Change definition of connectivity of nodes that are completely separated by
+  masked pixels to fix bugs that could cause crash and/or infinite
+  looping when regions are separated by single row or column of masked
+  pixels.
+
+
 Notable changes in v2.0.4 since v2.0.3:
 ---------------------------------------
 

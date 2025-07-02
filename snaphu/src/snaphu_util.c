@@ -522,6 +522,9 @@ void *MAlloc(size_t size){
 
   void *ptr;
 
+  if(size==0){
+    return(NULL);
+  }
   if((ptr=malloc(size))==NULL){
     fflush(NULL);
     fprintf(sp0,"Out of memory\n");
@@ -539,6 +542,9 @@ void *CAlloc(size_t nitems, size_t size){
   
   void *ptr;
   
+  if(size==0){
+    return(NULL);
+  }
   if((ptr=calloc(nitems,size))==NULL){
     fflush(NULL);
     fprintf(sp0,"Out of memory\n");
@@ -555,7 +561,13 @@ void *CAlloc(size_t nitems, size_t size){
 void *ReAlloc(void *ptr, size_t size){
   
   void *ptr2;
-  
+
+  if(size==0){
+    if(ptr!=NULL){
+      free(ptr);
+    }
+    return(NULL);
+  }
   if((ptr2=realloc(ptr,size))==NULL){
     fflush(NULL);
     fprintf(sp0,"Out of memory\n");
