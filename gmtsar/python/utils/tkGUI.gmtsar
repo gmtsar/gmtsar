@@ -47,26 +47,32 @@ class MyWindow(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        self.sample_dict = {'RS2_SLC_Hawaii' : 'RS2', 
-                            'ALOS2_Brazil': 'ALOS2', 
-                            'ALOS2_SCAN_SSAF': 'ALOS2',
-                            'NISAR_SIM_ALOS': 'ALOS',
-                            'ENVI_Baja_EQ': 'ENVI',
-                            'ENVI_Baja_EQ_SLC': 'ENVI_SLC',
-                            'ERS_Hector_EQ': 'ERS',
-                            'ALOS_Baja_EQ': 'ALOS', 
-                            'ALOS_ERSDAC_L1.0': 'ALOS', 
-                            'ALOS_SLC_L1.1': 'ALOS_SLC', 
-                            'ALOS-ionosphere-correction': 'ALOS', 
-                            'TSX_SLC_Hawaii': 'TSX',
-                            'S1_Ridgecrest': 'S1_TOPS',
-                            'S1A_SLC_TOPS_LA': 'S1_TOPS_Frame',
-                            'S1A_SLC_TOPS_Greece': 'S1_TOPS_Frame',
-                            'S1A_SLC_TOPS_Italy': 'S1_TOPS_Frame',
-                            'CSK_RAW_Hawaii': 'CSK_RAW',
-                            'CSK_SLC_Italy': 'CSK_SLC'}
-                            #'ALL': 'ALOS'}
+        # data structure for self.sample_dict
+        # keys: tar file name (format .tar.gz is not shown);
+        # values: [satellite name, index on topex, name of the link shown on topex]
+        self.sample_dict = {'test_GMTSAR':      ['NONE', 1, 'Script to Test All Cases Below', 'tar.gz'],    
+                            'ALOS_Baja_EQ':     ['ALOS', 2, 'ALOS-1 L1.0 (standard format CEOS)', 'tar.gz'], 
+                            'ALOS_ERSDAC_L1.0': ['ALOS', 3, 'ALOS-1 L1.0 (ERSDAC format)', 'tar.gz'], 
+                            'ALOS_SLC_L1.1':    ['ALOS_SLC', 4, 'ALOS-1 L1.1', 'tar.gz'],
+                            'ALOS-ionosphere-correction': ['ALOS', 5, 'ALOS-1 L1.0 (ionosphere correction)', 'tar.gz'],
+                            'ALOS2_Brazil':     ['ALOS2', 8, 'ALOS-2 L1.1', 'tar.gz'],
+                            'ALOS2_SCAN_SSAF':  ['ALOS2', 9, 'ALOS-2 L1.1 ScanSAR', 'tar.gz'],
+                            'NISAR_SIM_ALOS':   ['ALOS', 10, 'NISAR_simulated_ALOS', 'tgz'],
+                            'ENVI_Baja_EQ':     ['ENVI', 11, 'Envisat''tar.gz'],
+                            'ENVI_Baja_EQ_SLC': ['ENVI_SLC', 12, 'Envisat SLC', 'tar.gz'],
+                            'ERS_Hector_EQ':    ['ERS', 14, 'ERS', 'tar.gz'],
+                            'CSK_RAW_Hawaii':   ['CSK_RAW', 15, 'COSMOS-SkyMed RAW', 'tar.gz'],
+                            'CSK_SLC_Italy':    ['CSK_SLC', 16, 'COSMOS-SkyMed SLC', 'tar.gz'],
+                            'RS2_SLC_Hawaii' :  ['RS2', 17, 'RADARSAT-2', 'tar.gz'], 
+                            'S1A_SLC_TOPS_LA':  ['S1_TOPS_Frame', 18, 'Sentinel-1 TOPS Los Angeles', 'tar.gz'],
+                            'S1A_SLC_TOPS_COVE':['S1_TOPS_Frame', 19, 'Sentinel-1 TOPS Niaragua', 'tar.gz'],
+                            'S1A_SLC_TOPS_Greece':['S1_TOPS_Frame', 20, 'Sentinel-1 TOPS Greece', 'tar.gz'],
+                            'S1_Larsen_C':      ['S1_TOPS', 23, 'Sentinel-1 TOPS Larsen Ice Shelf', 'tar.gz'],
+                            'S1_Ridgecrest_EQ': ['S1_TOPS', 25, 'Sentinel-1 TOPS Ridgecrest M7.1 EQ and phase gradient', 'tar.gz'],
+                            'TSX_SLC_Hawaii':   ['TSX', 29, 'TerraSAR-X', 'tar.gz']}
+        
         self.download_file_list = sorted(list(self.sample_dict.keys()), key=str.lower)
+        self.sat_list = sorted(list(set([v[0] for v in self.sample_dict.values()])), key=str.lower)
 
         # Create frame1 for system controls
         self.frame1 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
@@ -125,7 +131,7 @@ class MyWindow(tk.Tk):
         SATLabel = ttk.Label(self, text="Choose SAT")
         SATLabel.grid(row=ConfigBlockStartRow, column=2, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
         
-        self.SAT = ttk.Combobox(self, values=sorted(list(set([v for v in self.sample_dict.values()])), key=str.lower), state='readonly')
+        self.SAT = ttk.Combobox(self, values=self.sat_list)
         self.SAT.grid(row=ConfigBlockStartRow, column=5, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
         self.SAT.set('RS2')
 
@@ -148,9 +154,13 @@ class MyWindow(tk.Tk):
         frame3_label.grid(padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
 
         runGMTSARButton = ttk.Button(self, text="p2p_processing", command=lambda:self.runCommand('p2p_processing'))
-        runGMTSARButton.grid(row=RunCMDBlockStartRow+1, column=0, rowspan=1, columnspan=4, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
-        runTestAllButton = ttk.Button(self, text="test_all", command=lambda:self.runCommand('test_all'))
-        runTestAllButton.grid(row=RunCMDBlockStartRow+1, column=4, rowspan=1, columnspan=4, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        runGMTSARButton.grid(row=RunCMDBlockStartRow+1, column=0, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        runCshTestAllButton = ttk.Button(self, text="CshTestAll", command=lambda:self.runCommand('csh_test_all'))
+        runCshTestAllButton.grid(row=RunCMDBlockStartRow+1, column=3, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        runPythonTestAllButton = ttk.Button(self, text="PyTestAll", command=lambda:self.runCommand('python_test_all'))
+        runPythonTestAllButton.grid(row=RunCMDBlockStartRow+1, column=6, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
 
         self.frame4 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
         self.frame4.grid(row=PlotResultBlockStartRow, column=0, rowspan=1, columnspan=8, sticky=stickyOption, padx=pixelMargin, pady=pixelMargin)
@@ -244,8 +254,9 @@ class MyWindow(tk.Tk):
     def runCommand(self, cmdType):
         if cmdType=='pop_config':
             # Run pop_config SAT first to generate default config.py, then modify parameters inside. 
-            self.run_subprocess(['pop_config', self.SAT.get()])
+            self.run_subprocess_wait(['pop_config', self.SAT.get()])
             # Open config.py and modify parameters based on GUI inputs.
+            print("P1 value:", self.P1.get())
             if self.P1.get() == 'n':
                 self.setting_config_params('skip_1', 0, 1)
             if self.P2.get() == 'n':
@@ -262,20 +273,33 @@ class MyWindow(tk.Tk):
         elif cmdType=='p2p_processing':
             filename_image_pair = self.find_image_pair()
             self.run_subprocess(['p2p_processing', self.SAT.get(), filename_image_pair[0], filename_image_pair[1], 'config.py'])
-        elif cmdType=='test_all':
+        elif cmdType=='python_test_all':
             for case in self.download_file_list:
                 os.chdir(case)
                 self.run_subprocess(['cleanup', 'all'])
                 self.run_subprocess(['cp', '-r', '../python/utils/README_'+case+'.txt', '.'])
                 self.run_subprocess(['./README_'+case+'.txt', '>', 'log.txt'])
                 os.chdir('..')
-        
+        elif cmdType=='csh_test_all':
+            for case in self.download_file_list:
+                full_path = os.path.abspath(case)
+                print(f"Processing: {full_path}")
+                if os.path.exists(full_path):
+                    os.chdir(full_path)
+                    print(f"Now in directory: {os.getcwd()}")  # Confirm
+                    self.run_subprocess(['bash','README.txt'])
+                    os.chdir('..')
+
     def run_subprocess(self, command):
             # background running.
             threading.Thread(
                 target=lambda: self._run_and_print(command),
                 daemon=True
             ).start()
+
+    def run_subprocess_wait(self, command):
+            # no background running.
+            self._run_and_print(command)
 
     def _run_and_print(self, command):
         try:
@@ -412,7 +436,8 @@ class MyWindow(tk.Tk):
     
     def download_data(self):
         sat = self.downloader.get()
-        filename = sat+'.tar.gz'
+        format = self.sample_dict[sat][3]
+        filename = f"{sat}.{format}"
         self.download_if_missing(filename)
 
     def download_if_missing(self, filename):
@@ -448,7 +473,7 @@ class MyWindow(tk.Tk):
             filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.PRM')]
         elif self.SAT.get() == 'CSK_RAW' or self.SAT.get() == 'CSK_SLC':
             filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.h5')]
-        elif self.SAT.get() == 'ALOS':
+        elif self.SAT.get() == 'ALOS' or self.SAT.get() == 'ALOS2':
             filename_image_pair = []
             for file in raw_image_files:
                 if (os.path.splitext(file)[1] == ".0__A" or os.path.splitext(file)[1] == ".1__A") and file.startswith('IMG-'):
