@@ -279,7 +279,7 @@ echo $commandline
     echo ""
     echo " Pre-Process ENVISAT SLC data - END"
     echo ""  
-  else if ($SAT == "ALOS_SLC" || $SAT == "ALOS2" || $SAT == "ALOS2_SCAN") then
+  else if ($SAT == "ALOS_SLC" || $SAT == "ALOS2" || $SAT == "ALOS2_SCAN" || $SAT == "ALOS4") then
     echo ""
     echo " Pre-Process ALOS SLC data - START"
     echo ""
@@ -303,6 +303,13 @@ echo $commandline
       endif
       if ($skip_master == 0 || $skip_master == 1) then
         ALOS_pre_process_SLC IMG-$aligned LED-$aligned_led $commandline -ALOS1
+      endif
+    else if ($SAT == "ALOS4") then
+      if ($skip_master == 0 || $skip_master == 2) then
+        ALOS_pre_process_SLC IMG-$master LED-$master_led $commandline -ALOS4 -rbias 2.5
+      endif
+      if ($skip_master == 0 || $skip_master == 1) then
+        ALOS_pre_process_SLC IMG-$aligned LED-$aligned_led $commandline -ALOS4 -rbias 2.5
       endif
     else
       if ($skip_master == 0 || $skip_master == 2) then

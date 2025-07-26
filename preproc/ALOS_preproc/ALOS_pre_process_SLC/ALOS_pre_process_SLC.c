@@ -26,6 +26,7 @@ char *USAGE = "\n\nUsage: ALOS_pre_process_SLC imagefile LEDfile [-radius RE] [-
               "-swap                  do byte-swap (should be automatic) \n"
               "-ALOS1                 ALOS2 L1.1 data format \n"
               "-ALOS2                 ALOS2 L1.1 data format (default)\n"
+              "-ALOS4                 ALOS4 L1.1 data format \n"
               "-LED                   write generic LED file\n"
               "-noLED                 oldstyle use ldr file for orbits directlyn"
               "-V                     verbose write information \n"

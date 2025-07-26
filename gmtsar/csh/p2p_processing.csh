@@ -13,7 +13,7 @@
     echo "Example: p2p_processing.csh ALOS IMG-HH-ALPSRP055750660-H1.0__A IMG-HH-ALPSRP049040660-H1.0__A [config.alos.txt]"
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
-    echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
+    echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN, ALOS4"
     echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
     echo ""
     echo "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc"
@@ -154,7 +154,7 @@
     echo "PREPROCESS - START"
     echo ""
     echo "Working on images $master $aligned ..."
-    if ($SAT == "ALOS" || $SAT == "ALOS2" || $SAT == "ALOS_SLC" || $SAT == "ALOS2_SCAN") then
+    if ($SAT == "ALOS" || $SAT == "ALOS2" || $SAT == "ALOS_SLC" || $SAT == "ALOS2_SCAN" || $SAT == "ALOS4") then
       if(! -f raw/$master ) then
         echo " no file  raw/"$master
         exit

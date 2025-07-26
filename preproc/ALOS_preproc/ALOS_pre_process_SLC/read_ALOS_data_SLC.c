@@ -217,7 +217,10 @@ long read_ALOS_data_SLC(FILE *imagefile, FILE *outfile, struct PRM *prm, long *b
 	prm->nrows = prm->num_lines;
 	prm->num_valid_az = prm->num_lines;
 	prm->num_patches = 1;
-
+	if (prefix_off == 388) {
+		/* We are Reading ALOS 4 Data */
+		prm->near_range = prm->near_range / 100;
+	}
 	if (verbose)
 		print_params(prm);
 

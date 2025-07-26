@@ -58,6 +58,10 @@ void parse_ALOS_commands(int na, char **a, char *USAGE, struct PRM *prm) {
 			prefix_off = 132;
 			fprintf(stderr, " processing ALOS2 L1.1 \n");
 		}
+		else if (!strcmp(a[n], "-ALOS4")) {
+			prefix_off = 388;
+			fprintf(stderr, " processing ALOS4 L1.1 \n");
+		}
 		else if (!strcmp(a[n], "-roi")) {
 			roi = 1;
 			fprintf(stderr, " writing roi_pac rsc files \n");
