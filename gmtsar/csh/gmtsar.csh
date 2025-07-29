@@ -3,7 +3,7 @@
 #   summary of shell scripts
 #
 echo ' '
-echo 'GMTSAR version 6.2 - list of shell scripts'
+echo 'GMTSAR version: master branch - list of shell scripts'
 echo ' '
 echo 'align.csh                             - align a pair of SAR images'
 echo 'align_ALOS2_SCAN.csh                  - align ALOS2 ScanSAR images'
