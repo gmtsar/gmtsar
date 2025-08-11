@@ -28,7 +28,7 @@ endif
 #   first mask the phase and phase gradient using the correlation
 #
 gmt grdmath corr.grd $1 GE 0 NAN mask.grd MUL = mask2.grd $V
-gmt grdmath phase.grd mask2.grd MUL = phase_mask.grd
+gmt grdmath phasefilt.grd mask2.grd MUL = phase_mask.grd
 if (-e xphase.grd) then
   gmt grdmath xphase.grd mask2.grd MUL = xphase_mask.grd
   gmt grdmath yphase.grd mask2.grd MUL = yphase_mask.grd
