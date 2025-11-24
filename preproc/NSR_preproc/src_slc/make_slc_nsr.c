@@ -7,7 +7,7 @@
 /***************************************************************************
  * Modification history:                                                   *
  *                                                                         *
- * DATE                                                                    *
+ * Date   :  11/10/25 - DTS - added functionality for real NISAR data      *
  *                                                                         *
  ***************************************************************************/
 
@@ -20,19 +20,57 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <stdint.h>
 
-
-
-char *USAGE = "\n\nUsage: make_slc_nsr name_of_input_file name_output output_type\n"
+char *USAGE = "\nUsage: make_slc_nsr name_of_input_file name_output output_type scale_factor [region_cut]\n"
               "\nExample: make_slc_nsr "
-              "SanAnd_08525_20029_006_201015_L090_CX_129A_02.h5 NSR_20250412 AHH\n"
+              "SanAnd_08525_20029_006_201015_L090_CX_129A_02.h5 NSR_20250412 AHH 10000. 300/5900/0/25000 \n"
               "\nOutput: NSR_20250412.SLC NSR_20250412.PRM NSR_20250412.LED \n";
+
+static inline short f32_to_i16_with_checks(float x,
+                                           long long *sat_hi,
+                                           long long *sat_lo,
+                                           long long *zero_conv);
+
+int get_range(char *str, int *xl, int *xh, int *yl, int *yh) {
+        
+        int ii = 0, jj = 0, kk = 0, rr[4];
+        char c;
+        char tmp_c[128];
+
+        c = str[ii]; 
+        while (c != '\0') {
+                if (c != '/') {
+                        tmp_c[jj] = c;
+                        jj++;
+                }
+                else if (c == '/') {
+                        tmp_c[jj] = '\0';
+                        rr[kk] = atoi(tmp_c);
+                        jj = 0; 
+                        kk++;
+                }
+                ii++;
+                c = str[ii];
+        }           
+        tmp_c[jj] = c;
+        rr[kk] = atoi(tmp_c);
+        *xl = rr[0]; 
+        *xh = rr[1];
+        *yl = rr[2];
+        *yh = rr[3];
+
+        return (1);
+}
 
 int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_attr, int c) {
     hid_t memtype, type, group = -1, dset = -1, attr = -1, tmp_id, space;
     herr_t status;
     size_t sdim;
     int ndims;
+    (void)status;
+    (void)ndims;
 
     tmp_id = file;
     if (strlen(n_group) > 0) {
@@ -50,7 +88,6 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 
     if (c == 'c') {
         memtype = H5Tcopy(H5T_C_S1);
-        //memtype = H5Tcopy(H5T_STRING);
         type = H5Aget_type(tmp_id);
         sdim = H5Tget_size(type);
         sdim++;
@@ -65,7 +102,6 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
     }
     else if (c == 'd') {
         memtype = H5T_NATIVE_DOUBLE;
-        //memtype = H5T_IEEE_F64LE;
     }   
     else if (c == 'i' || c == 'n') {
         memtype = H5T_NATIVE_INT;
@@ -95,20 +131,29 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
     return (1);
 }
 
-int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
+int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, int *xhp, int *ylp, int *yhp) {
 
-    int i, j, width, height, width2;
+    int64_t i, j, ij, width, height, width2=0, height2=0;
+    int xl, xh, yl, yh, wt, ht;
     short *tmp;
     float *buf;
     hsize_t dims[10];
     hid_t memtype, dset, group;
     herr_t status;
-    float dfact = 10000;
-
+    (void) status;
+    //float dfact = 10000.; /* for ALOS simulated NISAR data */
+    //float dfact = 1.;   /* for frequency A NISAR data, frequency B should be X larger and is set below */
+    long long sat_hi_count = 0;
+    long long sat_lo_count = 0;
+    long long zero_conv_count = 0;
     char freq[10], type[10], Group[200];
-
     freq[0] = mode[0]; freq[1] = '\0';
+    xl = *xlp;
+    xh = *xhp;
+    yl = *ylp;
+    yh = *yhp;
     strcpy(type,&mode[1]);
+    printf("dfact %f \n", dfact);
 
     if (strcmp(freq, "A") == 0) {
       strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
@@ -125,11 +170,26 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
 
     width = (int)dims[1];
     height = (int)dims[0];
+    printf("Data size %llu x %llu ... \n", (unsigned long long)dims[1], (unsigned long long)dims[0]);
+    if(xl == 0 && xh == 0 && yl == 0 && yh == 0) {
+	xl = 0; xh = width; yl = 0; yh = height;
+    }
+    if(xl < 0 || xh > width || xl >= xh || yl < 0 || yh > height || yl >= yh)  
+	die("wrong range ", "");
 
-    printf("Data size %lld x %lld ...\n", dims[0], dims[1]);
+    printf("Range xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
 
-    buf = (float *)malloc(height * width * 2 * sizeof(float));
-    tmp = (short *)malloc(width * 2 * sizeof(short));
+/* the original NISAR image data are stored as Cfloat32. GMTSAR uses Cint16.*/
+
+    buf = (float*) malloc((size_t)height * (size_t)width * 2 * sizeof(float));
+    tmp = (short*) malloc((size_t)width * 2 * sizeof(short));
+    if (!buf || !tmp) {
+        fprintf(stderr, "OOM: need %.1f GB for buf, %.2f MB for tmp\n",
+            (double)height * width * 2 * sizeof(float) / (1024.0*1024.0*1024.0),
+            (double)width * 2 * sizeof(short) / (1024.0*1024.0));
+    free(buf); free(tmp);
+        return -1;
+    }
 
     group = H5Gopen(input, Group, H5P_DEFAULT);
     dset = H5Dopen(group, type, H5P_DEFAULT);
@@ -137,49 +197,39 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode) {
     memtype = H5Dget_type(dset);
 
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+ 
+/* make sure the height and width are divisible by 4 */
 
-    width2 = width - width%4;
-    height = height - height%4;
+    wt = (xh-xl);
+    ht = (yh-yl);
+    width2 = wt - wt%4;
+    height2 = ht - ht%4;
+    xh = xl + width2;
+    yh = yl + height2;
 
-    printf("Writing SLC..Image Size: %d X %d...\n", width2, height);
+    printf("Writing SLC..Image Size: %lld X %lld... \n", (long long)width2, (long long)height2);
 
     // stored sequentially
-/*
-    for (i = height; i >= 0; i--) {
-        for (j = 0; j < width*2; j += 2) {
-            tmp[j] = (short)(buf[i * width*2 + j]*dfact);
-            tmp[j + 1] = (short)(buf[i * width*2 + j + 1]*dfact);
+    ij = 0;
+    for (i = yl; i < yh; i++) {
+        for (j = xl; j < xh; j++) {
+            tmp[(j-xl)*2] = f32_to_i16_with_checks((float)(buf[i * width * 2 + j*2]*dfact), &sat_hi_count, &sat_lo_count, &zero_conv_count);
+            tmp[(j-xl)*2 + 1] = f32_to_i16_with_checks((float)(buf[i * width * 2 +  j*2 + 1]*dfact), &sat_hi_count, &sat_lo_count, &zero_conv_count);
+	    ij=ij+1;
         }
-        fwrite(tmp, sizeof(short), width2 * 2, slc);
-    }
-*/
-
-    for (i = 0; i < height; i++) {
-        for (j = 0; j < width; j++) {
-            tmp[j*2] = (short)(buf[i * width * 2 + j*2]*dfact);
-            tmp[j*2 + 1] = (short)(buf[i * width * 2 +  j*2 + 1]*dfact);
-        }
-        fwrite(tmp, sizeof(short), width2 * 2, slc);
+        fwrite(tmp, sizeof(short), (xh-xl)*2 , slc);
     }
 
-    // stored r and then i
-/*    for (i = 0; i < height; i++) {
-        for (j = 0; j < width; j++) {
-            tmp[i*2] = (short)(buf[j * height + i]*dfact);
-            tmp[i*2 + 1] = (short)(buf[j * height + i + height*width]*dfact);
-        }
-        fwrite(tmp, sizeof(short), width * 2, slc);
-    }
-*/
-/*    // stored r and then i
-    for (i = 0; i < height; i++) {
-        for (j = 0; j < width; j++) {
-            tmp[j*2] = (short)(buf[i * width + j]*dfact);
-            tmp[j*2 + 1] = (short)(buf[i * width + j + height*width]*dfact);
-        }
-        fwrite(tmp, sizeof(short), width * 2, slc);
-    }
-*/
+/*  put the updated range into the pointers to use them got the PRM file */
+
+    *xlp = xl;
+    *xhp = xh;
+    *ylp = yl;
+    *yhp = yh;
+
+    printf("fraction clamped to INT16_MAX: %lf\n", (float)sat_hi_count/ij);
+    printf("fraction clamped to INT16_MIN: %lf\n", (float)sat_lo_count/ij);
+    printf("fraction set to 0 after cast: %lf\n", (float)zero_conv_count/ij);
     free(buf);
     free(tmp);
     return (1);
@@ -206,8 +256,6 @@ int pop_led_hdf5(hid_t input, state_vector *sv) {
     hdf5_read(x, input, "/science/LSAR/RSLC/metadata/orbit", "position", "", 'd');
     hdf5_read(v, input, "/science/LSAR/RSLC/metadata/orbit", "velocity", "", 'd');
 
-    // fprintf(stderr,"%.15f\n",x[3]);
-
     for (i = 0; i < count; i++) {
         t_tmp = t[i] / 86400.0 + t0; 
         sv[i].yr = iy; 
@@ -219,8 +267,6 @@ int pop_led_hdf5(hid_t input, state_vector *sv) {
         sv[i].vx = (double)v[i * 3]; 
         sv[i].vy = (double)v[i * 3 + 1]; 
         sv[i].vz = (double)v[i * 3 + 2]; 
-        // fprintf(stderr,"%d %d %.3f %.6f %.6f %.6f %.8f %.8f %.8f
-        // \n",sv[i].yr,sv[i].jd,sv[i].sec,x[i*3],x[i*3+1],x[i*3+2],v[i*3],v[i*3+1],v[i*3+2]);
     }   
 
     printf("%d Lines Written for Orbit...\n", count);
@@ -244,7 +290,7 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
     return (1);
 }
 
-int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
+int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int xl, int xh, int yl, int yh) {
     char tmp_c[200], date[100],iy[100],freq[10],type[10],group[200];
     double tmp_d[200],yr,t[65535]; // not sure howmany time components will be available
     double c_speed = 299792458.0, t0 = 0.0;
@@ -298,22 +344,20 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
 
     // three strings are Group, Dataset and Attributes with the last being datatype
     hdf5_read(tmp_d, input, group, "processedCenterFrequency", "", 'd'); 
-    prm->lambda = c_speed/tmp_d[0]; // this needs to be checked
-
+    prm->lambda = c_speed/tmp_d[0];
 
     hdf5_read(tmp_d, input, group, "nominalAcquisitionPRF", "", 'd'); 
-    prm->pulsedur = tmp_d[0]; // this is wrong
+    prm->pulsedur = 0.; // this is wrong
 
     hdf5_read(tmp_d, input, group, "processedRangeBandwidth", "", 'd'); 
-    prm->chirp_slope = tmp_d[0]; // this is wrong
+    prm->chirp_slope = 0.; // this is wrong
 
     hdf5_read(tmp_d, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTimeSpacing", "", 'd'); 
-    prm->prf = 1.0/tmp_d[0]; // this needs to be checked
+    prm->prf = 1.0/tmp_d[0];
 
     hdf5_read(t, input, group, "slantRange", "", 'd'); 
-    prm->near_range = t[0];// * c_speed / 2;
-//fprintf(stderr,"%.2f\n",prm->near_range);    
-//exit(1);
+    //prm->near_range = t[0];// * c_speed / 2;
+    prm->near_range = t[0] + xl * c_speed/(2.*prm->fs);// * c_speed / 2;
 
     hdf5_read(tmp_c, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "units", 'c'); 
     cat_nums(date,tmp_c);
@@ -323,19 +367,15 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     str_date2JD(tmp_c, date);
     t0 = str2double(tmp_c);
     hdf5_read(t, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "", 'd'); 
-//printf("%.12lf\n",t[0]);
     hdf5_read(tmp_c, input, "/science/LSAR/identification", "zeroDopplerStartTime", "", 's'); 
-//printf("%s\n",tmp_c);
-    prm->clock_start = t0 + t[0]/86400.0;
+    prm->clock_start = t0 + (t[0] + yl / prm->prf)/86400.0;
     prm->SC_clock_start = prm->clock_start + yr*1000.0;
 
     prm->fdd1 = 0.0;
     prm->fddd1 = 0.0;
 
-    //hdf5_read(tmp_c, input, "/", "", "mission_name", 'c'); 
-    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/metadata/attitude", "attitudeType", "description", 'c'); 
-
-    if (strcmp(tmp_c, "ASCENDING") == 0) {
+    hdf5_read(tmp_c, input, "/science/LSAR/identification", "orbitPassDirection", "", 's'); 
+    if (strcmp(tmp_c, "Ascending") == 0) {
         strasign(prm->orbdir, "A", 0, 0);
     }
     else {
@@ -343,7 +383,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     }
 
     hdf5_read(tmp_c, input, "/science/LSAR/identification", "lookDirection", "", 's'); 
-    if (strcmp(tmp_c, "right") == 0) {
+    if (strcmp(tmp_c, "Right") == 0) {
         strasign(prm->lookdir, "R", 0, 0);
     }
     else {
@@ -352,8 +392,8 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
 
     hdf5_read(dims, input, group, type, "", 'n');
     //hdf5_read(tmp_u, input, "/science/LSAR/SLC/swaths/frequencyB", "numberOfSubSwaths", "", 'u');
-    prm->num_rng_bins = (int)dims[1] - (int)dims[1]%4;
-    prm->num_lines = (int)dims[0] - (int)dims[0]%4;
+    prm->num_rng_bins = xh - xl;
+    prm->num_lines =  yh - yl;
 
     prm->bytes_per_line = prm->num_rng_bins * 4;
     prm->good_bytes = prm->bytes_per_line;
@@ -364,11 +404,6 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
     prm->num_valid_az = prm->num_lines;
     prm->num_patches = 1;
     prm->chirp_ext = 0;
-    // fprintf(stderr,"%d\n",(int)dims[0]);
-
-    // fprintf(stderr,"%u\n",tmp_i[0]);
-    // fprintf(stderr,"%.15f\n",tmp_d[0]);
-    // fprintf(stderr,"%s\n",tmp_c);
 
     printf("PRM set for Image File...\n");
 
@@ -377,7 +412,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode) {
 
 int main(int argc, char **argv) {
 
-    if (argc < 4) {
+    if (argc < 5) {
         die(USAGE, "");
     }
 
@@ -385,18 +420,36 @@ int main(int argc, char **argv) {
     char tmp_str[200],mode[10];
     struct PRM prm;
     state_vector sv[200];
-    int n;
+    int n, xl=0, xh=0, yl=0, yh=0;
+    double dfact;
     hid_t file; 
 
     strcpy(mode,argv[3]);
 
+    dfact = atof(argv[4]);
+
+    if (argc == 6) {
+	get_range(argv[5], &xl, &xh, &yl, &yh);
+    }
+
     if ((file = H5Fopen(argv[1], H5F_ACC_RDONLY, H5P_DEFAULT)) < 0)
         die("Couldn't open HDF5 file: \n", argv[1]);
+
+    // generate the SLC file
+    strcpy(tmp_str, argv[2]);
+    strcat(tmp_str, ".SLC");
+
+    if ((OUTPUT_SLC = fopen(tmp_str, "wb")) == NULL)
+        die("Couldn't open tiff file: \n", tmp_str);
+
+    write_slc_hdf5(file, OUTPUT_SLC,mode,dfact,&xl,&xh,&yl,&yh);
+    fclose(OUTPUT_SLC);
+    printf("Range after write_SLC xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
 
     null_sio_struct(&prm);
     
     // generate the PRM file
-    pop_prm_hdf5(&prm, file, argv[2], mode);
+    pop_prm_hdf5(&prm, file, argv[2], mode, xl, xh, yl, yh);
 
     strcpy(tmp_str, argv[2]);
     strcat(tmp_str, ".PRM");
@@ -415,20 +468,30 @@ int main(int argc, char **argv) {
     write_orb(sv, OUTPUT_LED, n); 
     fclose(OUTPUT_LED);
 
-    // generate the SLC file
-    strcpy(tmp_str, argv[2]);
-    strcat(tmp_str, ".SLC");
-
-
-    if ((OUTPUT_SLC = fopen(tmp_str, "wb")) == NULL)
-        die("Couldn't open tiff file: \n", tmp_str);
-
-    write_slc_hdf5(file, OUTPUT_SLC,mode);
-    fclose(OUTPUT_SLC);
-
-    // TIFFClose(TIFF_FILE);
-    // fclose(OUTPUT_SLC);
     H5Fclose(file);
 
+}
+
+static inline short f32_to_i16_with_checks(float x,
+                                           long long *sat_hi,
+                                           long long *sat_lo,
+                                           long long *zero_conv)
+{
+    if (!isfinite(x)) {
+        return (short)0;
+    }
+    if (x > (float)INT16_MAX) {
+        if (sat_hi) (*sat_hi)++;
+        return (short)INT16_MAX;
+    }
+    if (x < (float)INT16_MIN) {
+        if (sat_lo) (*sat_lo)++;
+        return (short)INT16_MIN;
+    }
+    short v = (short)x; /* truncates toward zero */
+    if (v == 0 && x != 0.0f) {
+        if (zero_conv) (*zero_conv)++;
+    }
+    return v;
 }
 
