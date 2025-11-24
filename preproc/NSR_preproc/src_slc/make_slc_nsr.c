@@ -316,7 +316,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->ra = 6378137.00; // equatorial_radius
     prm->rc = 6356752.31; // polar_radius
     strcpy(tmp_c, file_name);
-    strcat(tmp_c, ".SLC");
+    strcat(tmp_c, ".raw");
     strcpy(prm->input_file, tmp_c);
     strcpy(tmp_c, file_name);
     strcat(tmp_c, ".LED");
