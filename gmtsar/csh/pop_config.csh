@@ -2,8 +2,6 @@
 
 # create a configure file for p2p_processing.csh
 # syntax: pop_config.csh SAT
-# SAT can be  ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN
-# S1_STRIP, S1_TOPS,, CSK_RAW, CSK_SLC, TSX, RS2
 
 if ($#argv != 1) then
   echo ""
@@ -11,6 +9,7 @@ if ($#argv != 1) then
   echo ""
   echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN ALOS4"
   echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
+  echo "       NISAR"
   echo ""
   exit 1
 endif
@@ -88,6 +87,10 @@ else if ($SAT == "LT1") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 10.0"
   echo ""
+else if ($SAT == "NISAR") then
+  echo "# SLC scale factor to convert float to int"
+  echo "SLC_factor = 40000.0"
+  echo ""
 endif
 
 echo "################################################"
@@ -117,7 +120,7 @@ echo "topo_interp_mode = 0"
 echo ""
 echo "# topo_ra shift (1 -- yes; 0 -- no)"
 
-if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS") then
+if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS" || $SAT == "NISAR") then
   echo "shift_topo = 1"
 else 
   echo "shift_topo = 0"
@@ -143,14 +146,16 @@ if ($SAT == "ALOS2_SCAN") then
   echo "filter_wavelength = 400"
 else if ($SAT == "RS2" || $SAT == "TSX") then
   echo "filter_wavelength = 100"
+else if ($SAT == "NISAR") then
+  echo "filter_wavelength = 160"
 else
   echo "filter_wavelength = 200"
 endif
 echo ""
 echo "# decimation of images "
 echo "# decimation control the size of the amplitude and phase images. It is either 1 or 2."
-echo "# Set the decimation to be 1 if you want higher resolution images."
-echo "# Set the decimation to be 2 if you want images with smaller file size."
+echo "# Set the decimation to be 1 if you want higher resolution images (filter_wavelength 80 to 160 m for NISAR)"
+echo "# Set the decimation to be 2 if you want images with smaller file size (filter_wavelength >= 160 for NISAR)"
 echo "# "
 if ($SAT == "RS2" || $SAT == "TSX") then
   echo "dec_factor = 1 "
@@ -178,6 +183,7 @@ echo "iono_filt_azi = 1.0"
 echo "iono_dsamp = 1"
 echo "# "
 echo "# set the following parameter to skip ionospheric phase estimation"
+echo "# NISAR uses two frequencies not split spectrum so iono_skip_est = 1"
 echo "iono_skip_est = 1 "
 echo "#"
 echo "#####################################"
