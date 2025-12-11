@@ -24,9 +24,10 @@
 #include <stdint.h>
 
 char *USAGE = "\nUsage: make_slc_nsr name_of_input_file name_output output_type scale_factor [region_cut]\n"
+              "         (Note region_cut for B should be the same as A.)\n"
               "\nExample: make_slc_nsr "
-              "SanAnd_08525_20029_006_201015_L090_CX_129A_02.h5 NSR_20250412 AHH 10000. 300/5900/0/25000 \n"
-              "\nOutput: NSR_20250412.SLC NSR_20250412.PRM NSR_20250412.LED \n";
+              "NISAR_L1_PR_RSLC_004_091_A_021_4005_DHDH_A_20251104T120256_20251104T120331_X05004_N_F_J_001.h5 NSR_20251104A AHH 40000 30000/53000/24000/47000 \n"
+              "\nOutput: NSR_20251104A.SLC NSR_20251104A.PRM NSR_20251104A.LED \n";
 
 static inline short f32_to_i16_with_checks(float x,
                                            long long *sat_hi,
@@ -166,18 +167,26 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
       exit(1);
     }
 
+/* make the B 8 times smaller */
+    if (strcmp(freq, "B") == 0 && xh > 0) {
+      // make the B area 8 times smaller in range and completely covers A
+      xl = (int)((xl)/8.);
+      xh = (int)((xh)/8.)+1;
+    }
+ 
     hdf5_read(dims, input, Group, type, "", 'n');
 
     width = (int)dims[1];
     height = (int)dims[0];
     printf("Data size %llu x %llu ... \n", (unsigned long long)dims[1], (unsigned long long)dims[0]);
+
+
     if(xl == 0 && xh == 0 && yl == 0 && yh == 0) {
 	xl = 0; xh = width; yl = 0; yh = height;
     }
+    //printf("Range xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
     if(xl < 0 || xh > width || xl >= xh || yl < 0 || yh > height || yl >= yh)  
 	die("wrong range ", "");
-
-    printf("Range xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
 
 /* the original NISAR image data are stored as Cfloat32. GMTSAR uses Cint16.*/
 
@@ -197,7 +206,7 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     memtype = H5Dget_type(dset);
 
     status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
- 
+
 /* make sure the height and width are divisible by 4 */
 
     wt = (xh-xl);
