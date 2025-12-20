@@ -134,16 +134,15 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 
 int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, int *xhp, int *ylp, int *yhp) {
 
-    int64_t i, j, ij, width, height, width2=0, height2=0;
+    int64_t i, j, ij, width, height, width2=0, height2=0i, count = 0;
     int xl, xh, yl, yh, wt, ht;
+    double tmp_d[200],rs_A,rs_B,bw_fac,sum2 = 0;
     short *tmp;
     float *buf;
     hsize_t dims[10];
     hid_t memtype, dset, group;
     herr_t status;
     (void) status;
-    //float dfact = 10000.; /* for ALOS simulated NISAR data */
-    //float dfact = 1.;   /* for frequency A NISAR data, frequency B should be X larger and is set below */
     long long sat_hi_count = 0;
     long long sat_lo_count = 0;
     long long zero_conv_count = 0;
@@ -156,6 +155,17 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     strcpy(type,&mode[1]);
     printf("dfact %f \n", dfact);
 
+/* get the ratio of bandwidth A to bandwidth B */
+
+    strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
+    hdf5_read(tmp_d, input, Group, "slantRangeSpacing", "", 'd'); 
+    rs_A = tmp_d[0];
+    strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyB");
+    hdf5_read(tmp_d, input, Group, "slantRangeSpacing", "", 'd'); 
+    rs_B = tmp_d[0];
+    bw_fac = rs_B/rs_A;
+    printf("bw_fac %f \n", bw_fac);
+
     if (strcmp(freq, "A") == 0) {
       strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
     }
@@ -167,11 +177,11 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
       exit(1);
     }
 
-/* make the B 8 times smaller */
+/* make the B region bw_fac times smaller and completely cover A */
+
     if (strcmp(freq, "B") == 0 && xh > 0) {
-      // make the B area 8 times smaller in range and completely covers A
-      xl = (int)((xl)/8.);
-      xh = (int)((xh)/8.)+1;
+      xl = (int)((xl)/bw_fac);
+      xh = (int)((xh)/bw_fac)+1;
     }
  
     hdf5_read(dims, input, Group, type, "", 'n');
@@ -184,7 +194,6 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     if(xl == 0 && xh == 0 && yl == 0 && yh == 0) {
 	xl = 0; xh = width; yl = 0; yh = height;
     }
-    //printf("Range xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
     if(xl < 0 || xh > width || xl >= xh || yl < 0 || yh > height || yl >= yh)  
 	die("wrong range ", "");
 
@@ -218,18 +227,20 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
 
     printf("Writing SLC..Image Size: %lld X %lld... \n", (long long)width2, (long long)height2);
 
-    // stored sequentially
     ij = 0;
     for (i = yl; i < yh; i++) {
         for (j = xl; j < xh; j++) {
             tmp[(j-xl)*2] = f32_to_i16_with_checks((float)(buf[i * width * 2 + j*2]*dfact), &sat_hi_count, &sat_lo_count, &zero_conv_count);
             tmp[(j-xl)*2 + 1] = f32_to_i16_with_checks((float)(buf[i * width * 2 +  j*2 + 1]*dfact), &sat_hi_count, &sat_lo_count, &zero_conv_count);
 	    ij=ij+1;
+            sum2 = sum2 + tmp[(j-xl)*2]*tmp[(j-xl)*2];
+            count = count + 1;
+
         }
         fwrite(tmp, sizeof(short), (xh-xl)*2 , slc);
     }
 
-/*  put the updated range into the pointers to use them got the PRM file */
+/*  put the updated range into the pointers to use them for the PRM file */
 
     *xlp = xl;
     *xhp = xh;
@@ -239,6 +250,7 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     printf("fraction clamped to INT16_MAX: %lf\n", (float)sat_hi_count/ij);
     printf("fraction clamped to INT16_MIN: %lf\n", (float)sat_lo_count/ij);
     printf("fraction set to 0 after cast: %lf\n", (float)zero_conv_count/ij);
+    printf("sigma of integers (2048 < sig < 8192) %ld\n", (int)sqrt(sum2/count));
     free(buf);
     free(tmp);
     return (1);
@@ -321,7 +333,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->st_rng_bin = 1;
     strasign(prm->dtype, "a", 0, 0);
     prm->SC_identity = 14; /* (1)-ERS1 (2)-ERS2 (3)-Radarsat (4)-Envisat (5)-ALOS
-                             (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a*/
+                             (6)-  (7)-TSX (8)-CSK (9)-RS2 (10) Sentinel-1a (14)-NSR*/
     prm->ra = 6378137.00; // equatorial_radius
     prm->rc = 6356752.31; // polar_radius
     strcpy(tmp_c, file_name);
@@ -356,16 +368,15 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->lambda = c_speed/tmp_d[0];
 
     hdf5_read(tmp_d, input, group, "nominalAcquisitionPRF", "", 'd'); 
-    prm->pulsedur = 0.; // this is wrong
+    prm->pulsedur = 0.; // this is wrong but not needed for SLC
 
     hdf5_read(tmp_d, input, group, "processedRangeBandwidth", "", 'd'); 
-    prm->chirp_slope = 0.; // this is wrong
+    prm->chirp_slope = 0.; // this is wrong but not needed for SLC
 
     hdf5_read(tmp_d, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTimeSpacing", "", 'd'); 
     prm->prf = 1.0/tmp_d[0];
 
     hdf5_read(t, input, group, "slantRange", "", 'd'); 
-    //prm->near_range = t[0];// * c_speed / 2;
     prm->near_range = t[0] + xl * c_speed/(2.*prm->fs);// * c_speed / 2;
 
     hdf5_read(tmp_c, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "units", 'c'); 
@@ -400,7 +411,6 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     }
 
     hdf5_read(dims, input, group, type, "", 'n');
-    //hdf5_read(tmp_u, input, "/science/LSAR/SLC/swaths/frequencyB", "numberOfSubSwaths", "", 'u');
     prm->num_rng_bins = xh - xl;
     prm->num_lines =  yh - yl;
 
