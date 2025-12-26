@@ -250,7 +250,7 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     printf("fraction clamped to INT16_MAX: %lf\n", (float)sat_hi_count/ij);
     printf("fraction clamped to INT16_MIN: %lf\n", (float)sat_lo_count/ij);
     printf("fraction set to 0 after cast: %lf\n", (float)zero_conv_count/ij);
-    printf("sigma of integers (2048 < sig < 8192) %ld\n", (int)sqrt(sum2/count));
+    printf("sigma of integers (2048 < sig < 8192) %d\n", (int)sqrt(sum2/count));
     free(buf);
     free(tmp);
     return (1);
@@ -338,7 +338,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->rc = 6356752.31; // polar_radius
     strcpy(tmp_c, file_name);
     strcat(tmp_c, ".raw");
-    strcpy(prm->input_file, tmp_c);
+    //strcpy(prm->input_file, tmp_c);
     strcpy(tmp_c, file_name);
     strcat(tmp_c, ".LED");
     strcpy(prm->led_file, tmp_c);
@@ -346,8 +346,8 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     strcat(tmp_c, ".SLC");
     strcpy(prm->SLC_file, tmp_c);
     prm->SLC_scale = 1.0;
-    prm->xmi = 127.5;
-    prm->xmq = 127.5;
+    prm->xmi = 0.0;
+    prm->xmq = 0.0;
 
     if (strcmp(freq, "A") == 0) {
         strcpy(group,"/science/LSAR/RSLC/swaths/frequencyA");
