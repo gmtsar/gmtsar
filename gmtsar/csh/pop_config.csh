@@ -9,7 +9,7 @@ if ($#argv != 1) then
   echo ""
   echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN ALOS4"
   echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
-  echo "       NISAR"
+  echo "       NSR_A NSR_B"
   echo ""
   exit 1
 endif
@@ -87,7 +87,7 @@ else if ($SAT == "LT1") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 10.0"
   echo ""
-else if ($SAT == "NISAR") then
+else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 40000.0"
   echo ""
@@ -120,7 +120,7 @@ echo "topo_interp_mode = 0"
 echo ""
 echo "# topo_ra shift (1 -- yes; 0 -- no)"
 
-if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS" || $SAT == "NISAR") then
+if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS" || $SAT == "NSR_A" || $SAT == "NSR_B") then
   echo "shift_topo = 1"
 else 
   echo "shift_topo = 0"
@@ -146,18 +146,20 @@ if ($SAT == "ALOS2_SCAN") then
   echo "filter_wavelength = 400"
 else if ($SAT == "RS2" || $SAT == "TSX") then
   echo "filter_wavelength = 100"
-else if ($SAT == "NISAR") then
+else if ($SAT == "NSR_A") then
   echo "filter_wavelength = 160"
+else if ($SAT == "NSR_B") then
+  echo "filter_wavelength = 640"
 else
   echo "filter_wavelength = 200"
 endif
 echo ""
 echo "# decimation of images "
 echo "# decimation control the size of the amplitude and phase images. It is either 1 or 2."
-echo "# Set the decimation to be 1 if you want higher resolution images (filter wavelength 80 to 160 m for NISAR)"
-echo "# Set the decimation to be 2 if you want images with smaller file size (filter wavelength >= 160 for NISAR)"
+echo "# Set the decimation to be 1 if you want higher resolution images (filter wavelength 80 to 160 m for NSR_A)"
+echo "# Set the decimation to be 2 if you want images with smaller file size (filter wavelength >= 160 for NSR_A)"
 echo "# "
-if ($SAT == "RS2" || $SAT == "TSX") then
+if ($SAT == "RS2" || $SAT == "TSX" || $SAT == "NSR_B") then
   echo "dec_factor = 1 "
 else if ($SAT == "ALOS2_SCAN") then
   echo "dec_factor = 4 "
@@ -183,7 +185,7 @@ echo "iono_filt_azi = 1.0"
 echo "iono_dsamp = 1"
 echo "# "
 echo "# set the following parameter to skip ionospheric phase estimation"
-echo "# NISAR uses two frequencies not split spectrum so iono skip est = 1"
+echo "# NSR uses two frequencies not split spectrum so iono skip est = 1"
 echo "iono_skip_est = 1 "
 echo "#"
 echo "#####################################"
