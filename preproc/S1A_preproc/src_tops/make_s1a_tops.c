@@ -724,7 +724,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 			die("cannot open range shift tables", dr_table);
 		if ((A = GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_HEADER_ONLY, NULL, da_table, NULL)) ==
 		    NULL)
-			die("cannot open azimuth shift tables", dr_table);
+			die("cannot open azimuth shift tables", da_table);
 		if (R->header->inc[GMT_X] != A->header->inc[GMT_X])
 			die("shift table size does not match", "");
 		if (R->header->inc[GMT_Y] != A->header->inc[GMT_Y])

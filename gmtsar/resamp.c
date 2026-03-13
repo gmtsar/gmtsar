@@ -30,14 +30,15 @@
 #include <sys/types.h>
 
 char *USAGE = "\nUsage: "
-              "resamp master.PRM aligned.PRM new_aligned.PRM new_aligned.SLC intrp \n"
+              "resamp master.PRM aligned.PRM new_aligned.PRM new_aligned.SLC intrp [dr.grd da.grd]\n"
               "   master.PRM       - PRM for master imagea \n"
               "   aligned.PRM        - PRM for aligned image \n"
               "   new_aligned.PRM    - PRM for aligned aligned image \n"
               "   new_aligned.SLC    - SLC for aligned aligned image \n"
 
               "   intrp            - interpolation method: 1-nearest; "
-              "2-bilinear; 3-biquadratic; 4-bisinc \n \n";
+              "2-bilinear; 3-biquadratic; 4-bisinc 5-bisinc-grid\n \n"
+              "   For 5, prepare dr.grd and da.grd for coregistration\n \n";
 
 void print_prm_params(struct PRM, struct PRM);
 void fix_prm_params(struct PRM *, char *);
@@ -59,7 +60,18 @@ int main(int argc, char **argv) {
 	FILE *SLC_file2 = NULL, *prmout = NULL;
 	int fdin;
 	double sv_pr[6];
+    char rgrid[128],agrid[128];
 	size_t st_size;
+    struct GMT_GRID *R = NULL, *A = NULL;
+    int r1, r2, a1, a2;
+    double f11,f12,f21,f22, r11, r22, a11, a22;
+
+    // Begin: Initializing new GMT session
+    void *API = NULL; // GMT API control structure
+    if ((API = GMT_Create_Session(argv[0], 0U, 0U, NULL)) == NULL)
+        return EXIT_FAILURE;
+
+
 	// long long int count=0;
 
 	struct PRM pm, ps;
@@ -83,6 +95,30 @@ int main(int argc, char **argv) {
 	ydimm = pm.num_patches * pm.num_valid_az;
 	xdims = ps.num_rng_bins;
 	ydims = ps.num_patches * ps.num_valid_az;
+
+    if (intrp == 5 && argc == 8) {
+        strcpy(rgrid,argv[6]);
+        strcpy(agrid,argv[7]);
+        printf("reading in coregistration grid %s and %s", rgrid, agrid);
+
+        if ((R = GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_HEADER_ONLY, NULL, rgrid, NULL)) ==
+            NULL)
+            die("cannot open range shift tables", rgrid);
+        if ((A = GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_HEADER_ONLY, NULL, agrid, NULL)) ==
+            NULL)
+            die("cannot open azimuth shift tables", agrid);
+        if (R->header->inc[GMT_X] != A->header->inc[GMT_X] || R->header->inc[GMT_X] <= 1)
+            die("shift table size does not match or too small", ""); 
+        if (R->header->inc[GMT_Y] != A->header->inc[GMT_Y] || R->header->inc[GMT_Y] <= 1)
+            die("shift table size does not match or too small", ""); 
+        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, rgrid, R) == NULL)
+            return EXIT_FAILURE;
+        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, agrid, A) == NULL)
+            return EXIT_FAILURE;
+    }
+    else {
+        die(USAGE, "");
+    }
 
 	/* force integer interpolation if this is nearest neighbor, needed for TOPS */
 	if (intrp == 1) {
@@ -119,30 +155,72 @@ int main(int argc, char **argv) {
 	/* open the aligned slc file for writing and write one row at a time */
 	if ((SLC_file2 = fopen(argv[4], "wb")) == NULL)
 		die("Can't open SLCfile for output", argv[4]);
+
 	for (ii = 0; ii < ydimm; ii++) {
 		for (jj = 0; jj < xdimm; jj++) {
 
 			/* convert master ra to aligned ra */
 			ram[0] = jj;
 			ram[1] = ii;
-			ram2ras(ps, ram, ras);
 
-			/*  do nearest, bilinear, bicubic, or sinc interpolation */
+            if (intrp == 5) {
 
-			if (intrp == 1) {
-				nearest(ras, sinn, ydims, xdims, &sout[2 * jj]);
-			}
-			else if (intrp == 2) {
-				bilinear(ras, sinn, ydims, xdims, &sout[2 * jj]);
-			}
-			else if (intrp == 3) {
-				bicubic(ras, sinn, ydims, xdims, &sout[2 * jj]);
-			}
-			else if (intrp == 4) {
-				bisinc(ras, sinn, ydims, xdims, &sout[2 * jj]);
-			}
+                r1 = (int)floor(jj/R->header->inc[GMT_X]);
+                r2 = (int) ceil(jj/R->header->inc[GMT_X]);
+                a1 = (int)floor(ii/R->header->inc[GMT_Y]);
+                a2 = (int) ceil(ii/R->header->inc[GMT_Y]);
+                f11 = R->data[r1+R->header->n_columns*a1];  // row 1 column 1
+                f12 = R->data[r2+R->header->n_columns*a1];  // row 1 column 2
+                f21 = R->data[r1+R->header->n_columns*a2];  // row 2 column 1
+                f22 = R->data[r2+R->header->n_columns*a2];  // row 2 column 2
+                r11 = r1 * R->header->inc[GMT_X];
+                r22 = r2 * R->header->inc[GMT_X];
+                a11 = a1 * R->header->inc[GMT_Y];
+                a22 = a2 * R->header->inc[GMT_Y];
+                // bilinear interpolation
+                ras[0] = ram[0] + f11*(r22-jj)*(a22-ii)/(r22-r11)/(a22-a11) + f12*(jj-r11)*(a22-ii)/(r22-r11)/(a22-a11)
+                                + f21*(r22-jj)*(ii-a11)/(r22-r11)/(a22-a11) + f22*(jj-r11)*(ii-a11)/(r22-r11)/(a22-a11);
+
+                r1 = (int)floor(jj/A->header->inc[GMT_X]);
+                r2 = (int) ceil(jj/A->header->inc[GMT_X]);
+                a1 = (int)floor(ii/A->header->inc[GMT_Y]);
+                a2 = (int) ceil(ii/A->header->inc[GMT_Y]);
+                f11 = A->data[r1+A->header->n_columns*a1];  // row 1 column 1
+                f12 = A->data[r2+A->header->n_columns*a1];  // row 1 column 2
+                f21 = A->data[r1+A->header->n_columns*a2];  // row 2 column 1
+                f22 = A->data[r2+A->header->n_columns*a2];  // row 2 column 2
+                r11 = r1 * A->header->inc[GMT_X];
+                r22 = r2 * A->header->inc[GMT_X];
+                a11 = a1 * A->header->inc[GMT_Y];
+                a22 = a2 * A->header->inc[GMT_Y];
+                // bilinear interpolation
+                ras[1] = ram[1] + f11*(r22-jj)*(a22-ii)/(r22-r11)/(a22-a11) + f12*(jj-r11)*(a22-ii)/(r22-r11)/(a22-a11)
+                                + f21*(r22-jj)*(ii-a11)/(r22-r11)/(a22-a11) + f22*(jj-r11)*(ii-a11)/(r22-r11)/(a22-a11);
+
+                // interpolate with bisinc
+                bisinc(ras, sinn, ydims, xdims, &sout[2 * jj]);
+
+            }
+            else {
+			    ram2ras(ps, ram, ras);
+
+			    /*  do nearest, bilinear, bicubic, or sinc interpolation */
+			    if (intrp == 1) {
+				    nearest(ras, sinn, ydims, xdims, &sout[2 * jj]);
+			    }
+			    else if (intrp == 2) {
+				    bilinear(ras, sinn, ydims, xdims, &sout[2 * jj]);
+			    }
+			    else if (intrp == 3) {
+				    bicubic(ras, sinn, ydims, xdims, &sout[2 * jj]);
+			    }
+			    else if (intrp == 4) {
+				    bisinc(ras, sinn, ydims, xdims, &sout[2 * jj]);
+			    }
+            }
 			// if(ras[0]>xdimm||ras[0]<0) count++;
 		}
+
 		fwrite(sout, 2 * sizeof(short), xdimm, SLC_file2);
 	}
 	// fprintf(stderr,"%llu points out of bounds
