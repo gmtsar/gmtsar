@@ -99,7 +99,7 @@ int main(int argc, char **argv) {
     if (intrp == 5 && argc == 8) {
         strcpy(rgrid,argv[6]);
         strcpy(agrid,argv[7]);
-        printf("reading in coregistration grid %s and %s", rgrid, agrid);
+        printf("reading in coregistration grid %s and %s \n", rgrid, agrid);
 
         if ((R = GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_HEADER_ONLY, NULL, rgrid, NULL)) ==
             NULL)
@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
     }
     else {
-        die(USAGE, "");
+        if (argc < 6) die(USAGE, "");
     }
 
 	/* force integer interpolation if this is nearest neighbor, needed for TOPS */
