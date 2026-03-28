@@ -531,14 +531,22 @@
           set amin = `echo $amedian | awk '{print $1-3}'`
           awk '{if($4 > '$amin' && $4 < '$amax') print $0}' < freq_xcorr.dat > freq_alos2.dat
           fitoffset.csh 2 3 freq_alos2.dat 10 >> $aligned.PRM
-        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" ||  $SAT == "ALOS_SLC" || $SAT == "NSR_A" || $SAT == "NSR_B") then
+        else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" ||  $SAT == "ALOS_SLC") then
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
+	else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+          slc2amp.csh $master.PRM 4 amp-$master.grd 
+          xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40
+          fitoffset_ra.csh 10 10 freq_xcorr.dat 20
         else
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 2 2 freq_xcorr.dat 18 >> $aligned.PRM
         endif
-        resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 4
+        if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+          resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 5 r.grd a.grd
+	else
+          resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 4
+	endif
         rm $aligned.SLC
         mv $aligned.SLCresamp $aligned.SLC
         cp $aligned.PRMresamp $aligned.PRM
