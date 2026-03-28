@@ -153,6 +153,10 @@ int main(int argc, char **argv) {
 		die("mmap error for input", " ");
 
 	/* open the aligned slc file for writing and write one row at a time */
+	if (strcmp(ps.SLC_file, argv[4]) == 0) {
+	    fprintf(stderr, "ERROR: output SLC file must be different from input SLC file\n");
+	    exit(EXIT_FAILURE);
+	}	
 	if ((SLC_file2 = fopen(argv[4], "wb")) == NULL)
 		die("Can't open SLCfile for output", argv[4]);
 
