@@ -13,12 +13,12 @@ if ($#argv == 0) then
   	echo "  "
   	echo "Usage: fitoffset_ra.csh npar_rng npar_azi xcorr.dat [SNR]"
   	echo "  "
-	echo "        npar_rng    - number of parameters to fit in range "
-        echo "        npar_aiz    - number of parameters to fit in azimuth "
+	echo "        npar_rng    - number of parameters to fit in range (1-10) "
+    echo "        npar_aiz    - number of parameters to fit in azimuth (1-10) "
   	echo "        xcorr.dat   - files of range and azimuth offset estimates "
   	echo "        SNR         - optional SNR cutoff (default 20)"
   	echo "  "
-  	echo "Example: fitoffset_ra.csh 3 3 freq_xcorr.dat "
+  	echo "Example: fitoffset_ra.csh 10 10 freq_xcorr.dat "
   	echo "  "
   	exit 1
 endif
@@ -58,8 +58,8 @@ endif
 #
 # grid these delta_offsets to match the geometric offsets
 #
-gmt surface r_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64  -Gr_tmp.grd
-gmt surface a_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64  -Ga_tmp.grd
+gmt surface r_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Gr_tmp.grd
+gmt surface a_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Ga_tmp.grd
 gmt grdmath r_tmp.grd FLIPUD = r.grd
 gmt grdmath a_tmp.grd FLIPUD = a.grd
 #
