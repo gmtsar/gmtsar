@@ -60,19 +60,18 @@ int main(int argc, char **argv) {
 	FILE *SLC_file2 = NULL, *prmout = NULL;
 	int fdin;
 	double sv_pr[6];
-    char rgrid[128],agrid[128];
+	char rgrid[128],agrid[128];
 	size_t st_size;
     struct GMT_GRID *R = NULL, *A = NULL;
     int r1, r2, a1, a2;
-    double f11,f12,f21,f22, r11, r22, a11, a22;
+    double f11,f12,f21,f22; 
+    double gx, gy, tx, ty;
+    int nx, ny;
 
     // Begin: Initializing new GMT session
     void *API = NULL; // GMT API control structure
     if ((API = GMT_Create_Session(argv[0], 0U, 0U, NULL)) == NULL)
         return EXIT_FAILURE;
-
-
-	// long long int count=0;
 
 	struct PRM pm, ps;
 
@@ -160,6 +159,10 @@ int main(int argc, char **argv) {
 	if ((SLC_file2 = fopen(argv[4], "wb")) == NULL)
 		die("Can't open SLCfile for output", argv[4]);
 
+	/* for R grid */
+	nx = (int)R->header->n_columns;
+	ny = (int)R->header->n_rows;
+
 	for (ii = 0; ii < ydimm; ii++) {
 		for (jj = 0; jj < xdimm; jj++) {
 
@@ -169,37 +172,81 @@ int main(int argc, char **argv) {
 
             if (intrp == 5) {
 
-                r1 = (int)floor(jj/R->header->inc[GMT_X]);
-                r2 = (int) ceil(jj/R->header->inc[GMT_X]);
-                a1 = (int)floor(ii/R->header->inc[GMT_Y]);
-                a2 = (int) ceil(ii/R->header->inc[GMT_Y]);
-                f11 = R->data[r1+R->header->n_columns*a1];  // row 1 column 1
-                f12 = R->data[r2+R->header->n_columns*a1];  // row 1 column 2
-                f21 = R->data[r1+R->header->n_columns*a2];  // row 2 column 1
-                f22 = R->data[r2+R->header->n_columns*a2];  // row 2 column 2
-                r11 = r1 * R->header->inc[GMT_X];
-                r22 = r2 * R->header->inc[GMT_X];
-                a11 = a1 * R->header->inc[GMT_Y];
-                a22 = a2 * R->header->inc[GMT_Y];
-                // bilinear interpolation
-                ras[0] = ram[0] + f11*(r22-jj)*(a22-ii)/(r22-r11)/(a22-a11) + f12*(jj-r11)*(a22-ii)/(r22-r11)/(a22-a11)
-                                + f21*(r22-jj)*(ii-a11)/(r22-r11)/(a22-a11) + f22*(jj-r11)*(ii-a11)/(r22-r11)/(a22-a11);
+	/* map master pixel coordinates into grid coordinates */
+	/* --- Range grid interpolation (R) --- */
 
-                r1 = (int)floor(jj/A->header->inc[GMT_X]);
-                r2 = (int) ceil(jj/A->header->inc[GMT_X]);
-                a1 = (int)floor(ii/A->header->inc[GMT_Y]);
-                a2 = (int) ceil(ii/A->header->inc[GMT_Y]);
-                f11 = A->data[r1+A->header->n_columns*a1];  // row 1 column 1
-                f12 = A->data[r2+A->header->n_columns*a1];  // row 1 column 2
-                f21 = A->data[r1+A->header->n_columns*a2];  // row 2 column 1
-                f22 = A->data[r2+A->header->n_columns*a2];  // row 2 column 2
-                r11 = r1 * A->header->inc[GMT_X];
-                r22 = r2 * A->header->inc[GMT_X];
-                a11 = a1 * A->header->inc[GMT_Y];
-                a22 = a2 * A->header->inc[GMT_Y];
-                // bilinear interpolation
-                ras[1] = ram[1] + f11*(r22-jj)*(a22-ii)/(r22-r11)/(a22-a11) + f12*(jj-r11)*(a22-ii)/(r22-r11)/(a22-a11)
-                                + f21*(r22-jj)*(ii-a11)/(r22-r11)/(a22-a11) + f22*(jj-r11)*(ii-a11)/(r22-r11)/(a22-a11);
+	gx = jj / R->header->inc[GMT_X];
+	gy = ii / R->header->inc[GMT_Y];
+
+	/* use lower-left cell index, not floor/ceil pair */
+	r1 = (int)floor(gx);
+	a1 = (int)floor(gy);
+
+	/* clamp so r1+1 and a1+1 are valid */
+	if (r1 < 0) r1 = 0;
+	if (a1 < 0) a1 = 0;
+	if (r1 > nx - 2) r1 = nx - 2;
+	if (a1 > ny - 2) a1 = ny - 2;
+
+	r2 = r1 + 1;
+	a2 = a1 + 1;
+
+	/* fractional position within the cell */
+	tx = gx - r1;
+	ty = gy - a1;
+	
+	f11 = R->data[r1 + nx * a1];
+	f12 = R->data[r2 + nx * a1];
+	f21 = R->data[r1 + nx * a2];
+	f22 = R->data[r2 + nx * a2];
+
+	ras[0] = ram[0]
+       	+ (1.0 - tx) * (1.0 - ty) * f11
+       	+ tx         * (1.0 - ty) * f12
+       	+ (1.0 - tx) * ty         * f21
+       	+ tx         * ty         * f22;
+
+	/* --- Azimuth grid interpolation (A) --- */
+
+	/* map master pixel coords into grid coords */
+	gx = jj / A->header->inc[GMT_X];
+	gy = ii / A->header->inc[GMT_Y];
+
+	/* lower-left cell index */
+	r1 = (int)floor(gx);
+	a1 = (int)floor(gy);
+
+	/* clamp so r1+1 and a1+1 stay in bounds */
+	if (r1 < 0) r1 = 0;
+	if (a1 < 0) a1 = 0;
+	if (r1 > nx - 2) r1 = nx - 2;
+	if (a1 > ny - 2) a1 = ny - 2;
+
+	r2 = r1 + 1;
+	a2 = a1 + 1;
+	
+	/* fractional position inside the cell */
+	tx = gx - r1;
+	ty = gy - a1;
+
+	/* fetch grid values */
+	f11 = A->data[r1 + nx * a1];
+	f12 = A->data[r2 + nx * a1];
+	f21 = A->data[r1 + nx * a2];
+	f22 = A->data[r2 + nx * a2];
+
+	/* bilinear interpolation */
+	ras[1] = ram[1]
+       	+ (1.0 - tx) * (1.0 - ty) * f11
+       	+ tx         * (1.0 - ty) * f12
+       	+ (1.0 - tx) * ty         * f21
+       	+ tx         * ty         * f22;
+	
+	if (!isfinite(ras[0]) || !isfinite(ras[1])) {
+    	fprintf(stderr, "bad ras at ii=%d jj=%d : %g %g\n", ii, jj, ras[0], ras[1]);
+    	sout[0] = sout[1] = 0;
+    	continue;
+	}
 
                 // interpolate with bisinc
                 bisinc(ras, sinn, ydims, xdims, &sout[2 * jj]);
