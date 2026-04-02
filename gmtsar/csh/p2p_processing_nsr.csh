@@ -535,6 +535,7 @@
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
 	else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+		  rm amp*.grd
           slc2amp.csh $master.PRM 4 amp-$master.grd 
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40
           fitoffset_ra.csh 10 10 freq_xcorr.dat 20
