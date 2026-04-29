@@ -1,6 +1,5 @@
 /***************************************************************************
- * Creator:  Xiaohua(Eric) XU                                              *
- *           (University of Science and Technology of China                *
+ * Creator:  Xiaohua(Eric) XU and David T. Sandwell                        *
  * Date   :  01/23/2023                                                    *
  ***************************************************************************/
 
