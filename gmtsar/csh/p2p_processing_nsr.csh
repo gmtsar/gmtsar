@@ -1,16 +1,17 @@
 #!/bin/csh -f
 #       $Id$
 #
-#  Xiaohua Xu, Jan, 2018
+#  David T. Sandwell, 11/2025
 #
-#  Automatically perform two-path processing on raw(1.0)/SLC(1.1) data
+#  Automatically perform two-path processing on NISAR RSLC data
+#  Needs to be integrated back into the generic p2p_processing.csh
 #  
 
   if ($#argv != 3 && $#argv != 4) then
     echo ""
-    echo "Usage: p2p_processing.csh SAT master_image aligned_image [configuration_file] "
+    echo "Usage: p2p_processing_NSR.csh SAT master_image aligned_image [configuration_file] "
     echo ""
-    echo "Example: p2p_processing.csh ALOS IMG-HH-ALPSRP055750660-H1.0__A IMG-HH-ALPSRP049040660-H1.0__A [config.alos.txt]"
+    echo "p2p_processing_nsr.csh NSR_A NISAR_L1_PR_RSLC_003_085_D_072_4005_DHDH_A_20251023T023258_20251023T023323_X05010_N_P_J_001 NISAR_L1_PR_RSLC_004_085_D_072_4005_DHDH_A_20251104T023258_20251104T023324_X05010_N_P_J_001 config_A.txt"
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
     echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN, ALOS4"
