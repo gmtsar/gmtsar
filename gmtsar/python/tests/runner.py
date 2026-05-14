@@ -5,8 +5,8 @@ in parallel within each case), then run compare.py.
 Override caseNameList for a subset run:  TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 runner.py
 """
 import os, runpy, shutil, signal, subprocess, time
-from cases import caseNameList, intfDirList, rawDir, \
-    SLCDir, workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, recipesDir
+from cases import caseNameList, rawDir, SLCDir, \
+    workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, recipesDir
 
 # Topex archive naming: most cases use .tar.gz; one exception (see tkGUI.gmtsar sample_dict).
 TGZ_EXCEPTIONS = {'NISAR_SIM_ALOS'}

@@ -3,14 +3,14 @@
 frozen reference, if present). Emits human-readable lines on stdout AND writes
 a machine-readable JSON sidecar per case at <workdir>/results/<case>.json so
 report.py can aggregate without log scraping."""
-import json, os, time
+import glob, json, os, time
 from datetime import datetime, timezone
 import numpy as np
 import xarray as xr
 from skimage import io
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
-from cases import caseNameList, intfDirList, rawDir, SLCDir, \
+from cases import caseNameList, rawDir, SLCDir, \
     pythonRunRoot, cshRefRoot, referenceRoot, workAbsoluteDir
 
 fileNameList = ['corr_ll.png','display_amp_ll.png','phasefilt_mask_ll.png',
@@ -150,6 +150,28 @@ def _file_under(root, case, intf, fname):
     return f'{root}/{case}/{intf}/{fname}'
 
 
+def discover_intf_dirs(case):
+    """Find every subdir of <root>/<case>/ that contains AT LEAST ONE of the
+    comparison-target files (fileNameList), across all available trees
+    (python_test, csh_test, reference). Returns the union as sorted paths.
+
+    Replaces the old hardcoded intfDirList: a re-acquisition with different
+    date pairs (e.g. intf/2010095_2010141 → intf/2024nnn_2024mmm) would have
+    silently broken the hardcoded list. S1_TOPS cases need a multi-file probe
+    because subswath dirs (F1/F2/F3) and the merge dir produce different
+    subsets of fileNameList — sentinel-on-corr_ll.grd alone misses ~half."""
+    dirs = set()
+    for root in (pyRoot, cshRoot, frozenRoot):
+        case_root = f'{root}/{case}'
+        if not os.path.isdir(case_root):
+            continue
+        for fname in fileNameList:
+            for path in glob.glob(f'{case_root}/**/{fname}', recursive=True):
+                rel = os.path.dirname(os.path.relpath(path, case_root))
+                dirs.add(rel)
+    return sorted(dirs)
+
+
 # Three-way comparison: per file, build the (label, fnA, fnB) pairs that have
 # both files present. Always includes python_vs_csh. Adds csh_vs_frozen and
 # python_vs_frozen when the frozen reference exists for that file.
@@ -164,9 +186,10 @@ for caseName in caseNameList:
         'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'comparisons': [],
     }
+    intf_dirs = discover_intf_dirs(caseName)
     for fileName in fileNameList:
         ftype = 'png' if fileName.endswith('.png') else 'grd'
-        for intf in intfDirList[caseName]:
+        for intf in intf_dirs:
             py     = _file_under(pyRoot,     caseName, intf, fileName)
             csh    = _file_under(cshRoot,    caseName, intf, fileName)
             frozen = _file_under(frozenRoot, caseName, intf, fileName)

@@ -5,15 +5,31 @@ the slow csh recipe.
 
 Usage:  python3 freeze_reference.py [--force]
 
-Copies the comparison-target files (`fileNameList` × `intfDirList`) from
+Copies the comparison-target files from
 <workdir>/csh_test/<case>/<intf>/<file>  →  tests/reference/<case>/<intf>/<file>
-Skips files that already exist in reference/ unless --force is given.
+where <intf> is auto-discovered from the filesystem (any subdir containing
+corr_ll.grd). Skips files that already exist in reference/ unless --force.
 """
-import argparse, os, shutil, sys
-from cases import caseNameList, intfDirList, cshRefRoot
+import argparse, glob, os, shutil
+from cases import caseNameList, cshRefRoot
 from compare import fileNameList
 
-REF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reference')
+REF_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reference')
+CSH_ROOT = cshRefRoot.rstrip(os.sep)
+
+
+def discover_intf_dirs(case):
+    """Subdirs of csh_test/<case>/ that contain AT LEAST ONE comparison-target
+    file. S1_TOPS subswath dirs and merge/ produce disjoint subsets, so a
+    single-file sentinel would miss half of them."""
+    case_root = f'{CSH_ROOT}/{case}'
+    if not os.path.isdir(case_root):
+        return []
+    dirs = set()
+    for fname in fileNameList:
+        for p in glob.glob(f'{case_root}/**/{fname}', recursive=True):
+            dirs.add(os.path.dirname(os.path.relpath(p, case_root)))
+    return sorted(dirs)
 
 
 def main():
@@ -25,9 +41,9 @@ def main():
 
     copied = skipped = missing = 0
     for case in cases:
-        for intf in intfDirList.get(case, []):
+        for intf in discover_intf_dirs(case):
             for fname in fileNameList:
-                src = os.path.join(cshRefRoot.rstrip(os.sep), case, intf, fname)
+                src = os.path.join(CSH_ROOT, case, intf, fname)
                 dst = os.path.join(REF_DIR, case, intf, fname)
                 if not os.path.isfile(src):
                     missing += 1
