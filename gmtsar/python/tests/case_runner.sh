@@ -13,6 +13,12 @@
 
 set -u
 
+# On Ctrl-C or SIGTERM, kill every process in our process group (csh, python,
+# tar, etc.) so we don't leak orphaned recipe runs. `kill 0` signals the whole
+# pgrp; runner.py starts each case_runner.sh in its own session, so this only
+# kills our own subtree.
+trap 'kill 0 2>/dev/null; exit 130' INT TERM
+
 case=${1:?case name}
 cshDir=${2:?csh test dir}
 pyDir=${3:?python test dir}

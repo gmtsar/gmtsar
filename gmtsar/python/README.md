@@ -46,53 +46,56 @@ Layout under the work directory:
 ```
 <workdir>/
 ├── dataset/<caseName>.tar.gz    # downloaded raw tarballs (topex sample archive)
-├── pythonREADME/                # per-case Python run scripts (README_<caseName>.txt)
+├── recipes/                     # per-case Python run scripts (README_<caseName>.txt)
+├── results/<caseName>.json      # machine-readable comparison results (compare.py)
 ├── python_test/<caseName>/...   # Python framework run outputs
 └── csh_test/<caseName>/...      # legacy csh reference results
 ```
 
-For each case, `runAllTest.py`:
+For each case, `tests/runner.py`:
 1. Downloads `<caseName>.tar.gz` from `topex.ucsd.edu/gmtsar/tar/` into `dataset/` (if not cached).
 2. Extracts the tarball **into both trees** — `csh_test/<caseName>/` and `python_test/<caseName>/` — so each tree is a fully self-contained dataset.
-3. In `csh_test/<caseName>/`: runs the **bundled `README.txt`** (the legacy csh recipe shipped in the tarball) with `csh README.txt > log.txt 2>&1`. Skipped if the tree already has `.grd`/`.png` outputs.
-4. In `python_test/<caseName>/`: copies `pythonREADME/README_<caseName>.txt` (your Python recipe) into the dir and runs it with `./README_<caseName>.txt > log.txt 2>&1`.
-5. After all cases finish, `checkTest.py` diffs the `.grd`/`.png` outputs between the two trees and reports SUCCESS/FAIL per file.
+3. In `csh_test/<caseName>/`: runs the **bundled `README.txt`** (legacy csh recipe shipped in the tarball) with `csh README.txt > log.txt 2>&1`. Skipped if `intf/` already has outputs.
+4. In `python_test/<caseName>/`: copies `recipes/README_<caseName>.txt` (your Python recipe) and runs it with `./README_<caseName>.txt > log.txt 2>&1`.
+5. After all cases finish, `tests/compare.py` diffs the `.grd`/`.png` outputs and writes both human lines on stdout and per-case JSON to `<workdir>/results/<case>.json`.
 
-Run all cases:
+Run sweep (full / tiered):
 ```
-cd gmtsar/python/testingSystem
-python3 runAllTest.py
-```
-
-Run a subset (handy for iteration):
-```
-TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 runAllTest.py
+bash gmtsar/python/tests/sweep.sh             # full sweep (~8 h)
+bash gmtsar/python/tests/sweep.sh --smoke     # 1 case  (~3 min — pipeline alive?)
+bash gmtsar/python/tests/sweep.sh --fast      # 4 cases (~30 min — ALOS/RS2/ERS/CSK paths)
 ```
 
-Each case runs in its own background bash subprocess (`subprocess.Popen` with `start_new_session=True`); cases execute in parallel and the driver waits for all to finish before invoking `checkTest.py` in-process via `runpy`.
+Run a custom subset:
+```
+TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 gmtsar/python/tests/runner.py
+```
+
+Inside one sweep: each case runs in its own background bash (`subprocess.Popen` with `start_new_session=True`); within a case, csh and python recipes run in parallel via `tests/case_runner.sh`. Up to `MAX_PARALLEL=4` cases concurrent. `compare.py` is invoked in-process via `runpy` after all cases finish.
 
 ## Sample datasets
 
 Test inputs come from the GMTSAR sample archive:
 ```
-http://topex.ucsd.edu/gmtsar/tar/{caseName}.tar.gz
+http://topex.ucsd.edu/gmtsar/tar/{caseName}.{ext}
 ```
-The full case list and per-case archive names are defined in `gmtsar/python/utils/tkGUI.gmtsar` (`self.sample_dict`). One case uses `.tgz` instead of `.tar.gz`: `NISAR_SIM_ALOS`.
-
-The case names exercised by the test runner are listed in `gmtsar/python/testingSystem/pathListForTest.py` (`caseNameList`).
+The full case manifest (satellite, archive extension, tier membership, enabled flag) is defined in `gmtsar/python/tests/cases.py` (`CASES` dict). One case uses `.tgz` instead of `.tar.gz`: `NISAR_SIM_ALOS` (and is `enabled: False` because topex returns HTTP 403 for that archive).
 
 ## csh reference results
 
-`gmtsar/python/testingSystem/checkTest.py` compares Python-framework outputs against reference results produced by the legacy csh framework. The reference tree lives at `<workdir>/csh_test/<caseName>/...` with the same intf paths as `intfDirList` in `pathListForTest.py`. Files compared: `corr_ll.png`, `display_amp_ll.png`, `phasefilt_mask_ll.png`, `corr_ll.grd`, `phasefilt.grd`, `filtcorr.grd`.
+`tests/compare.py` compares Python-framework outputs against reference results produced by the legacy csh framework. The reference tree lives at `<workdir>/csh_test/<caseName>/...`; intf-subdir paths are auto-discovered from the filesystem (no longer hardcoded). Files compared: `corr_ll.png`, `display_amp_ll.png`, `phasefilt_mask_ll.png`, `corr_ll.grd`, `phasefilt.grd`, `filtcorr.grd`.
 
-If `csh_test/<caseName>/` has no `.grd`/`.png` outputs, `runAllTest.py` automatically extracts the tarball and runs the bundled `README.txt` (csh recipe) to generate the reference.
+If `csh_test/<caseName>/intf/` has no `.grd`/`.png` outputs, `runner.py` automatically runs the bundled `README.txt` (csh recipe) to generate the reference.
+
+A frozen-csh reference can be optionally produced via `tests/freeze_reference.py`, which snapshots current csh outputs into `tests/reference/<caseName>/...`. When present, `compare.py` runs three pairs per file (python-vs-csh, csh-vs-frozen, python-vs-frozen). The reference dir is gitignored (~5.8 GB if produced).
 
 ## Notes on the framework
-1. Per-case computing time is collected in `timeSpentLog.txt`; stdout from each case is piped to `log.txt` in the case folder. A summary (wall-clock + per-pipeline timings) prints at the end of `runAllTest.py`.
-2. `gmtsar/python/testingSystem/checkTest.py` does the comparison. Required Python packages are installed by `install.sh --python`. Per-file thresholds are defined in `PNG_SSIM_THRESHOLD` / `GRD_RMS_THRESHOLD` dicts at the top of the script (phase-named outputs use relaxed thresholds because wraparound at 0/2π destroys SSIM).
-3. Cases in `caseNameList` (`gmtsar/python/testingSystem/pathListForTest.py`) are validated against csh-framework reference outputs.
+1. Per-case computing time is collected in `<workdir>/timeSpentLog.txt`; stdout from each case is piped to `log.txt` in the case folder. A summary (wall-clock + per-pipeline timings) prints at the end of `runner.py`.
+2. `tests/compare.py` does the comparison. Required Python packages are installed by `install.sh --python`. Per-file thresholds live in `PNG_SSIM_THRESHOLD` / `GRD_RMS_THRESHOLD` dicts at the top of the script (phase-named outputs use a complex-domain rms metric that's invariant to 2π wraps).
+3. `tests/report.py` aggregates `results/*.json` and emits `<workdir>/sweep_summary.md`.
+4. The case manifest, tier membership, and `enabled` flags live in `tests/cases.py` (`CASES` dict).
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the version history.
+Version history: see [`release_notes_v<latest>.md`](.) at this directory's root for the current release notes, and [`docs/release_notes_v*.md`](docs/) for prior releases.
 
 ## Acknowledgments
 
