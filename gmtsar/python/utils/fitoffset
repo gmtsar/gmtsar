@@ -222,9 +222,5 @@ def fitoffset():
     
     print("FITOFFSET - END ... ...")
 
-def _main_func(description):
-    fitoffset()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    fitoffset()

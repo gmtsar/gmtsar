@@ -269,9 +269,5 @@ def filter():
     
     print("FILTER - END ... ...")
 
-def _main_func(description):
-    filter()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    filter()

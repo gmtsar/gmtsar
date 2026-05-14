@@ -54,9 +54,5 @@ def slc2amp():
     
     print("SLC2AMP - END ... ...")
 
-def _main_func(description):
-    slc2amp()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    slc2amp()

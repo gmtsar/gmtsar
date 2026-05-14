@@ -195,9 +195,5 @@ def snaphu():
     
     print("SNAPHU - END ... ...")
 
-def _main_func(description):
-    snaphu()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    snaphu()

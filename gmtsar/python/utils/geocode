@@ -178,9 +178,5 @@ def geocode():
 
     print("GEOCODE - END ... ...")
 
-def _main_func(description):
-    geocode()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    geocode()

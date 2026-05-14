@@ -37,14 +37,11 @@ def linkFiles(subswathId, masterSafe, masterEof, alignedSafe, alignedEof, fmList
     run('mkdir -p '+rootDir+'/raw')
     run('mkdir -p '+rootDir+'/topo')
     os.chdir(rootDir)
-    os.system('pwd')
     replace_strings
     print('P2P_S1_TOPS_FRAME: Linking files for Subswath '+str(subswathId))
     os.chdir('topo')
-    os.system('pwd')
     file_shuttle('../../topo/dem.grd', '.', 'link')
     os.chdir('../raw')
-    os.system('pwd')
     file_shuttle('../../topo/dem.grd', '.', 'link')
     file_shuttle('../../raw/'+masterSafe+'/annotation/'+fmList[subswathId]+'.xml', '.', 'link')
     file_shuttle('../../raw/'+masterSafe+'/measurement/'+fmList[subswathId]+'.tiff', '.', 'link')  
@@ -71,13 +68,11 @@ def processOneSubswath(subswathId, fm, fs):
     print('Processing subswath '+ folderName)
     file_shuttle('config.py', folderName+'/config.py', 'cp')
     os.chdir(folderName)
-    os.system('pwd')
     cmd = ['p2p_processing', 'S1_TOPS', fm, fs, 'config.py']
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     with open('output.log.txt', 'w') as f:
         f.write(result.stdout)
     os.chdir('..')
-    os.system('pwd')
     
 def merge(skip_master, fmList, fsList):
     if skip_master!=2:
@@ -169,9 +164,5 @@ def p2pS1TopsFrame():
     
     print('P2P_S1_TOPS_FRAME - END')
 
-def _main_func(description):
+if __name__ == "__main__":
     p2pS1TopsFrame()
-
-if __name__ == '__main__':
-    _main_func(__doc__)
-

@@ -101,9 +101,5 @@ def cleanup():
         
     print("CLEANUP - END ... ...")
 
-def _main_func(description):
-    cleanup()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    cleanup()

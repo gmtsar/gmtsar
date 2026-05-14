@@ -81,9 +81,5 @@ def intf():
     file_shuttle(repPrm+'0', repPrm, 'mv')
     print("INTF: finishing intf ... ...")
 
-def _main_func(description):
-    intf()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    intf()
