@@ -93,3 +93,7 @@ If `csh_test/<caseName>/` has no `.grd`/`.png` outputs, `runAllTest.py` automati
 3. Cases in `caseNameList` (`gmtsar/python/testingSystem/pathListForTest.py`) are validated against csh-framework reference outputs.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the version history.
+
+## Acknowledgments
+
+Portions of the 2026-05 testing-system overhaul, consolidated installer (`install.sh`), FFTW threading shim (`fftw_force_serial.c`), and vectorized Python xcorr (`xcorr_py`) were developed in collaboration with Anthropic's Claude Code (Claude Opus 4.7).
