@@ -144,7 +144,7 @@ if [[ $DO_BUILD -eq 1 ]]; then
   ln -sf "$REPO_ROOT/gmtsar/csh/"*.csh "$REPO_ROOT/bin/"
 
   # Build FFTW threading shim — neuters fftwf_plan_with_nthreads at runtime
-  # (LD_PRELOAD'd by runAllTest.py). Without it, libgmt's pthread-based FFTW
+  # (LD_PRELOAD'd by runner.py). Without it, libgmt's pthread-based FFTW
   # spawns 14-19 threads per process and contends across pipelines.
   gcc -shared -fPIC -O2 \
       -o "$REPO_ROOT/gmtsar/python/fftw_force_serial.so" \

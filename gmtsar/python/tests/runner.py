@@ -1,12 +1,12 @@
 #! /usr/bin/env python3
 """Driver: launch each case as a background bash subprocess (csh + python run
-in parallel within each case), then run checkTest.py.
+in parallel within each case), then run compare.py.
 
-Override caseNameList for a subset run:  TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 runAllTest.py
+Override caseNameList for a subset run:  TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 runner.py
 """
 import os, runpy, shutil, signal, subprocess, time
-from pathListForTest import caseNameList, intfDirList, rawDir, \
-    SLCDir, workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, pythonCommandListPath
+from cases import caseNameList, intfDirList, rawDir, \
+    SLCDir, workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, recipesDir
 
 # Topex archive naming: most cases use .tar.gz; one exception (see tkGUI.gmtsar sample_dict).
 TGZ_EXCEPTIONS = {'NISAR_SIM_ALOS'}
@@ -23,11 +23,11 @@ def tarball_path(case):
 
 
 def stage_python_readmes():
-    """Copy pythonREADME/* into the workdir's pythonREADME/ (skip if already present)."""
-    src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pythonREADME')
-    os.makedirs(pythonCommandListPath, exist_ok=True)
+    """Copy recipes/* into the workdir's recipes/ (skip if already present)."""
+    src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recipes')
+    os.makedirs(recipesDir, exist_ok=True)
     for f in os.listdir(src_dir):
-        dst = os.path.join(pythonCommandListPath, f)
+        dst = os.path.join(recipesDir, f)
         if not os.path.exists(dst):
             shutil.copy2(os.path.join(src_dir, f), dst)
 
@@ -42,12 +42,21 @@ set -u
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 FFTW_NUM_THREADS=1
 {preload}
 
-# csh reference (background) — only build if no outputs yet
+# Extract tarball into each tree if the tree is empty (or has only input dirs).
+if [ ! -d {cshDir}/intf ]; then
+    mkdir -p {cshDir} && tar -xzf {tarball} -C {cshDir}
+fi
+mkdir -p {pyDir}
+if [ ! -d {pyDir}/intf ]; then
+    tar -xzf {tarball} -C {pyDir}
+fi
+
+# csh reference (background) — only build if no outputs in intf/.
+# (Don't search the whole cshDir: bundled tarballs include topo/dem.grd,
+# which would falsely look like a finished run.)
 (
-    if [ -z "$(find {cshDir} -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
+    if [ -z "$(find {cshDir}/intf -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
         echo "[{case}] no csh reference — running legacy csh recipe"
-        mkdir -p {cshDir}
-        tar -xzf {tarball} -C {cshDir}
         t0=$SECONDS
         ( cd {cshDir} && cleanup all && csh README.txt > log.txt 2>&1 )
         echo "{case} csh used $((SECONDS-t0)) s" >> {timeLog}
@@ -57,10 +66,6 @@ cshPid=$!
 
 # python run (background) — always runs
 (
-    mkdir -p {pyDir}
-    if [ -z "$(ls -A {pyDir} 2>/dev/null)" ]; then
-        tar -xzf {tarball} -C {pyDir}
-    fi
     t0=$SECONDS
     ( cd {pyDir} \\
       && cleanup all \\
@@ -108,7 +113,7 @@ def main():
             cshDir=cshRefRoot + caseName,
             pyDir=pythonRunRoot + caseName,
             tarball=tb,
-            pyReadme=pythonCommandListPath + 'README_' + caseName + '.txt',
+            pyReadme=recipesDir + 'README_' + caseName + '.txt',
             timeLog=timeLog,
             preload_shim=_PRELOAD_SHIM,
         )
@@ -132,7 +137,7 @@ def main():
     # Run comparison in-process — avoids a fresh interpreter startup with full
     # scipy/skimage/matplotlib imports.
     os.chdir(workAbsoluteDir)
-    runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkTest.py'),
+    runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'compare.py'),
                    run_name='__main__')
 
 

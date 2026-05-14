@@ -499,7 +499,7 @@ def P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo):
             else:
                 run("dem2topo_ra master.PRM dem.grd")
         else:
-            print("no DEM file found: ", dem.grd)
+            print("no DEM file found: dem.grd")
             sys.exit(1)
         
         print('P2P 3: exiting directory topo/')
