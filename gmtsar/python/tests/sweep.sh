@@ -29,8 +29,18 @@ LOG=$WORK/sweep.log
 TESTSYS=$GMTSAR/gmtsar/python/tests
 mkdir -p "$DATASET_DIR" "$WORK"
 
-# Derive case list from cases.py (already tier-aware via TEST_TIER).
-cases=$(cd "$TESTSYS" && "$PY" -c "from cases import caseNameList; print(' '.join(caseNameList))")
+# Derive case list + per-case (path, url) from cases.py in one shot — single
+# source of truth for archive extension (.tar.gz vs .tgz) and URL.
+declare -A TARBALL URL
+cases=""
+while IFS=$'\t' read -r c path url; do
+    cases+="$c "
+    TARBALL[$c]=$path
+    URL[$c]=$url
+done < <(cd "$TESTSYS" && "$PY" -c "
+from cases import caseNameList, archive_path, archive_url
+for c in caseNameList: print(f'{c}\t{archive_path(c)}\t{archive_url(c)}')
+")
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
@@ -56,12 +66,8 @@ fi
 # already complete will essentially skip the wait and run immediately.
 declare -A DL_PID
 for c in $cases; do
-    ext=tar.gz
-    [[ "$c" == "NISAR_SIM_ALOS" ]] && ext=tgz
-    tarball="$DATASET_DIR/$c.$ext"
     log "DOWNLOAD start (background) $c"
-    wget -c -q --timeout=60 --tries=3 \
-         "http://topex.ucsd.edu/gmtsar/tar/$c.$ext" -O "$tarball" &
+    wget -c -q --timeout=60 --tries=3 "${URL[$c]}" -O "${TARBALL[$c]}" &
     DL_PID[$c]=$!
 done
 
@@ -74,10 +80,7 @@ log "max parallel cases: $MAX_PARALLEL"
 
 run_case() {
     local c=$1
-    local ext=tar.gz
-    [[ "$c" == "NISAR_SIM_ALOS" ]] && ext=tgz
-    local tarball="$DATASET_DIR/$c.$ext"
-    if [ ! -s "$tarball" ]; then
+    if [ ! -s "${TARBALL[$c]}" ]; then
         log "DOWNLOAD FAIL $c — tarball missing/empty"
         return 1
     fi
@@ -118,12 +121,10 @@ while [ -n "$(echo "$remaining" | tr -d ' ')" ] || [ $(jobs -rp | wc -l) -gt 0 ]
     wait "${DL_PID[$next]}"; rc=$?
     if [ $rc -ne 0 ]; then
         log "DOWNLOAD FAIL $next (wget rc=$rc) — skipping"
-        ext=tar.gz; [[ "$next" == "NISAR_SIM_ALOS" ]] && ext=tgz
-        [ ! -s "$DATASET_DIR/$next.$ext" ] && rm -f "$DATASET_DIR/$next.$ext"
+        [ ! -s "${TARBALL[$next]}" ] && rm -f "${TARBALL[$next]}"
         continue
     fi
-    ext=tar.gz; [[ "$next" == "NISAR_SIM_ALOS" ]] && ext=tgz
-    log "DOWNLOAD OK $next ($(du -h "$DATASET_DIR/$next.$ext" | cut -f1))"
+    log "DOWNLOAD OK $next ($(du -h "${TARBALL[$next]}" | cut -f1))"
     # Launch this case in a background subshell — up to MAX_PARALLEL run at once.
     run_case "$next" &
 done

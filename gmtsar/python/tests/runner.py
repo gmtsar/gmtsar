@@ -6,10 +6,10 @@ Override caseNameList for a subset run:  TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ p
 """
 import os, runpy, shutil, signal, subprocess, time
 from cases import caseNameList, rawDir, SLCDir, \
-    workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, recipesDir
+    workAbsoluteDir, pythonRunRoot, cshRefRoot, datasetRoot, recipesDir, \
+    archive_path
 
 # Topex archive naming: most cases use .tar.gz; one exception (see tkGUI.gmtsar sample_dict).
-TGZ_EXCEPTIONS = {'NISAR_SIM_ALOS'}
 
 # LD_PRELOAD shim that forces FFTW serial. libgmt is linked against libfftw3f_threads
 # and ignores env vars — see fftw_force_serial.c. Resolved relative to this script
@@ -17,9 +17,6 @@ TGZ_EXCEPTIONS = {'NISAR_SIM_ALOS'}
 _PRELOAD_SHIM = os.path.abspath(os.path.join(
     os.path.dirname(__file__), os.pardir, 'fftw_force_serial.so'))
 
-def tarball_path(case):
-    ext = '.tgz' if case in TGZ_EXCEPTIONS else '.tar.gz'
-    return datasetRoot + case + ext
 
 
 def stage_python_readmes():
@@ -64,7 +61,7 @@ def main():
     signal.signal(signal.SIGTERM, _kill_all)
 
     for caseName in caseNameList:
-        tb = tarball_path(caseName)
+        tb = archive_path(caseName)
         if not os.path.isfile(tb):
             print(f'[{caseName}] SKIP — tarball missing: {tb}')
             continue
