@@ -181,15 +181,16 @@ def pop_config():
     print( "# Set the decimation to be 2 if you want images with smaller file size.")
     print( "# ")
 
-    if SAT == "RS2" or SAT == "TSX":
-        dec_factor = 1 
-        print( "dec_factor = 1 ")
-    elif SAT == "ALOS2_SCAN":
-        dec_factor = 4 
-        print( "dec_factor = 4 ")
+    # Match csh pop_config.csh defaults (dec_factor=2 for everything except
+    # ALOS2_SCAN). Previously RS2/TSX defaulted to dec_factor=1 here, which
+    # produced 4× more pixels than csh and broke output comparability.
+    # RS2/TSX users wanting higher resolution should override in config.py.
+    if SAT == "ALOS2_SCAN":
+        dec_factor = 4
+        print("dec_factor = 4 ")
     else:
-        dec_factor = 2 
-        print( "dec_factor = 2 ")
+        dec_factor = 2
+        print("dec_factor = 2 ")
 
     if SAT == "S1_TOPS":
         range_dec = 8

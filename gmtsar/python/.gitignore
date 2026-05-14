@@ -1,0 +1,4 @@
+# Python framework local artifacts (kept out of git, kept inside gmtsar/python/)
+__pycache__/
+*.pyc
+fftw_force_serial.so
