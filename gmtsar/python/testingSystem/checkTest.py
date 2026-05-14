@@ -5,16 +5,23 @@ import xarray as xr
 from skimage import io
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
-from pathListForTest import caseNameList, intfDirList, rawDir, SLCDir
+from pathListForTest import caseNameList, intfDirList, rawDir, SLCDir, \
+    pythonRunRoot, cshRefRoot
 
 fileNameList = ['corr_ll.png','display_amp_ll.png','phasefilt_mask_ll.png',
         'corr_ll.grd', 'phasefilt.grd', 'filtcorr.grd']
-refRoot  = 'csh.test'
-testRoot = 'py.test'
-fileDiffNumericThreshold = 1e-3
-imageSimilarityIndexThreshold = 0.999
+refRoot  = cshRefRoot.rstrip(os.sep)     # <workdir>/csh.test
+testRoot = pythonRunRoot.rstrip(os.sep)  # <workdir>/python_test
+
+# Per-file thresholds. Phase imagery: tiny diffs near the 0/2π wrap boundary
+# flip pixels black↔white, killing SSIM even when the underlying .grd matches.
+PNG_SSIM_THRESHOLD = {'phasefilt_mask_ll.png': 0.95}
+GRD_RMS_THRESHOLD  = {'phasefilt.grd': 0.1}
+DEFAULT_PNG_SSIM   = 0.999
+DEFAULT_GRD_RMS    = 1e-3
 
 def parseCmdOutput(fn, searchStr):
+    result = float('nan')   # if searchStr not present (e.g. grdinfo failed), return NaN
     with open(fn,'r') as f:
         for line in f:
             if searchStr in line:
@@ -75,8 +82,9 @@ def compare_files(fnNew, fnRef, fileName, fileType):
         imageRef = io.imread(fnRef)
         #assert imageNew.shape == imageRef.shape, 'Images must be the same shape.'
         try:
-            ssim_index = ssim(imageNew,imageRef,multichannel=True)
-            if ssim_index>imageSimilarityIndexThreshold:
+            ssim_index = ssim(imageNew,imageRef,channel_axis=-1) if imageNew.ndim == 3 else ssim(imageNew,imageRef)
+            threshold = PNG_SSIM_THRESHOLD.get(fileName, DEFAULT_PNG_SSIM)
+            if ssim_index > threshold:
                 print(isTheSame+' '+f'SSIM: {ssim_index}')
             else:
                 print(notTheSame+' '+f'SSIM: {ssim_index}')
@@ -91,10 +99,8 @@ def compare_files(fnNew, fnRef, fileName, fileType):
         mean = parseCmdOutput('gmt.log.txt', 'mean:')
         stdev = parseCmdOutput('gmt.log.txt', 'stdev:')
         rms = parseCmdOutput('gmt.log.txt', 'rms:')
-        #print('Python and csh '+fileName+' "s difference are')
-        #print('mean = ',mean, ' stddev = ', stdev, 'rms = ', rms)
-        if (rms<fileDiffNumericThreshold and not('phase' in fnNew)) or \
-                (rms<0.1 and ('phase' in fnNew)):
+        threshold = GRD_RMS_THRESHOLD.get(fileName, DEFAULT_GRD_RMS)
+        if rms < threshold:
             print(isTheSame+'; diff.grd mean='+str(mean)+' stdev='+str(stdev)+' rms='+str(rms))
         else:
             print(notTheSame+' diff.grd mean='+str(mean)+' stdev='+str(stdev)+' rms='+str(rms))

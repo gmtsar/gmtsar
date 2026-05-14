@@ -51,16 +51,16 @@ def intFloatOrString(val):
         except ValueError:
             return ""
             
-def grep_value(fn, s, i): 
-    # grep_value performs similar functions to unix grep. 
+def grep_value(fn, s, i):
+    # grep_value performs similar functions to unix grep.
     # Given a file name - fn, and a character string - s, find the ith value.
     # The character should be unique in file fn.
-    #
+    val = ""
     with open(fn, 'r') as f:
         for line in f.readlines():
             if re.search(s, line):
                 print(line)
-                val = line.split()[i-1]     
+                val = line.split()[i-1]
     return intFloatOrString(val)
 
 def replace_strings(fn, s0, s1):
