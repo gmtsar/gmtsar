@@ -61,9 +61,26 @@ caseNameList = [
                 'NISAR_SIM_ALOS',  # tarball not auto-downloadable (403); runs if present
                 ]
 
-# Override caseNameList for a subset run: TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 runner.py
+# Test tiers — curated subsets for different time budgets. Full sweep takes
+# ~8 h on this shared NFS host; smaller tiers let a contributor validate
+# "did I break the pipeline?" without that.
+#   SMOKE: one tiny case  (~3 min)  — pipeline alive?
+#   FAST:  diverse small  (~30 min) — covers ALOS / RS2 / ERS / CSK paths
+#   FULL:  everything     (~8 h)    — use before a release
+SMOKE_CASES = ['RS2_SLC_Hawaii']
+FAST_CASES  = ['RS2_SLC_Hawaii', 'ERS_Hector_EQ', 'ALOS_Baja_EQ', 'CSK_RAW_Hawaii']
+
+# caseNameList overrides (highest priority first):
+#   1. TEST_CASES=case1,case2     — explicit subset
+#   2. TEST_TIER=smoke|fast|full  — named tier
+#   3. (default)                  — full caseNameList
+_tier = os.environ.get('TEST_TIER', '').lower()
 if os.environ.get('TEST_CASES'):
     caseNameList = [c.strip() for c in os.environ['TEST_CASES'].split(',') if c.strip()]
+elif _tier == 'smoke':
+    caseNameList = list(SMOKE_CASES)
+elif _tier == 'fast':
+    caseNameList = list(FAST_CASES)
 
 
 

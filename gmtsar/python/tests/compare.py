@@ -1,12 +1,17 @@
 #! /usr/bin/env python3
-import os, time
+"""Compare Python pipeline outputs against the legacy csh outputs (and the
+frozen reference, if present). Emits human-readable lines on stdout AND writes
+a machine-readable JSON sidecar per case at <workdir>/results/<case>.json so
+report.py can aggregate without log scraping."""
+import json, os, time
+from datetime import datetime, timezone
 import numpy as np
 import xarray as xr
 from skimage import io
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from cases import caseNameList, intfDirList, rawDir, SLCDir, \
-    pythonRunRoot, cshRefRoot, referenceRoot
+    pythonRunRoot, cshRefRoot, referenceRoot, workAbsoluteDir
 
 fileNameList = ['corr_ll.png','display_amp_ll.png','phasefilt_mask_ll.png',
         'corr_ll.grd', 'phasefilt.grd', 'filtcorr.grd']
@@ -75,45 +80,57 @@ def compare_txt_files(fn1,fn2,threshold=1e-3):
     print(isTheSame)
 
 def compare_files(fnNew, fnRef, fileName, fileType):
-    isTheSame = 'SUCCESS: python and csh '+fileName+' are the same'
-    notTheSame = 'FAIL: python and csh '+fileName+' are different'
+    """Compare two files, print a human line on stdout, return a result dict.
+    Result schema:
+        {file, type, status: SUCCESS|FAIL, metric: float, threshold: float,
+         metric_name: 'ssim' | 'rms' | 'complex-rms', extra: {...}}
+    """
+    same = 'SUCCESS: python and csh '+fileName+' are the same'
+    diff = 'FAIL: python and csh '+fileName+' are different'
 
-    if fileType=='png':
+    if fileType == 'png':
         imageNew = io.imread(fnNew)
         imageRef = io.imread(fnRef)
-        #assert imageNew.shape == imageRef.shape, 'Images must be the same shape.'
         try:
-            ssim_index = ssim(imageNew,imageRef,channel_axis=-1) if imageNew.ndim == 3 else ssim(imageNew,imageRef)
-            threshold = PNG_SSIM_THRESHOLD.get(fileName, DEFAULT_PNG_SSIM)
-            if ssim_index > threshold:
-                print(isTheSame+' '+f'SSIM: {ssim_index}')
-            else:
-                print(notTheSame+' '+f'SSIM: {ssim_index}')
-        except:
-            print(notTheSame+' no SSIM')
+            ssim_index = ssim(imageNew, imageRef, channel_axis=-1) if imageNew.ndim == 3 else ssim(imageNew, imageRef)
+        except Exception:
+            print(diff + ' no SSIM')
+            return {'file': fileName, 'type': 'png', 'status': 'FAIL',
+                    'metric_name': 'ssim', 'metric': None, 'threshold': None,
+                    'extra': {'error': 'ssim failed'}}
+        threshold = PNG_SSIM_THRESHOLD.get(fileName, DEFAULT_PNG_SSIM)
+        ok = ssim_index > threshold
+        print(f'{same if ok else diff} SSIM: {ssim_index}')
+        return {'file': fileName, 'type': 'png',
+                'status': 'SUCCESS' if ok else 'FAIL',
+                'metric_name': 'ssim', 'metric': float(ssim_index),
+                'threshold': float(threshold)}
 
-        if imageNew.shape != imageRef.shape:
-            print(notTheSame+' image shapes do not match')
-    elif fileType=='grd':
-        a = xr.open_dataset(fnNew)['z'].values
-        b = xr.open_dataset(fnRef)['z'].values
-        if 'phase' in fileName:
-            # Phase grids: complex-domain rms |e^{ia} - e^{ib}|. Wrap-invariant
-            # (a 2π flip leaves e^{ia} unchanged), so the metric reflects true
-            # physical disagreement on the unit circle. Range [0, 2].
-            err = np.exp(1j*a) - np.exp(1j*b)
-            metric = float(np.sqrt(np.nanmean(np.abs(err)**2)))
-            threshold = GRD_RMS_THRESHOLD.get(fileName, 0.1)
-            tag = isTheSame if metric < threshold else notTheSame
-            print(f'{tag}; complex-rms={metric:.4g} (threshold {threshold})')
-        else:
-            diff = a - b
-            mean  = float(np.nanmean(diff))
-            stdev = float(np.nanstd(diff))
-            rms   = float(np.sqrt(np.nanmean(diff**2)))
-            threshold = GRD_RMS_THRESHOLD.get(fileName, DEFAULT_GRD_RMS)
-            tag = isTheSame if rms < threshold else notTheSame
-            print(f'{tag}; diff mean={mean:.4g} stdev={stdev:.4g} rms={rms:.4g}')
+    # fileType == 'grd'
+    a = xr.open_dataset(fnNew)['z'].values
+    b = xr.open_dataset(fnRef)['z'].values
+    if 'phase' in fileName:
+        # Wrap-invariant complex-domain rms |e^{ia} - e^{ib}|.
+        err = np.exp(1j*a) - np.exp(1j*b)
+        metric = float(np.sqrt(np.nanmean(np.abs(err)**2)))
+        threshold = float(GRD_RMS_THRESHOLD.get(fileName, 0.1))
+        ok = metric < threshold
+        print(f'{same if ok else diff}; complex-rms={metric:.4g} (threshold {threshold})')
+        return {'file': fileName, 'type': 'grd-phase',
+                'status': 'SUCCESS' if ok else 'FAIL',
+                'metric_name': 'complex-rms', 'metric': metric, 'threshold': threshold}
+    # plain grd
+    d = a - b
+    mean  = float(np.nanmean(d))
+    stdev = float(np.nanstd(d))
+    rms   = float(np.sqrt(np.nanmean(d**2)))
+    threshold = float(GRD_RMS_THRESHOLD.get(fileName, DEFAULT_GRD_RMS))
+    ok = rms < threshold
+    print(f'{same if ok else diff}; diff mean={mean:.4g} stdev={stdev:.4g} rms={rms:.4g}')
+    return {'file': fileName, 'type': 'grd',
+            'status': 'SUCCESS' if ok else 'FAIL',
+            'metric_name': 'rms', 'metric': rms, 'threshold': threshold,
+            'extra': {'mean': mean, 'stdev': stdev}}
 
 def findErrorsInLogFiles(caseDir):
     """Scan ONLY the top-level log.txt for this case (written by README_<case>.txt).
@@ -136,9 +153,17 @@ def _file_under(root, case, intf, fname):
 # Three-way comparison: per file, build the (label, fnA, fnB) pairs that have
 # both files present. Always includes python_vs_csh. Adds csh_vs_frozen and
 # python_vs_frozen when the frozen reference exists for that file.
+RESULTS_DIR = os.path.join(workAbsoluteDir.rstrip(os.sep), 'results')
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
 for caseName in caseNameList:
     print(' ')
     print('Comparing case ', caseName)
+    case_results = {
+        'case': caseName,
+        'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'comparisons': [],
+    }
     for fileName in fileNameList:
         ftype = 'png' if fileName.endswith('.png') else 'grd'
         for intf in intfDirList[caseName]:
@@ -154,7 +179,13 @@ for caseName in caseNameList:
                 pairs.append(('py-vs-frozen',  py,  frozen))
             for label, fnA, fnB in pairs:
                 print(f'  [{label}]', end=' ')
-                compare_files(fnA, fnB, fileName, ftype)
+                r = compare_files(fnA, fnB, fileName, ftype)
+                r['pair'] = label
+                r['intf'] = intf
+                case_results['comparisons'].append(r)
 
-    findErrorsInLogFiles(pyRoot+'/'+caseName)
+    findErrorsInLogFiles(pyRoot + '/' + caseName)
+
+    with open(os.path.join(RESULTS_DIR, caseName + '.json'), 'w') as f:
+        json.dump(case_results, f, indent=2)
 
