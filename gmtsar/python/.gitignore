@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 fftw_force_serial.so
+
+# Frozen csh-output reference (~5.8 GB, mostly S1_Ridgecrest_EQ at 3.7 GB).
+# Produced locally by tests/freeze_reference.py; not shipped via git.
+# Future: distribute as a GitHub Release asset + fetch_reference.sh.
+tests/reference/

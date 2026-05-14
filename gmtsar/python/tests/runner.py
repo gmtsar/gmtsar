@@ -32,52 +32,12 @@ def stage_python_readmes():
             shutil.copy2(os.path.join(src_dir, f), dst)
 
 
-def case_script(case, cshDir, pyDir, tarball, pyReadme, timeLog, preload_shim):
-    """Shell command for one case: csh ref + python run in parallel."""
-    preload = f'export LD_PRELOAD={preload_shim}' if os.path.isfile(preload_shim) else '# (no FFTW shim — slower)'
-    return f'''
-set -u
-# Pin known thread pools to 1; libgmt's FFTW pthreads ignore these, so we also
-# LD_PRELOAD the shim built by install.sh --build.
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 FFTW_NUM_THREADS=1
-{preload}
+_CASE_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'case_runner.sh')
 
-# Extract tarball into each tree if the tree is empty (or has only input dirs).
-if [ ! -d {cshDir}/intf ]; then
-    mkdir -p {cshDir} && tar -xzf {tarball} -C {cshDir}
-fi
-mkdir -p {pyDir}
-if [ ! -d {pyDir}/intf ]; then
-    tar -xzf {tarball} -C {pyDir}
-fi
 
-# csh reference (background) — only build if no outputs in intf/.
-# (Don't search the whole cshDir: bundled tarballs include topo/dem.grd,
-# which would falsely look like a finished run.)
-(
-    if [ -z "$(find {cshDir}/intf -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
-        echo "[{case}] no csh reference — running legacy csh recipe"
-        t0=$SECONDS
-        ( cd {cshDir} && cleanup all && csh README.txt > log.txt 2>&1 )
-        echo "{case} csh used $((SECONDS-t0)) s" >> {timeLog}
-    fi
-) &
-cshPid=$!
-
-# python run (background) — always runs
-(
-    t0=$SECONDS
-    ( cd {pyDir} \\
-      && cleanup all \\
-      && cp {pyReadme} . \\
-      && chmod +x README_{case}.txt \\
-      && ./README_{case}.txt > log.txt 2>&1 )
-    echo "{case} python used $((SECONDS-t0)) s" >> {timeLog}
-) &
-pyPid=$!
-
-wait $cshPid $pyPid
-'''
+def case_argv(case, cshDir, pyDir, tarball, pyReadme, timeLog, preload_shim):
+    """Build the argv for case_runner.sh (positional args)."""
+    return ['bash', _CASE_RUNNER, case, cshDir, pyDir, tarball, pyReadme, timeLog, preload_shim]
 
 
 def main():
@@ -108,7 +68,7 @@ def main():
         if not os.path.isfile(tb):
             print(f'[{caseName}] SKIP — tarball missing: {tb}')
             continue
-        cmd = case_script(
+        argv = case_argv(
             case=caseName,
             cshDir=cshRefRoot + caseName,
             pyDir=pythonRunRoot + caseName,
@@ -117,7 +77,7 @@ def main():
             timeLog=timeLog,
             preload_shim=_PRELOAD_SHIM,
         )
-        p = subprocess.Popen(['bash', '-c', cmd], start_new_session=True)
+        p = subprocess.Popen(argv, start_new_session=True)
         procs.append((caseName, p))
         print(f'[{caseName}] started (pid {p.pid})')
 

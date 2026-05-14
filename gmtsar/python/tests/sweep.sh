@@ -1,13 +1,24 @@
 #!/bin/bash
-# run_sweep.sh — sequentially run+compare every case in pathListForTest.caseNameList.
-# Downloads the tarball first if missing. Designed for an unattended multi-hour run.
+# sweep.sh — download + run + compare every case in cases.caseNameList.
+# Designed for an unattended multi-hour run.
 #
-# Logs go to gmtsar/python/work/sweep.log (and per-case logs already live under
-# work/python_test/<case>/log.txt and work/csh_test/<case>/log.txt).
+# Tier control (sets TEST_TIER, picked up by cases.py):
+#   bash sweep.sh                 # full sweep (~8 h)
+#   bash sweep.sh --smoke         # 1 case (~3 min, pipeline alive check)
+#   bash sweep.sh --fast          # 4 small cases (~30 min, covers main paths)
 #
-# Usage:  bash gmtsar/python/run_sweep.sh   (run in background with &)
+# Logs: gmtsar/python/work/sweep.log + per-case work/{python,csh}_test/<case>/log.txt
 
 set -u
+
+case ${1:-} in
+    --smoke|smoke) export TEST_TIER=smoke ;;
+    --fast|fast)   export TEST_TIER=fast  ;;
+    --full|full|'') export TEST_TIER=full ;;
+    -h|--help)
+        sed -n '2,11p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1 (try --smoke / --fast / --full / --help)" >&2; exit 2 ;;
+esac
 
 export GMTSAR=/home/staff/dliu/gmtsar
 export PATH=$GMTSAR/bin:$PATH
@@ -18,8 +29,8 @@ LOG=$WORK/sweep.log
 TESTSYS=$GMTSAR/gmtsar/python/tests
 mkdir -p "$DATASET_DIR" "$WORK"
 
-# Derive caseNameList from the canonical source so this script stays in sync.
-cases=$(cd "$TESTSYS" && "$PY" -c "from pathListForTest import caseNameList; print(' '.join(caseNameList))")
+# Derive case list from cases.py (already tier-aware via TEST_TIER).
+cases=$(cd "$TESTSYS" && "$PY" -c "from cases import caseNameList; print(' '.join(caseNameList))")
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
