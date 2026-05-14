@@ -1,7 +1,7 @@
 SNAPHU
 Statistical-Cost, Netowrk-Flow Algorithm for Phase Unwrapping
 Author: Curtis W. Chen
-Version 2.0.4, August 2020
+Version 2.0.7, February 25, 2024
 
 
 Contents
@@ -53,7 +53,7 @@ itself to unwrap each tile.  The structure of the solver does not lend
 itself to easy parallelization for a single tile, however.
 
 The CS2 MCF solver module is governed by the terms of the original
-authors (see the README.copyright file).  In order to compile snaphu
+authors (see the copyright below).  In order to compile snaphu
 without this module, specify -D NO_CS2 as a compiler option in the
 Makefile.
 
@@ -71,7 +71,7 @@ accept.
 Copyright
 ---------
 
-Copyright 2002-2020 Board of Trustees, Leland Stanford Jr. University
+Copyright 2002-2024 Board of Trustees, Leland Stanford Jr. University
 
 Except as noted below, permission to use, copy, modify, and
 distribute, this software and its documentation for any purpose is

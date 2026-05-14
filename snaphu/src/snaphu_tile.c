@@ -1207,7 +1207,7 @@ int AssembleTiles(outfileT *outfiles, paramT *params,
   long nrow, ncol, prevnrow, prevncol, nextnrow, nextncol;
   long n, ncycle, nflowdone, nflow, candidatelistsize, candidatebagsize;
   long nnodes, maxnflowcycles, arclen, narcs, sourcetilenum, flowmax;
-  long nincreasedcostiter;
+  long nnondecreasedcostiter;
   long *totarclens;
   long ***scndrycosts;
   double avgarclen;
@@ -1419,7 +1419,7 @@ int AssembleTiles(outfileT *outfiles, paramT *params,
               NULL,NULL,NULL,NULL,ntiles,0,&notfirstloop,&totalcost,params);
   oldtotalcost=totalcost;
   mintotalcost=totalcost;
-  nincreasedcostiter=0;
+  nnondecreasedcostiter=0;
 
   /* set pointers to functions for nongrid secondary network */
   CalcCost=CalcCostNonGrid;
@@ -1468,10 +1468,10 @@ int AssembleTiles(outfileT *outfiles, paramT *params,
         fflush(NULL);
         fprintf(sp1,"Caution: Unexpected increase in total cost\n");
       }
-      if(totalcost>mintotalcost){
-        nincreasedcostiter++;
+      if(totalcost>=mintotalcost){
+        nnondecreasedcostiter++;
       }else{
-        nincreasedcostiter=0;
+        nnondecreasedcostiter=0;
       }
     }
 
@@ -1483,10 +1483,10 @@ int AssembleTiles(outfileT *outfiles, paramT *params,
       nflowdone=1;
     }
 
-    /* break if total cost increase is sustained */
-    if(nincreasedcostiter>=params->maxflow){
+    /* break if lack of total cost reduction is sustained */
+    if(nnondecreasedcostiter>=2*params->maxflow){
       fflush(NULL);
-      fprintf(sp0,"WARNING: Unexpected sustained increase in total cost."
+      fprintf(sp0,"WARNING: No overall cost reduction for too many iterations."
               "  Breaking loop\n");
       break;
     }
@@ -4112,10 +4112,12 @@ int AssembleTileConnComps(long linelen, long nlines,
 
           /* get more memory for full set of connected components sizes */
           nmemold=nconncompmem;
-          nconncompmem+=ntileconncomp;
-          conncompsizes=(conncompsizeT *)ReAlloc(conncompsizes,
-                                                 (nconncompmem
-                                                  *sizeof(conncompsizeT)));
+          if(ntileconncomp>0){
+            nconncompmem+=ntileconncomp;
+            conncompsizes=(conncompsizeT *)ReAlloc(conncompsizes,
+                                                   (nconncompmem
+                                                    *sizeof(conncompsizeT)));
+          }
 
           /* store conncomp sizes from tile in full list */
           for(k=0;k<ntileconncompmem;k++){

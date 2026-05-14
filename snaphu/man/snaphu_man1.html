@@ -1,5 +1,5 @@
-<!-- Creator     : groff version 1.19.2 -->
-<!-- CreationDate: Sat Feb 23 16:54:09 2019 -->
+<!-- Creator     : groff version 1.22.4 -->
+<!-- CreationDate: Fri Apr 28 17:25:16 2023 -->
 <!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
 "http://www.w3.org/TR/html4/loose.dtd">
 <html>
@@ -8,16 +8,17 @@
 <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
 <meta name="Content-Style" content="text/css">
 <style type="text/css">
-       p     { margin-top: 0; margin-bottom: 0; }
-       pre   { margin-top: 0; margin-bottom: 0; }
-       table { margin-top: 0; margin-bottom: 0; }
+       p       { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       pre     { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       table   { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       h1      { text-align: center }
 </style>
 <title>snaphu</title>
 
 </head>
 <body>
 
-<h1 align=center>snaphu</h1>
+<h1 align="center">snaphu</h1>
 
 <a href="#NAME">NAME</a><br>
 <a href="#SYNOPSIS">SYNOPSIS</a><br>
@@ -35,22 +36,25 @@
 <hr>
 
 
+<h2>NAME
 <a name="NAME"></a>
-<h2>NAME</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">snaphu &minus;
 phase unwrapping algorithm for SAR interferometry</p>
 
+<h2>SYNOPSIS
 <a name="SYNOPSIS"></a>
-<h2>SYNOPSIS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em"><b>snaphu</b>
 [options] [infile] [linelength] [options]</p>
 
+<h2>DESCRIPTION
 <a name="DESCRIPTION"></a>
-<h2>DESCRIPTION</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em"><b>snaphu</b>
@@ -77,11 +81,12 @@ input parameters may be given on the command line, while
 many other twiddle parameters are handled via the
 <b>&minus;f</b> option and configuration files. At the very
 least, the name of a wrapped-phase input file and its line
-length must be specified. Range should increase towards the
-right in the interferogram, and the flat-earth phase ramp
-should be removed from the input interferogram before
-<b>snaphu</b> is run. For deformation interferograms, phase
-variations due to topography should be removed as well.</p>
+length must be specified. For topography interferograms,
+range should increase towards the right in the
+interferogram, and the flat-earth phase ramp should be
+removed from the input interferogram before <b>snaphu</b> is
+run. For deformation interferograms, phase variations due to
+topography should be removed as well.</p>
 
 <p style="margin-left:11%; margin-top: 1em">Except for the
 input file name and the line length, all input parameters
@@ -106,8 +111,9 @@ format is used, the input file should contain only the phase
 of the interferogram (in radians from 0 to 2pi); the
 magnitude may be passed with the <b>&minus;m</b> option.</p>
 
+<h2>OPTIONS
 <a name="OPTIONS"></a>
-<h2>OPTIONS</h2>
+</h2>
 
 
 
@@ -194,23 +200,22 @@ earlier instances of the <b>-C</b> option and the
 configurations specified by earlier instances of the
 <b>-f</b> option.</p>
 
-<table width="100%" border=0 rules="none" frame="void"
+<table width="100%" border="0" rules="none" frame="void"
        cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;d</b></p> </td>
+<p><b>&minus;d</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in deformation
-mode. The problem statistics and resulting cost functions
-are based on the assumption that the true unwrapped phase
-represents surface displacement rather than elevation.</p></td>
+<p>Run in deformation mode. The problem statistics and
+resulting cost functions are based on the assumption that
+the true unwrapped phase represents surface displacement
+rather than elevation.</p></td></tr>
 </table>
 
 <p style="margin-left:11%;"><b>&minus;e</b>
@@ -278,44 +283,41 @@ is not computed.</p>
 <p style="margin-left:22%;">Print a help message
 summarizing command-line options and exit.</p>
 
-<table width="100%" border=0 rules="none" frame="void"
+<table width="100%" border="0" rules="none" frame="void"
        cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;i</b></p> </td>
+<p><b>&minus;i</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in
-initialize-only mode. Normally, <b>snaphu</b> uses either an
-approximate minimum spanning tree (MST) algorithm or a
-minimum cost flow (MCF) algorithm for generating the
-initialization to its iterative, modified network-simplex
-solver. If <b>&minus;i</b> is given, the initialization is
-written to the output and the program exits without running
-the iterative solver.</p></td>
+<p>Run in initialize-only mode. Normally, <b>snaphu</b>
+uses either an approximate minimum spanning tree (MST)
+algorithm or a minimum cost flow (MCF) algorithm for
+generating the initialization to its iterative, modified
+network-simplex solver. If <b>&minus;i</b> is given, the
+initialization is written to the output and the program
+exits without running the iterative solver.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;k</b></p> </td>
+<p><b>&minus;k</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Keep temporary tile
-outputs. If this option is specified when <b>snaphu</b> runs
-in tile mode, the temporary directory where tile outputs are
-stored will be left in place rather than deleted. The
-tile-mode initialization of the <b>-S</b> option will also
-be left in place rather than deleted.</p></td>
+<p>Keep temporary tile outputs. If this option is specified
+when <b>snaphu</b> runs in tile mode, the temporary
+directory where tile outputs are stored will be left in
+place rather than deleted. The tile-mode initialization of
+the <b>-S</b> option will also be left in place rather than
+deleted.</p> </td></tr>
 </table>
 
 <p style="margin-left:11%;"><b>&minus;l</b>
@@ -361,24 +363,22 @@ input data are treated as masked areas as well. Areas near
 the edges of the input may also be masked via options in a
 configuration file.</p>
 
-<table width="100%" border=0 rules="none" frame="void"
+<table width="100%" border="0" rules="none" frame="void"
        cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;n</b></p> </td>
+<p><b>&minus;n</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in
-no-statistical-costs mode. If the <b>&minus;i</b> or
-<b>&minus;p</b> options are given, <b>snaphu</b> will not
+<p>Run in no-statistical-costs mode. If the <b>&minus;i</b>
+or <b>&minus;p</b> options are given, <b>snaphu</b> will not
 use statistical costs. Information from a weight file
-(<b>&minus;w</b> option) will still be used if given.</p></td>
+(<b>&minus;w</b> option) will still be used if given.</p></td></tr>
 </table>
 
 <p style="margin-left:11%;"><b>&minus;o</b>
@@ -406,117 +406,109 @@ are used, but the solution will probably be more accurate
 than one generated from a transform-based least-squares
 algorithm.</p>
 
-<table width="100%" border=0 rules="none" frame="void"
+<table width="100%" border="0" rules="none" frame="void"
        cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;q</b></p> </td>
+<p><b>&minus;q</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in
-quantify-only mode. The input data are assumed to be
-unwrapped already, and the total cost of this solution is
+<p>Run in quantify-only mode. The input data are assumed to
+be unwrapped already, and the total cost of this solution is
 calculated and printed. The unwrapped phase is wrapped
 assuming congruence for the cost calculation. Round-off
 errors may limit the precision of the quantified cost. See
-the <b>&minus;u</b> option for allowable file formats.</p></td>
+the <b>&minus;u</b> option for allowable file formats.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;s</b></p> </td>
+<p><b>&minus;s</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in
-smooth-solution mode. The problem statistics and resulting
-cost functions are based on the assumption that the true
-unwrapped phase represents a generic surface with no
-discontinuities. This is the same as deformation mode with
-the DEFOMAX parameter set to zero.</p></td>
+<p>Run in smooth-solution mode. The problem statistics and
+resulting cost functions are based on the assumption that
+the true unwrapped phase represents a generic surface with
+no discontinuities. This is the same as deformation mode
+with the DEFOMAX parameter set to zero.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;S</b></p> </td>
+<p><b>&minus;S</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Do single-tile
-re-optimization after tile-mode initialization. If this
-option is specified, <b>snaphu</b> will run in tile mode to
-generate an unwrapped solution, which is then used as the
-initialization to a single-tile optimization that produces
-the final unwrapped output. The tile-mode initialization may
-itself be initialized by the MST or MCF algorithms (or an
-input unwrapped phase file) as normal. This option is
-equivalent to running an instance of <b>snaphu</b> in tile
-mode, then running another instance of <b>snaphu</b> taking
-the tile-mode output as an unwrapped input via the <b>-u</b>
-option. Tile parameters must be specified when using this
-option. This approach is often faster than unwrapping an
-interferogram as a single tile from an MST initialization,
-especially if multiple processors are used.</p></td>
+<p>Do single-tile re-optimization after tile-mode
+initialization. If this option is specified, <b>snaphu</b>
+will run in tile mode to generate an unwrapped solution,
+which is then used as the initialization to a single-tile
+optimization that produces the final unwrapped output. The
+tile-mode initialization may itself be initialized by the
+MST or MCF algorithms (or an input unwrapped phase file) as
+normal. This option is equivalent to running an instance of
+<b>snaphu</b> in tile mode, then running another instance of
+<b>snaphu</b> taking the tile-mode output as an unwrapped
+input via the <b>-u</b> option. Tile parameters must be
+specified when using this option. This approach is often
+faster than unwrapping an interferogram as a single tile
+from an MST initialization, especially if multiple
+processors are used.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;t</b></p> </td>
+<p><b>&minus;t</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in topography
-mode. The problem statistics and resulting cost functions
-are based on the assumption that the true unwrapped phase
-represents surface elevation. This is the default.</p></td>
+<p>Run in topography mode. The problem statistics and
+resulting cost functions are based on the assumption that
+the true unwrapped phase represents surface elevation. This
+is the default.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;u</b></p> </td>
+<p><b>&minus;u</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Assume that the
-input file is unwrapped rather than wrapped. The algorithm
-makes iterative improvements to this solution instead of
-using an initialization routine. The input file may be in
-the formats ALT_LINE_DATA (default) or ALT_SAMPLE_DATA; the
-interferogram magnitude should be in the first data channel
-and the unwrapped phase should be in the second data
-channel. The format FLOAT_DATA may also be used.</p></td>
+<p>Assume that the input file is unwrapped rather than
+wrapped. The algorithm makes iterative improvements to this
+solution instead of using an initialization routine. The
+input file may be in the formats ALT_LINE_DATA (default) or
+ALT_SAMPLE_DATA; the interferogram magnitude should be in
+the first data channel and the unwrapped phase should be in
+the second data channel. The format FLOAT_DATA may also be
+used.</p> </td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="3%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;v</b></p> </td>
+<p><b>&minus;v</b></p></td>
 <td width="8%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Run in verbose
-mode. Extra information on the algorithm&rsquo;s progress is
-printed to the standard output.</p></td>
+<p>Run in verbose mode. Extra information on the
+algorithm&rsquo;s progress is printed to the standard
+output.</p> </td></tr>
 </table>
 
 <p style="margin-left:11%;"><b>&minus;w</b>
@@ -602,39 +594,35 @@ multiple times.</p>
 <p style="margin-left:22%;">Dump all sorts of intermediate
 arrays to files.</p>
 
-<table width="100%" border=0 rules="none" frame="void"
+<table width="100%" border="0" rules="none" frame="void"
        cellspacing="0" cellpadding="0">
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="7%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;&minus;mst</b></p> </td>
+<p><b>&minus;&minus;mst</b></p></td>
 <td width="4%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Use a minimum
-spanning tree (MST) algorithm for the initialization. This
-is the default.</p></td>
+<p>Use a minimum spanning tree (MST) algorithm for the
+initialization. This is the default.</p></td></tr>
 <tr valign="top" align="left">
 <td width="11%"></td>
 <td width="7%">
 
 
-
-<p style="margin-top: 1em" valign="top"><b>&minus;&minus;mcf</b></p> </td>
+<p><b>&minus;&minus;mcf</b></p></td>
 <td width="4%"></td>
 <td width="78%">
 
 
-<p style="margin-top: 1em" valign="top">Use a minimum cost
-flow (MCF) algorithm for the initialization. The cs2 solver
-by Goldberg and Cherkassky is used. The modified
-network-simplex solver in L1 mode may give different results
-than the cs2 solver, though in principle both should be L1
-optimal.</p> </td>
+<p>Use a minimum cost flow (MCF) algorithm for the
+initialization. The cs2 solver by Goldberg and Cherkassky is
+used. The modified network-simplex solver in L1 mode may
+give different results than the cs2 solver, though in
+principle both should be L1 optimal.</p></td></tr>
 </table>
 
 <p style="margin-left:11%;"><b>&minus;&minus;nproc</b>
@@ -686,8 +674,9 @@ exist, and it is removed at the end of the run unless the
 <b>-k</b> or <b>&minus;&minus;assemble</b> options are
 specified.</p>
 
+<h2>FILE FORMATS
 <a name="FILE FORMATS"></a>
-<h2>FILE FORMATS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">The formats of
@@ -731,8 +720,9 @@ images.</p>
 <p style="margin-left:22%;">The file contains data for only
 one channel or array, and the data are purely real.</p>
 
+<h2>EXAMPLES
 <a name="EXAMPLES"></a>
-<h2>EXAMPLES</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">Unwrap a
@@ -848,8 +838,9 @@ two processors:</p>
 wrappedfile 1024 -f configfile \ <br>
 --tile 3 4 30 30 --nproc 2</p>
 
+<h2>HINTS AND TIPS
 <a name="HINTS AND TIPS"></a>
-<h2>HINTS AND TIPS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">The program may
@@ -892,8 +883,9 @@ after optimization.</p>
 be run in initialize-only (<b>&minus;i</b>) mode for quick
 down-and-dirty MST or MCF solutions.</p>
 
+<h2>SIGNALS
 <a name="SIGNALS"></a>
-<h2>SIGNALS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">Once the
@@ -906,16 +898,18 @@ the first (caught) interrupt, the program exits immediately.
 If a hangup signal is received, the program dumps its
 current solution then continues to execute normally.</p>
 
+<h2>EXIT STATUS
 <a name="EXIT STATUS"></a>
-<h2>EXIT STATUS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">Upon successful
 termination, the program exits with code 0. Errors result in
 exit code 1.</p>
 
+<h2>FILES
 <a name="FILES"></a>
-<h2>FILES</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">The following
@@ -940,8 +934,9 @@ command line, default parameters may be read from a
 system-wide configuration file if such a file is named when
 the program is compiled.</p>
 
+<h2>BUGS
 <a name="BUGS"></a>
-<h2>BUGS</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">The
@@ -985,8 +980,9 @@ capability is built into the code and can be enabled from a
 configuration file, but this functionality is experimental
 and not well tested.</p>
 
+<h2>REFERENCES
 <a name="REFERENCES"></a>
-<h2>REFERENCES</h2>
+</h2>
 
 
 <p style="margin-left:11%; margin-top: 1em">C. W. Chen and

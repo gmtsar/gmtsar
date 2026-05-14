@@ -97,7 +97,7 @@ if ($SSC == 5) then
      set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,14,5)}'` 
   else
      if ($#argv < 3) then
-       set ORB = `grep input_file $2 | awk '{print $3}' | awk -F"." '{print $1".1__D"}'`
+       set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,1,length($1)-4)}'`
      else
        set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,13,5)}'` 
      endif

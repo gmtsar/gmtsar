@@ -11,7 +11,7 @@ void read_complex_short2(FILE *f, struct FCOMPLEX *d, int iy, int npy, int nx, s
 	long num_to_seek;
 	int i, j;
 
-	num_to_seek = 2 * iy * nx * sizeof(short);
+	num_to_seek = (long)iy * (long)(2 * nx * sizeof(short));
 	fseek(f, num_to_seek, SEEK_SET); /* from beginning */
 
 	/* need to read two parts of complex numbers */
@@ -33,7 +33,8 @@ void read_real_float2(FILE *f, struct FCOMPLEX *d, int iy, int npy, int nx, floa
 	long num_to_seek;
 	int i, j;
 
-	num_to_seek = iy * nx * sizeof(float);
+	//num_to_seek = iy * nx * sizeof(float);
+	num_to_seek = (long)iy * (long)(nx * sizeof(float));
 	fseek(f, num_to_seek, SEEK_SET); /* from beginning */
 
 	/* need to read two parts of complex numbers */
