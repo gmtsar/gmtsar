@@ -219,9 +219,5 @@ def dem2topo_ra():
     print(' ')
     print("DEM2TOPO_RA - END ... ...")
 
-def _main_func(description):
-    dem2topo_ra()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    dem2topo_ra()

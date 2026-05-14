@@ -270,8 +270,5 @@ def pop_config():
     
     sys.stdout.close()
 
-def _main_func(description):
-    pop_config()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
+    pop_config()

@@ -88,20 +88,27 @@ def append_new_line(fn,s0):
         f.write(s0)
 
 def file_shuttle(fn0, fn1, opt):
-    # copy/move fn0 and paste it to fn1.
+    """Copy / move / symlink fn0 to fn1. Shells out (still) to preserve
+    behavior on glob-bearing args, e.g. file_shuttle('*.PRM', 'dst/', 'cp').
+    Warns on non-zero exit but does not raise (consistent with run())."""
     if opt == "cp":
-        print("cp " + fn0 + " " + fn1)
-        os.system("cp " + fn0 + " " + fn1)
+        cmd = f"cp {fn0} {fn1}"
     elif opt == "mv":
-        print("mv " + fn0 + " " + fn1)
-        os.system("mv " + fn0 + " " + fn1)
+        cmd = f"mv {fn0} {fn1}"
     elif opt == "link":
-        print("ln -sf " + fn0 + " " + fn1)
-        os.system("ln -sf " + fn0 + " " + fn1)
+        cmd = f"ln -sf {fn0} {fn1}"
+    else:
+        raise ValueError(f"file_shuttle: unknown opt {opt!r}")
+    print(cmd)
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: file_shuttle exited {rc}: {cmd}", file=sys.stderr)
 
 def delete(fn):
-    # delete file named fn.
-    os.system("rm -rf "+fn)
+    """Remove a file or directory tree by name. Shells out to preserve glob
+    semantics: delete('amp*.grd') must still work. Silent on rm -rf failures
+    (matches prior behavior)."""
+    subprocess.run(f"rm -rf {fn}", shell=True)
     
 def assign_arg(arg, str):
     # arg is the list that contains arguments from a terminal input.
@@ -114,10 +121,16 @@ def assign_arg(arg, str):
        return 0
 
 def run(cmd):
-    # run and print the command specified in cmd.
+    """Run a shell command. Non-zero exit prints a WARN to stderr but does
+    NOT raise — gmtsar binaries exit non-zero for benign reasons (warnings,
+    missing-but-optional files), and the legacy csh pipeline tolerates that.
+    Switching from os.system was about VISIBILITY of failures, not making
+    them fatal."""
     print(" ")
     print(cmd)
-    os.system(cmd)
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
 
 def renameMasterAlignedForS1tops(master0, aligned0):
     print('Renaming master and aligned for SAT==S1_TOPS')
