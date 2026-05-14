@@ -55,18 +55,25 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
                     nodeT *ground, long ngroundarcs, long nrow, long ncol,
                     paramT *params, long *nconnectedptr);
 static
-long CheckBoundary(nodeT **nodes, nodeT *ground, long ngroundarcs, 
+long CheckBoundary(nodeT **nodes, float **mag, nodeT *ground, long ngroundarcs, 
                    boundaryT *boundary, long nrow, long ncol,
                    paramT *params, nodeT *start);
 static
 int IsRegionEdgeArc(float **mag, long arcrow, long arccol,
                     long nrow, long ncol);
 static
-int IsInteriorNode(float **mag, long row, long col, long nrow, long ncol);
+int IsRegionInteriorArc(float **mag, long arcrow, long arccol,
+                        long nrow, long ncol);
+static
+int IsRegionArc(float **mag, long arcrow, long arccol,
+                long nrow, long ncol);
 static
 int IsRegionEdgeNode(float **mag, long row, long col, long nrow, long ncol);
 static
-int CleanUpBoundaryNodes(boundaryT *boundary);
+int CleanUpBoundaryNodes(nodeT *source, boundaryT *boundary, float **mag,
+                         nodeT **nodes, nodeT *ground,
+                         long nrow, long ncol, long ngroundarcs,
+                         nodesuppT **nodesupp);
 static
 int DischargeBoundary(nodeT **nodes, nodeT *ground,
                       boundaryT *boundary, nodesuppT **nodesupp, short **flows,
@@ -123,13 +130,22 @@ int CheckLeaf(nodeT *node1, nodeT **nodes, nodeT *ground, boundaryT *boundary,
               short **flows, long ngroundarcs, long nrow, long ncol, 
               long prunecostthresh);
 static
+int GridNodeMaskStatus(long row, long col, float **mag);
+static
+int GroundMaskStatus(long nrow, long ncol, float **mag);
+static
 int InitBuckets(bucketT *bkts, nodeT *source, long nbuckets);
 static
 nodeT *MinOutCostNode(bucketT *bkts);
 static
-nodeT *SelectConnNodeSource(nodeT **nodes, nodeT *ground, long ngroundarcs, 
-                            boundaryT *boundary, long nrow, long ncol,
+nodeT *SelectConnNodeSource(nodeT **nodes, float **mag,
+                            nodeT *ground, long ngroundarcs, 
+                            long nrow, long ncol,
                             paramT *params, nodeT *start, long *nconnectedptr);
+static
+long ScanRegion(nodeT *start, nodeT **nodes, float **mag,
+                nodeT *ground, long ngroundarcs,
+                long nrow, long ncol, int groupsetting);
 static
 short GetCost(incrcostT **incrcosts, long arcrow, long arccol, 
               long arcdir);
@@ -240,7 +256,7 @@ long TreeSolve(nodeT **nodes, nodesuppT **nodesupp, nodeT *ground,
   /*   some nodes inaccessible */
   source=InitBoundary(source,nodes,boundary,nodesupp,mag,
                       ground,ngroundarcs,nrow,ncol,params,&nconnected);
-
+  
   /* set up */
   bkts->curr=bkts->maxind;
   InitTree(source,nodes,boundary,nodesupp,ground,ngroundarcs,bkts,nflow,
@@ -928,6 +944,19 @@ long TreeSolve(nodeT **nodes, nodesuppT **nodesupp, nodeT *ground,
       break;
     }
   }
+
+  /* reset group numbers of nodes along boundary */
+  /* nodes in neighboring regions may have been set to be MASKED in */
+  /*   in InitBoundary() to avoid reaching them across single line of */
+  /*   masked pixels, so return mask status of nodes along boundary to normal */
+  CleanUpBoundaryNodes(source,boundary,mag,nodes,ground,nrow,ncol,ngroundarcs,
+                       nodesupp);
+  if(boundary->neighborlist!=NULL){
+    free(boundary->neighborlist);
+  }
+  if(boundary->boundarylist!=NULL){
+    free(boundary->boundarylist);
+  }
   
   /* clean up: set pointers for outputs */
   fprintf(sp3,"\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b"
@@ -941,13 +970,6 @@ long TreeSolve(nodeT **nodes, nodesuppT **nodesupp, nodeT *ground,
   *candidatelistsizeptr=candidatelistsize;
   *candidatebagsizeptr=candidatebagsize;
   free(apexlist);
-  CleanUpBoundaryNodes(boundary);
-  if(boundary->neighborlist!=NULL){
-    free(boundary->neighborlist);
-  }
-  if(boundary->boundarylist!=NULL){
-    free(boundary->boundarylist);
-  }
   
   /* return the number of nondegenerate pivots (number of improvements) */
   return(inondegen);
@@ -1111,6 +1133,7 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   long nconnected;
   nodeT **nodelist, **boundarylist, *from, *to, *end;
   neighborT *neighborlist;
+
   
   /* initialize to null first */
   boundary->node->row=BOUNDARYROW;
@@ -1132,14 +1155,28 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
     return(source);
   }
   
-  /* if source is ground, do nothing */
+  /* make sure magnitude exists */
+  if(mag==NULL){
+    return(source);
+  }
+  
+  /* scan region and mask any nodes that are not already masked but are not */
+  /*   reachable through non-region arcs */
+  /* such nodes can exist if there is single line of masked pixels separating */
+  /*   regions */
+  /* boundary is not yet set up, so scanning will search node neighbors as */
+  /*   normal grid neighbors */
+  nconnected=ScanRegion(source,nodes,mag,ground,ngroundarcs,nrow,ncol,MASKED);
+
+  /* if source is ground, do nothing, since do not want boundary with ground */
   if(source==ground){
     return(source);
   }
 
-  /* make sure magnitude exists */
-  if(mag==NULL){
-    return(source);
+  /* make sure source is on edge */
+  /* we already know source is not ground from check above */
+  if(!IsRegionEdgeNode(mag,source->row,source->col,nrow,ncol)){
+    fprintf(sp0,"WARNING: Non edge node as source in InitBoundary()\n");
   }
   
   /* get memory for node list */
@@ -1158,7 +1195,7 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   end=source;
   while(TRUE){
 
-    /* see if neighbors can be reached through zero weight arcs */
+    /* see if neighbors can be reached through region-edge arcs */
     arcnum=GetArcNumLims(from->row,&upperarcnum,ngroundarcs,NULL);
     while(arcnum<upperarcnum){
 
@@ -1203,6 +1240,8 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   for(k=0;k<nlist;k++){
 
     /* only consider if node is not edge ground */
+    /* we do not want ground node to be a boundary node since ground already */
+    /*   acts similar to boundary node */
     if(nodelist[k]->row!=GROUNDROW){
     
       /* loop over neighbors */
@@ -1215,14 +1254,23 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
         from=NeighborNode(nodelist[k],++arcnum,&upperarcnum,nodes,ground,
                           &arcrow,&arccol,&arcdir,nrow,ncol,NULL,nodesupp);
 
-        /* see if neighbor is interior node */
-        isinteriornode=IsInteriorNode(mag,from->row,from->col,nrow,ncol);
+        /* see if node can be reached through interior arc */
+        /*   and node is not masked or on boundary */
+        /* node may be on edge of island of masked pixels, so it does not */
+        /*   need to be interior node in sense of not touching masked pixels  */
+        isinteriornode=(IsRegionInteriorArc(mag,arcrow,arccol,nrow,ncol)
+                        && from->group!=MASKED
+                        && from->level!=BOUNDARYLEVEL);
         if(isinteriornode){
           ninteriorneighbor++;
         }
         
-        /* scan neighbors neighbors if neighbor is interior node or */
-        /*   if it is edge node not yet on boundary  */
+        /* scan neighbor's neighbors if neighbor is interior node */
+        /*    or if it is edge node that is not yet on boundary  */
+        /* edge node may have been reached through a non-region arc, but */
+        /*    that is okay since that non-region arc will have zero cost */
+        /*    given that non-region nodes will be masked; need to let this */
+        /*    happen because solver will use such an arc too */
         if(isinteriornode || (from->group==BOUNDARYCANDIDATE
                               && from->level!=BOUNDARYLEVEL)){
 
@@ -1263,7 +1311,7 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
     }
   }
 
-  /* reset group member of candidates that were not included */
+  /* set groups of all edge nodes back to zero */
   for(k=0;k<nlist;k++){
     nodelist[k]->group=0;
     nodelist[k]->next=NULL;
@@ -1271,6 +1319,8 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   free(nodelist);
   
   /* punt if there were too few boundary nodes */
+  /* region should be unwrapped with nodes behaving like normal grid nodes */
+  /*   but with neighbors that are not part of region masked */
   if(boundary->nboundary<MINBOUNDARYSIZE){
     for(k=0;k<boundary->nboundary;k++){
       boundarylist[k]->level=0;
@@ -1293,6 +1343,7 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
     return(source);
   }
 
+  /* third pass */
   /* set up for creating neighbor list */
   nneighbormem=NLISTMEMINCR;
   neighborlist=(neighborT *)MAlloc(nneighbormem*sizeof(neighborT));
@@ -1301,20 +1352,23 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   for(k=0;k<boundary->nboundary;k++){
 
     /* loop over neighbors to keep in neighbor list */
-    /* checks above should ensure that neighbors of this boundary pointer */
-    /*   node are not reachable by any other boundary pointer node */
+    /* checks above should ensure that unmasked neighbors of this boundary */
+    /*    pointer node are not reachable by any other boundary pointer node */
     arcnum=GetArcNumLims(boundarylist[k]->row,&upperarcnum,ngroundarcs,NULL);
     while(arcnum<upperarcnum){
 
       /* get neighbor */
       to=NeighborNode(boundarylist[k],++arcnum,&upperarcnum,nodes,ground,
                       &arcrow,&arccol,&arcdir,nrow,ncol,NULL,nodesupp);
-      
-      /* see if neighbor is not masked and not boundary pointer candidate */
-      /* neighbor could be on region edge but not boundary pointer candidate */
-      if(to->group!=MASKED && to->level!=BOUNDARYLEVEL){
 
-        /* add neighbor */
+      /* see if node is not masked and not a boundary node */
+      /* node may or may not be reachable through region arc, but if */
+      /*   non region arc is used, it is okay since it will have zero cost; */
+      /*   solver would use these arcs if there were no boundary, so let */
+      /*   those nodes stay in neighbor list of boundary */
+      if(to->group!=MASKED && to->level!=BOUNDARYLEVEL){
+      
+        /* add neighbor as neighbor of boundary */
         boundary->nneighbor++;
         if(boundary->nneighbor>nneighbormem){
           nneighbormem+=NLISTMEMINCR;
@@ -1325,10 +1379,13 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
         neighborlist[boundary->nneighbor-1].arcrow=arcrow;
         neighborlist[boundary->nneighbor-1].arccol=arccol;
         neighborlist[boundary->nneighbor-1].arcdir=arcdir;
+        
       }
+
     }
   }
 
+  /* fourth pass */
   /* now that boundary is properly set up, make one last pass to set groups */
   for(k=0;k<boundary->nboundary;k++){
     boundarylist[k]->group=BOUNDARYPTR;
@@ -1342,11 +1399,16 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
   boundary->boundarylist=(nodeT **)ReAlloc(boundarylist,(boundary->nboundary
                                                          *sizeof(nodeT *)));
 
-  /* count number of connected nodes, which may have changed since setting */
-  /*   the boundary may have made some nodes inaccessible */
-  nconnected=CheckBoundary(nodes,ground,ngroundarcs,boundary,nrow,ncol,
-                           params,source);
+  /* check boundary for consistency */
+  /* count number of connected nodes, which should have changed by number */
+  /*   outer edge nodes that got collapsed into single boundary node (minus 1) */
+  nconnected=CheckBoundary(nodes,mag,ground,ngroundarcs,boundary,nrow,ncol,
+                           params,boundary->node);
   if(nconnectedptr!=NULL){
+    if(nconnected+boundary->nboundary-1!=(*nconnectedptr)){
+      fprintf(sp1,
+              "WARNING: Changed number of connected nodes in InitBoundary()\n");
+    }
     (*nconnectedptr)=nconnected;
   }
 
@@ -1361,7 +1423,7 @@ nodeT *InitBoundary(nodeT *source, nodeT **nodes,
  * Similar to SelectConnNodeSource, but reset group to zero and check boundary.
  */
 static
-long CheckBoundary(nodeT **nodes, nodeT *ground, long ngroundarcs, 
+long CheckBoundary(nodeT **nodes, float **mag, nodeT *ground, long ngroundarcs, 
                    boundaryT *boundary, long nrow, long ncol,
                    paramT *params, nodeT *start){
   
@@ -1370,8 +1432,8 @@ long CheckBoundary(nodeT **nodes, nodeT *ground, long ngroundarcs,
   nodeT *node1, *node2, *end;
   nodesuppT **nodesupp;
 
-  
-  /* if start node is not eligible, just return NULL */
+
+  /* if start node is not eligible, give error */
   if(start->group==MASKED){
     fflush(NULL);
     fprintf(sp0,"ERROR: ineligible starting node in CheckBoundary()\n");
@@ -1397,6 +1459,7 @@ long CheckBoundary(nodeT **nodes, nodeT *ground, long ngroundarcs,
       /* if neighbor is not masked or visited, add to list of nodes to search */
       if(node2->group!=MASKED && node2->group!=ONTREE
          && node2->group!=INBUCKET){
+        
         node2->group=INBUCKET;
         end->next=node2;
         node2->next=NULL;
@@ -1427,6 +1490,8 @@ long CheckBoundary(nodeT **nodes, nodeT *ground, long ngroundarcs,
                          &arcrow,&arccol,&arcdir,nrow,ncol,boundary,nodesupp);
 
       /* see if we have an arc to boundary */
+      /* this may or may not use region arc, but if non-region arc is used */
+      /*   it should have zero cost */
       if(node2->row==BOUNDARYROW){
         nboundaryarc++;
       }
@@ -1520,11 +1585,95 @@ int IsRegionEdgeArc(float **mag, long arcrow, long arccol,
 }
 
 
+/* function: IsRegionInteriorArc()
+ * -------------------------------
+ * Return TRUE if arc goes between two nodes in same region such that
+ * both pixel magnitudes on either side of arc are nonzero.
+ */
+static
+int IsRegionInteriorArc(float **mag, long arcrow, long arccol,
+                        long nrow, long ncol){
+
+  long row1, col1, row2, col2;
+  
+
+  /* if no magnitude, everything is in single region */
+  if(mag==NULL){
+    return(TRUE);
+  }
+
+  /* determine indices of pixels on either side of this arc */
+  if(arcrow<nrow-1){
+    row1=arcrow;
+    row2=row1+1;
+    col1=arccol;
+    col2=col1;
+  }else{
+    row1=arcrow-(nrow-1);
+    row2=row1;
+    col1=arccol;
+    col2=col1+1;
+  }
+  
+  /* see whether both pixels have nonzero magnitude */
+  if(mag[row1][col1]>0 && mag[row2][col2]>0){
+    return(TRUE);
+  }
+  return(FALSE);
+
+}
+
+
+/* function: IsRegionArc()
+ * -----------------------
+ * Return TRUE if arc goes between two nodes in same region such that
+ * at least one pixel magnitude on either side of arc is nonzero.
+ */
+static
+int IsRegionArc(float **mag, long arcrow, long arccol,
+                long nrow, long ncol){
+
+  long row1, col1, row2, col2;
+  
+
+  /* if no magnitude, everything is in single region */
+  if(mag==NULL){
+    return(TRUE);
+  }
+
+  /* determine indices of pixels on either side of this arc */
+  if(arcrow<nrow-1){
+    row1=arcrow;
+    row2=row1+1;
+    col1=arccol;
+    col2=col1;
+  }else{
+    row1=arcrow-(nrow-1);
+    row2=row1;
+    col1=arccol;
+    col2=col1+1;
+  }
+  
+  /* see whether at least one pixel has nonzero magnitude */
+  if(mag[row1][col1]>0 || mag[row2][col2]>0){
+    return(TRUE);
+  }
+  return(FALSE);
+
+}
+
+
 /* function: IsInteriorNode()
  * --------------------------
  * Return TRUE if node does not touch any zero magnitude pixels, FALSE
  * otherwise.
  */
+/* 
+ * This function is no longer used 
+ */
+#if 0
+static
+int IsInteriorNode(float **mag, long row, long col, long nrow, long ncol);
 static
 int IsInteriorNode(float **mag, long row, long col, long nrow, long ncol){
 
@@ -1546,6 +1695,7 @@ int IsInteriorNode(float **mag, long row, long col, long nrow, long ncol){
   return(TRUE);
   
 }
+#endif
 
 
 /* function: IsRegionEdgeNode()
@@ -1590,21 +1740,41 @@ int IsRegionEdgeNode(float **mag, long row, long col, long nrow, long ncol){
 
 /* function: CleanUpBoundaryNodes()
  * --------------------------------
- * Unset group values indicating boundary nodes on network.
+ * Unset group values indicating boundary nodes on network.  This is
+ * necessary because InitBoundary() temporarily sets node groups to
+ * MASKED if the node is in a different region than the current but
+ * can be reached from the current region.  This can occur if two
+ * regions are separated by a single row or column of masked pixels.
  */
 static
-int CleanUpBoundaryNodes(boundaryT *boundary){
+int CleanUpBoundaryNodes(nodeT *source, boundaryT *boundary, float **mag,
+                         nodeT **nodes, nodeT *ground,
+                         long nrow, long ncol, long ngroundarcs,
+                         nodesuppT **nodesupp){
 
-  long k;
+  long nconnected;
+  nodeT *start;
 
 
-  /* loop over boundary nodes and unset group value */
-  if(boundary!=NULL && boundary->boundarylist!=NULL){
-    for(k=0;k<boundary->nboundary;k++){
-      boundary->boundarylist[k]->group=0;
-    }
+  /* do nothing if this is not a grid network */
+  if(nodesupp!=NULL){
+    return(0);
   }
-  return(0);
+
+  /* starting node should not be boundary */
+  if(source->row==BOUNDARYROW){
+    start=boundary->neighborlist[0].neighbor;
+  }else{
+    start=source;
+  }
+  
+  /* scan region and unmask any nodes that touch good pixels since they */
+  /*   may have been masked by the ScanRegion() call in InitBoundaries() */
+  nconnected=ScanRegion(start,nodes,mag,ground,ngroundarcs,nrow,ncol,0);
+
+  /* done */
+  return(nconnected);
+  
 }
 
 
@@ -2584,35 +2754,61 @@ int MaskNodes(long nrow, long ncol, nodeT **nodes, nodeT *ground,
   /* loop over grid nodes and see if masking is necessary */
   for(row=0;row<nrow-1;row++){
     for(col=0;col<ncol-1;col++){
-      if(mag[row][col] || mag[row][col+1]
-         || mag[row+1][col] || mag[row+1][col+1]){
-        nodes[row][col].group=0;
-      }else{
-        nodes[row][col].group=MASKED;
-      }
+      nodes[row][col].group=GridNodeMaskStatus(row,col,mag);
     }
   }
 
   /* check whether ground node should be masked */
-  ground->group=MASKED;
-  for(row=0;row<nrow;row++){
-    if(mag[row][0] || mag[row][ncol-1]){
-      ground->group=0;
-      break;
-    }
-  }
-  if(ground->group==MASKED){
-    for(col=0;col<ncol;col++){
-      if(mag[0][col] || mag[nrow-1][col]){
-        ground->group=0;
-        break;
-      }
-    }
-  }
+  ground->group=GroundMaskStatus(nrow,ncol,mag);
 
   /* done */
   return(0);
 
+}
+
+
+/* function: GridNodeMaskStatus()
+ * ---------------------------------
+ * Given row and column of grid node, return MASKED if all pixels around node
+ * have zero magnitude, and 0 otherwise.
+ */
+static
+int GridNodeMaskStatus(long row, long col, float **mag){
+
+  /* return 0 if any pixel is not masked */
+  if(mag[row][col] || mag[row][col+1]
+     || mag[row+1][col] || mag[row+1][col+1]){
+    return(0);
+  }
+  return(MASKED);
+  
+}
+
+
+/* function: GroundMaskStatus()
+ * ----------------------------
+ * Return MASKED if all pixels around grid edge have zero magnitude, 0 
+ * otherwise. 
+ */
+static
+int GroundMaskStatus(long nrow, long ncol, float **mag){
+
+  long row, col;
+  
+
+  /* check all pixels along edge */
+  for(row=0;row<nrow;row++){
+    if(mag[row][0] || mag[row][ncol-1]){
+      return(0);
+    }
+  }
+  for(col=0;col<ncol;col++){
+    if(mag[0][col] || mag[nrow-1][col]){
+      return(0);
+    }
+  }
+  return(MASKED);
+  
 }
 
 
@@ -2920,7 +3116,7 @@ nodeT *MinOutCostNode(bucketT *bkts){
  * connected pixels (not disconnected by masking).  Return the number
  * of sources (ie, the number of connected sets of pixels).
  */
-long SelectSources(nodeT **nodes, nodeT *ground, long nflow, 
+long SelectSources(nodeT **nodes, float **mag, nodeT *ground, long nflow, 
                    short **flows, long ngroundarcs, 
                    long nrow, long ncol, paramT *params,
                    nodeT ***sourcelistptr, long **nconnectedarrptr){
@@ -2952,7 +3148,8 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
   }
 
   /* check ground node (NULL for boundary since not yet defined) */
-  source=SelectConnNodeSource(nodes,ground,ngroundarcs,NULL,nrow,ncol,params,
+  source=SelectConnNodeSource(nodes,mag,
+                              ground,ngroundarcs,nrow,ncol,params,
                               ground,&nconnected);
   if(source!=NULL){
       
@@ -2969,12 +3166,14 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
     
   }
     
-  /* loop over nodes to find next set of connected pixels */
+  /* loop over nodes to find next set of connected nodes */
   for(row=0;row<nrow-1;row++){
     for(col=0;col<ncol-1;col++){
 
-      /* check pixel (NULL for boundary since not yet defined) */
-      source=SelectConnNodeSource(nodes,ground,ngroundarcs,NULL,nrow,ncol,params,
+      /* check pixel */
+      /*   boundary not yet defined, so connectivity via grid arcs only */
+      source=SelectConnNodeSource(nodes,mag,
+                                  ground,ngroundarcs,nrow,ncol,params,
                                   &nodes[row][col],&nconnected);
       if(source!=NULL){
 
@@ -2994,7 +3193,7 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
   }
 
   /* show message about number of connected regions */
-  fprintf(sp1,"Found %ld valid set(s) of connected pixels\n",nsource);
+  fprintf(sp1,"Found %ld valid set(s) of connected nodes\n",nsource);
 
   /* reset group values for all nodes */
   if(ground->group!=MASKED && ground->group!=BOUNDARYPTR){
@@ -3003,7 +3202,6 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
   ground->next=NULL;
   for(row=0;row<nrow-1;row++){
     for(col=0;col<ncol-1;col++){
-#if TRUE
       if(nodes[row][col].group==INBUCKET
          || nodes[row][col].group==NOTINBUCKET
          || nodes[row][col].group==BOUNDARYCANDIDATE
@@ -3013,7 +3211,7 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
                 "WARNING: weird nodes[%ld][%ld].group=%d in SelectSources()\n",
                 row,col,nodes[row][col].group);
       }
-#endif
+
       if(nodes[row][col].group!=MASKED && nodes[row][col].group!=BOUNDARYPTR){
         nodes[row][col].group=0;
       }
@@ -3050,55 +3248,22 @@ long SelectSources(nodeT **nodes, nodeT *ground, long nflow,
  * small.
  */
 static
-nodeT *SelectConnNodeSource(nodeT **nodes, nodeT *ground, long ngroundarcs, 
-                            boundaryT *boundary, long nrow, long ncol,
+nodeT *SelectConnNodeSource(nodeT **nodes, float **mag,
+                            nodeT *ground, long ngroundarcs, 
+                            long nrow, long ncol,
                             paramT *params, nodeT *start, long *nconnectedptr){
   
-  long arcrow, arccol, arcdir, arcnum, upperarcnum, nconnected;
-  nodeT *node1, *node2, *end, *source;
-  nodesuppT **nodesupp;
+  long nconnected;
+  nodeT *source;
 
 
   /* if start node is not eligible, just return NULL */
   if(start->group==MASKED || start->group==ONTREE){
     return(NULL);
   }
-  
-  /* initialize local variables */
-  nconnected=0;
-  end=start;
-  nodesupp=NULL;
-  node1=start;
-  node1->group=INBUCKET;
 
-  /* loop to search for connected, unmasked nodes */
-  /* leave group as ONTREE after return so later calls can skip done nodes */
-  while(node1!=NULL){
-
-    /* loop over neighbors of current node */
-    arcnum=GetArcNumLims(node1->row,&upperarcnum,ngroundarcs,boundary);
-    while(arcnum<upperarcnum){
-      node2=NeighborNode(node1,++arcnum,&upperarcnum,nodes,ground,
-                         &arcrow,&arccol,&arcdir,nrow,ncol,boundary,nodesupp);
-
-      /* if neighbor is not masked or visited, add to list of nodes to search */
-      if(node2->group!=MASKED && node2->group!=ONTREE
-         && node2->group!=INBUCKET){
-        node2->group=INBUCKET;
-        end->next=node2;
-        node2->next=NULL;
-        end=node2;
-      }
-    }
-
-    /* mark this node visited */
-    node1->group=ONTREE;
-    nconnected++;
-
-    /* move to next node in list */
-    node1=node1->next;
-
-  }
+  /* find all nodes for this set of connected pixels and mark them on tree */
+  nconnected=ScanRegion(start,nodes,mag,ground,ngroundarcs,nrow,ncol,ONTREE);
   
   /* see if number of nodes in this connected set is big enough */
   if(nconnected>params->nconnnodemin){
@@ -3117,6 +3282,126 @@ nodeT *SelectConnNodeSource(nodeT **nodes, nodeT *ground, long ngroundarcs,
     (*nconnectedptr)=nconnected;
   }
   return(source);
+
+}
+
+
+/* function: ScanRegion()
+ * ----------------------
+ * Find all connected grid nodes of region, defined by reachability without
+ * crossing non-region arcs, and set group according to desired
+ * behavior defined by groupsetting, which should be either ONTREE for
+ * call from SelectConnNodeSourcre(), MASKED for a call from
+ * InitBoundary(), or 0 for a call from CleanUpBoundaryNodes().  Return
+ * number of connected nodes.
+ */
+static
+long ScanRegion(nodeT *start, nodeT **nodes, float **mag,
+                nodeT *ground, long ngroundarcs,
+                long nrow, long ncol, int groupsetting){
+
+  nodeT *node1, *node2, *end;
+  long arcrow, arccol, arcdir, arcnum, upperarcnum, nconnected;
+  nodesuppT **nodesupp;
+  boundaryT *boundary;
+
+
+  /* set up */
+  nconnected=0;
+  end=start;
+  nodesupp=NULL;
+  boundary=NULL;
+  node1=start;
+  node1->group=INBUCKET;
+
+  /* loop to search for connected nodes */
+  while(node1!=NULL){
+
+    /* loop over neighbors of current node */
+    arcnum=GetArcNumLims(node1->row,&upperarcnum,ngroundarcs,boundary);
+    while(arcnum<upperarcnum){
+      node2=NeighborNode(node1,++arcnum,&upperarcnum,nodes,ground,
+                         &arcrow,&arccol,&arcdir,nrow,ncol,boundary,nodesupp);
+
+      /* if neighbor is pointer to boundary, unset so we scan grid nodes */
+      if(node2->group==BOUNDARYPTR){
+        node2->group=0;
+      }
+      
+      /* see if neighbor is in region */
+      if(IsRegionArc(mag,arcrow,arccol,nrow,ncol)){
+
+        /* if neighbor is in region and not yet in list to be scanned, add it */
+        if(node2->group!=ONTREE && node2->group!=INBUCKET){
+          node2->group=INBUCKET;
+          end->next=node2;
+          node2->next=NULL;
+          end=node2;
+        }
+      }
+    }
+
+    /* mark this node visited */
+    node1->group=ONTREE;
+
+    /* make sure level is initialized */
+    if(groupsetting==ONTREE){
+      node1->level=0;
+    }
+    
+    /* count this node */
+    nconnected++;
+
+    /* move to next node in list */
+    node1=node1->next;
+
+  }
+
+  /* for each node in region, scan neighbors to mask or unmask unreachable */
+  /*   nodes that may be in other regions and therefore not yet masked */
+  if(groupsetting!=ONTREE){
+
+    /* loop over nodes in region */
+    node1=start;
+    while(node1!=NULL){
+
+      /* loop over neighbors of current node */
+      arcnum=GetArcNumLims(node1->row,&upperarcnum,ngroundarcs,boundary);
+      while(arcnum<upperarcnum){
+        node2=NeighborNode(node1,++arcnum,&upperarcnum,nodes,ground,
+                           &arcrow,&arccol,&arcdir,nrow,ncol,boundary,nodesupp);
+
+        /* see if neighbor is not in region */
+        if(node2->group!=ONTREE){
+
+          /* set mask status according to desired behavior */
+          if(groupsetting==MASKED){
+            node2->group=MASKED;
+          }else if(groupsetting==0){
+            if(node2->row==GROUNDROW){
+              node2->group=GroundMaskStatus(nrow,ncol,mag);
+            }else{
+              node2->group=GridNodeMaskStatus(node2->row,node2->col,mag);
+            }
+          }
+        }
+      }
+
+      /* move to next node */
+      node1=node1->next;
+      
+    }
+
+    /* reset groups of all nodes within region */
+    node1=start;
+    while(node1!=NULL){
+      node1->group=0;
+      node1=node1->next;
+    }
+  }
+  
+  /* return number of connected nodes */
+  return(nconnected);
 
 }
 

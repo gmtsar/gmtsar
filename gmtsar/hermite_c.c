@@ -71,6 +71,7 @@ void hermite_c(double *x, double *y, double *z, int nmax, int nval, double xp, d
 	/* reduced index by 1 */
 	if (i0 + n > nmax) {
 		fprintf(stderr, "[ERROR]:hermite interpolation not in center interval\n");
+		fprintf(stderr, "Check the orbit LED file.\n");
 		i0 = nmax - n - 1;
 		*ir = 0;
 	}

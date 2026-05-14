@@ -2,20 +2,22 @@
 
 # create a configure file for p2p_processing.csh
 # syntax: pop_config.csh SAT
-# SAT can be  ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN
-# S1_STRIP, S1_TOPS,, CSK_RAW, CSK_SLC, TSX, RS2
 
 if ($#argv != 1) then
   echo ""
   echo "Usage: pop_config.csh SAT"
   echo ""
-  echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN"
+  echo "       SAT can be ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN ALOS4"
   echo "       S1_STRIP, S1_TOPS, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
+  echo "       NSR_A NSR_B"
   echo ""
   exit 1
 endif
 
 set SAT = `echo $1`
+if ($SAT == "ALOS4") then
+  set SAT = "ALOS2"
+endif
 
 echo "#"
 echo "# This is an example configuration file for p2p_processing.csh"
@@ -69,7 +71,7 @@ if ($SAT == "S1_TOPS") then
   echo "spec_mode = 1"
 endif
 
-if ($SAT == "ALOS_SLC") then
+if ($SAT == "ALOS_SLC || $SAT == "ALOS4"") then
   echo "# SLC scale factor to convert float to int "
   echo "SLC_factor = 0.02"
   echo ""
@@ -84,6 +86,10 @@ else if ($SAT == "CSK_SLC" || $SAT == "CSG") then
 else if ($SAT == "LT1") then
   echo "# SLC scale factor to convert float to int"
   echo "SLC_factor = 10.0"
+  echo ""
+else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+  echo "# SLC scale factor to convert float to int"
+  echo "SLC_factor = 30000.0"
   echo ""
 endif
 
@@ -110,11 +116,15 @@ echo "topo_phase = 1"
 echo "# if above parameter = 1 then one should have put dem.grd in topo/"
 echo ""
 echo "# interpolation approach, 0 for surface, 1 for triangulation"
+if ( $SAT == "NSR_A" || $SAT == "NSR_B") then
+echo "topo_interp_mode = 1"
+else
 echo "topo_interp_mode = 0"
+endif
 echo ""
 echo "# topo_ra shift (1 -- yes; 0 -- no)"
 
-if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS") then
+if ($SAT == "ALOS_SLC" || $SAT == "ALOS" || $SAT == "ERS" || $SAT == "NSR_A" || $SAT == "NSR_B") then
   echo "shift_topo = 1"
 else 
   echo "shift_topo = 0"
@@ -140,17 +150,21 @@ if ($SAT == "ALOS2_SCAN") then
   echo "filter_wavelength = 400"
 else if ($SAT == "RS2" || $SAT == "TSX") then
   echo "filter_wavelength = 100"
+else if ($SAT == "NSR_A") then
+  echo "filter_wavelength = 160"
+else if ($SAT == "NSR_B") then
+  echo "filter_wavelength = 640"
 else
   echo "filter_wavelength = 200"
 endif
 echo ""
 echo "# decimation of images "
 echo "# decimation control the size of the amplitude and phase images. It is either 1 or 2."
-echo "# Set the decimation to be 1 if you want higher resolution images."
-echo "# Set the decimation to be 2 if you want images with smaller file size."
+echo "# Set the decimation to be 1 if you want higher resolution images (filter wavelength 80 to 160 m for NSR_A)"
+echo "# Set the decimation to be 2 if you want images with smaller file size (filter wavelength >= 160 for NSR_A)"
 echo "# "
-if ($SAT == "RS2" || $SAT == "TSX") then
-  echo "dec_factor = 1 "
+if ($SAT == "RS2" || $SAT == "TSX" || $SAT == "NSR_B") then
+  echo "dec_factor = 2 "
 else if ($SAT == "ALOS2_SCAN") then
   echo "dec_factor = 4 "
 else
@@ -175,6 +189,7 @@ echo "iono_filt_azi = 1.0"
 echo "iono_dsamp = 1"
 echo "# "
 echo "# set the following parameter to skip ionospheric phase estimation"
+echo "# NSR uses two frequencies not split spectrum so iono skip est = 1"
 echo "iono_skip_est = 1 "
 echo "#"
 echo "#####################################"

@@ -1,20 +1,21 @@
 #!/bin/csh -f
 #       $Id$
 #
-#  Xiaohua Xu, Jan, 2018
+#  David T. Sandwell, 11/2025
 #
-#  Automatically perform two-path processing on raw(1.0)/SLC(1.1) data
+#  Automatically perform two-path processing on NISAR RSLC data
+#  Needs to be integrated back into the generic p2p_processing.csh
 #  
 
   if ($#argv != 3 && $#argv != 4) then
     echo ""
-    echo "Usage: p2p_processing.csh SAT master_image aligned_image [configuration_file] "
+    echo "Usage: p2p_processing_NSR.csh SAT master_image aligned_image [configuration_file] "
     echo ""
-    echo "Example: p2p_processing.csh ALOS IMG-HH-ALPSRP055750660-H1.0__A IMG-HH-ALPSRP049040660-H1.0__A [config.alos.txt]"
+    echo "p2p_processing_nsr.csh NSR_A NISAR_L1_PR_RSLC_003_085_D_072_4005_DHDH_A_20251023T023258_20251023T023323_X05010_N_P_J_001 NISAR_L1_PR_RSLC_004_085_D_072_4005_DHDH_A_20251104T023258_20251104T023324_X05010_N_P_J_001 config_A.txt"
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
     echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN, ALOS4"
-    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1"
+    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1 NSR_A NSR_B"
     echo ""
     echo "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc"
     echo ""
@@ -223,7 +224,7 @@
           echo " no file  raw/"$aligned".EOF"
         endif
       endif
-    else if ($SAT == "CSK_RAW" || $SAT == "CSK_SLC" || $SAT == "CSG") then
+    else if ($SAT == "CSK_RAW" || $SAT == "CSK_SLC" || $SAT == "CSG" ) then
       if(! -f raw/$master.h5 ) then
         echo " no file  raw/"$master".h5"
         exit
@@ -300,6 +301,15 @@
         echo " no file  raw/"$aligned".tiff"
         exit
       endif
+    else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+      if(! -f raw/$master.h5 ) then
+        echo " no file  raw/"$master".h5"
+        exit
+      endif
+      if(! -f raw/$aligned.h5 ) then 
+        echo " no file  raw/"$aligned".h5"
+        exit  
+      endif   
     endif
 
 #
@@ -324,9 +334,15 @@
       set aligned = `echo $3`
     endif
     cd raw
-    
-    echo "pre_proc.csh $SAT $master $aligned $commandline"
-    pre_proc.csh $SAT $master $aligned $commandline   
+   
+    if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+      echo "pre_proc_nsr.csh "
+      pre_proc_nsr.csh $master.h5 ../$conf
+      pre_proc_nsr.csh $aligned.h5 ../$conf
+    else 
+      echo "pre_proc.csh $SAT $master $aligned $commandline"
+      pre_proc.csh $SAT $master $aligned $commandline   
+    endif
         
     cd ..
     echo " "
@@ -345,6 +361,14 @@
     mkdir -p SLC_H
   endif
 
+  if ($SAT == "NSR_A") then
+    set master = `echo $master | awk '{print "NSR_"substr($1,44,8)"A"}'`
+    set aligned = `echo $aligned | awk '{print "NSR_"substr($1,44,8)"A"}'`
+  endif
+  if ($SAT == "NSR_B") then
+    set master = `echo $master | awk '{print "NSR_"substr($1,44,8)"B"}'`
+    set aligned = `echo $aligned | awk '{print "NSR_"substr($1,44,8)"B"}'`
+  endif
   if ($SAT == "S1_TOPS") then
     set master = `echo $master | awk '{ print "S1_"substr($1,16,8)"_"substr($1,25,6)"_F"substr($1,7,1)}'`
     set aligned = `echo $aligned | awk '{ print "S1_"substr($1,16,8)"_"substr($1,25,6)"_F"substr($1,7,1)}'`
@@ -511,11 +535,20 @@
         else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" ||  $SAT == "ALOS_SLC") then
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
+	else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+		  rm amp*.grd
+          slc2amp.csh $master.PRM 4 amp-$master.grd 
+          xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40
+          fitoffset_ra.csh 10 10 freq_xcorr.dat 20
         else
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 2 2 freq_xcorr.dat 18 >> $aligned.PRM
         endif
-        resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 4
+        if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+          resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 5 r.grd a.grd
+	else
+          resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 4
+	endif
         rm $aligned.SLC
         mv $aligned.SLCresamp $aligned.SLC
         cp $aligned.PRMresamp $aligned.PRM
@@ -543,7 +576,7 @@
           if ($SAT == "ALOS2_SCAN") then
             ln -s ../SLC/freq_alos2.dat
             fitoffset.csh  2 3 freq_alos2.dat 10 >> $aligned.PRM
-          else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW") then
+          else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" ) then
             ln -s ../SLC/freq_xcorr.dat .
             fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
           else
@@ -664,7 +697,7 @@
 
     endif
 
-    if ($region_cut != "") then
+    if ($region_cut != "" && $SAT != "NSR_A" && $SAT != "NSR_B") then
       echo "Cutting SLC image to $region_cut"
       if ($skip_master == 0 || $skip_master == 2) then
         cut_slc $master.PRM junk1 $region_cut

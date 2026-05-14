@@ -55,4 +55,3 @@ clean:
 
 $(PROGS):	$(PROGS_O) $(LIB_O)
 		$(CC) $(LDFLAGS) $@.o $(LIB_O) $(LIBS) -o $@
-

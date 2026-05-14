@@ -25,7 +25,7 @@ dnl 1. Location of GMT include and library files
 dnl 2. Location of ORBITS directory
 dnl ------------------------------------------------------------------
 dnl
-AC_INIT([GMTSAR],[6.2.0],[gmtsar-l@ucsd.edu])
+AC_INIT([GMTSAR],[master],[gmtsar-l@ucsd.edu])
 dnl
 dnl ------------------------------------------------------------------
 dnl The remainder should need no editing
@@ -349,7 +349,7 @@ if test "$GCC" = "yes"; then		# GNU cc options
 		CFLAGS="$CFLAGS -Wall"
 		CXXFLAGS="$CXXFLAGS -Wall"
 	fi
-	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=c99"
+	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=gnu99"
 	CXXFLAGS="$CXXFLAGS -fPIC"
 elif test "$os" = "SunOS" ; then	# Sun Workshop CC options
 	CFLAGS="$CFLAGS -Xc"
