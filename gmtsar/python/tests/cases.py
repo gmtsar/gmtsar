@@ -85,9 +85,9 @@ CASES = {
     'S1_Ridgecrest_EQ':         {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~3 h (largest)
 
     # ---- disabled: need code paths not yet ported to Python ----
-    # NISAR_Ethiopia uses NSR_A SAT type via p2p_processing_nsr — neither is
-    # supported by the Python p2p_processing dispatch yet.
-    'NISAR_Ethiopia':           {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},
+    # NISAR_Ethiopia: enabled in v1.11.6 (NSR_A SAT support added to Python
+    # p2p_processing + pre_proc_nsr port).
+    'NISAR_Ethiopia':           {'satellite': 'NSR_A',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
     # S1A_SLC_Napa uses manual make_slc_s1a + extend_orbit prep that has no
     # single-script Python equivalent.
     'S1A_SLC_Napa_EQ':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},
