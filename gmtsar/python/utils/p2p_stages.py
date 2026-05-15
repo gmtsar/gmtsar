@@ -35,8 +35,14 @@ _RAW_FILE_SPEC = {
     'RS2':      [('.xml', False), ('.tif',  False)],
     'TSX':      [('.xml', False), ('.cos',  False)],
     'GF3':      [('.xml', False), ('.tiff', False)],
+    'NSR_A':    [('.h5',  False)],
+    'NSR_B':    [('.h5',  False)],
 }
-_ALOS_FAMILY = {'ALOS', 'ALOS2', 'ALOS_SLC', 'ALOS_SCAN'}
+# ALOS family: filename has no extension; raw/<name> is the input.
+# NSR_A/B are L-band like ALOS but use .h5 inputs, so live in _RAW_FILE_SPEC.
+_ALOS_FAMILY = {'ALOS', 'ALOS2', 'ALOS_SLC', 'ALOS_SCAN', 'ALOS4'}
+# SATs that need filename rename via awk-style substr (S1_TOPS, NSR_A/B).
+_NSR_FAMILY = {'NSR_A', 'NSR_B'}
 _ENVI_SLC_EXTS = ('.N1', '.E1', '.E2')
 
 
@@ -84,7 +90,15 @@ def P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix):
     
     os.chdir("raw") # run("cd raw") didn't work.
     print('P2P 1: entering directory raw/')
-    run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix)
+    if SAT in _NSR_FAMILY:
+        # NISAR: hand off to pre_proc_nsr which handles both A and B
+        # frequencies from one .h5 product. Config file must be in parent dir.
+        sys.argv2 = sys.argv[2] if len(sys.argv) > 2 else master
+        sys.argv3 = sys.argv[3] if len(sys.argv) > 3 else aligned
+        run(f"pre_proc_nsr {sys.argv2}.h5 ../config.py")
+        run(f"pre_proc_nsr {sys.argv3}.h5 ../config.py")
+    else:
+        run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix)
 
     print('P2P 1: exiting directory raw/')
     os.chdir('..')
@@ -94,6 +108,17 @@ def renameMasterAlignedForS1tops(master0, aligned0):
     print('Renaming master and aligned for SAT==S1_TOPS')
     master = 'S1_'+master0[15:15+8]+'_'+master0[24:24+6]+'_F'+master0[6:7]
     aligned = 'S1_'+aligned0[15:15+8]+'_'+aligned0[24:24+6]+'_F'+aligned0[6:7]
+    return master, aligned
+
+
+def renameMasterAlignedForNSR(master0, aligned0, ab):
+    """For NSR_A / NSR_B: NISAR full filenames have a YYYYMMDD date starting
+    at csh-1-based position 44 (Python [43:51]). Output stem is
+    'NSR_<YYYYMMDD>A' or '...B' depending on which frequency band.
+    Matches the awk substr in pre_proc_nsr.csh + p2p_processing_nsr.csh."""
+    suffix = 'A' if ab == 'NSR_A' else 'B'
+    master = f"NSR_{master0[43:51]}{suffix}"
+    aligned = f"NSR_{aligned0[43:51]}{suffix}"
     return master, aligned
     
 # --- P2P2 SAT dispatch constants ---
@@ -159,22 +184,35 @@ def _stage_slc_inputs(name, sat_uses_raw):
 def _xcorr_and_fitoffset(SAT, master, aligned):
     """xcorr master/aligned, then run fitoffset and append to aligned.PRM.
     ALOS2_SCAN uses larger ysearch and has a manual median-filter step (legacy
-    code commented out); other SATs use default xcorr params, with fitoffset
-    polynomial degree 3 for .raw-input SATs and 2 for everything else."""
+    code commented out); NSR_A/B uses slc2amp + fitoffset_ra (10/10 params);
+    other SATs use default xcorr params, with fitoffset polynomial degree 3
+    for .raw-input SATs and 2 for everything else."""
     if SAT == "ALOS2_SCAN":
         run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}")
         # Legacy csh did a median-filter pass on freq_xcorr.dat → freq_alos2.dat
         # and `fitoffset 2 3 freq_alos2.dat 10 >> $aligned.PRM`. Preserved as a
         # comment because the median step was never ported to Python.
+    elif SAT in _NSR_FAMILY:
+        # NISAR: build amp grid from master at decimation 4, then xcorr with
+        # 40x40 grid and fitoffset_ra with 10/10 polynomial.
+        run("rm -f amp*.grd")
+        run(f"slc2amp {master}.PRM 4 amp-{master}.grd")
+        run(f"xcorr {master}.PRM {aligned}.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40")
+        run("fitoffset_ra 10 10 freq_xcorr.dat 20")
     else:
         run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}")
         fit_dim = "3 3" if SAT in _SAT_RAW_INPUT else "2 2"
         run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
 
 
-def _resamp_and_swap(master, aligned):
-    """resamp aligned vs master, then swap .SLCresamp/.PRMresamp into place."""
-    run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4")
+def _resamp_and_swap(master, aligned, SAT=None):
+    """resamp aligned vs master, then swap .SLCresamp/.PRMresamp into place.
+    For NSR_A/NSR_B: uses resamp factor 5 with r.grd/a.grd alignment grids
+    (produced by fitoffset_ra). Other SATs use factor 4 without those grids."""
+    if SAT in _NSR_FAMILY:
+        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 5 r.grd a.grd")
+    else:
+        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4")
     delete(f"{aligned}.SLC")
     file_shuttle(f"{aligned}.SLCresamp", f"{aligned}.SLC", 'mv')
     file_shuttle(f"{aligned}.PRMresamp", f"{aligned}.PRM", 'cp')
@@ -205,7 +243,7 @@ def _iono_LH_fitoffset_and_resamp(SAT, master, aligned, tsx_in_xcorr_group):
         freq_link, fit_dim = "freq_alos2.dat", "2 2"
     run(f"ln -sf ../SLC/{freq_link}")
     run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >>{aligned}.PRM")
-    _resamp_and_swap(master, aligned)
+    _resamp_and_swap(master, aligned, SAT)
 
 
 def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):

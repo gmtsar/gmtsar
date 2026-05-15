@@ -197,12 +197,15 @@ def p2p_processing(debug):
             run('mkdir -p SLC_L SLC_H')
         if (SAT == 'S1_TOPS'):
             master, aligned = renameMasterAlignedForS1tops(master, aligned)
-        print('master, aligned should be modified for SAT==S1_TOPS', master, aligned)
+        if SAT in ('NSR_A', 'NSR_B'):
+            master, aligned = renameMasterAlignedForNSR(master, aligned, SAT)
+        print(f'master, aligned after rename for {SAT}:', master, aligned)
         P2P2Clean(SAT, master, aligned, skip_master, iono)
         os.chdir('SLC')
         P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
-        if region_cut != -999:
-            P2P2RegionCut(master, aligned, skip_master, iono) 
+        # NSR_A/B skips region_cut per legacy csh; everything else honors it.
+        if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
+            P2P2RegionCut(master, aligned, skip_master, iono)
         os.chdir('..')
         print('P2P 2: ALIGN.CSH - END')
     if debug==1:
