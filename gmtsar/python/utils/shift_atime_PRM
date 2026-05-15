@@ -1,0 +1,43 @@
+#! /usr/bin/env python3
+"""shift_atime_PRM — shift PRM clock fields by N azimuth lines.
+
+Python port of csh shift_atime_PRM.csh. Adjusts the four clock fields
+(clock_start, clock_stop, SC_clock_start, SC_clock_stop) by num_lines/PRF
+days. Used when re-registering PRMs after burst shifts.
+
+Usage:  shift_atime_PRM file.PRM num_lines
+"""
+import subprocess
+import sys
+from gmtsar_lib import run, grep_value
+
+
+def shift_atime_PRM():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: shift_atime_PRM file.PRM num_lines\n"
+            "Example: shift_atime_PRM IMG-HH-ALPSRP049040660-H1.0__A.PRM 12365.84726"
+        )
+    prm, nl = sys.argv[1], float(sys.argv[2])
+
+    prf = float(grep_value(prm, "PRF", 3))
+    shift_days = nl / prf / 86400.0
+
+    # Adjust the 2 non-SC clock fields (grep -v SC_) and 2 SC fields.
+    for key in ("clock_start", "clock_stop"):
+        cmd = (f"grep {key} {prm} | grep -v SC_{key} | "
+               f"awk '{{print $3}}'")
+        val = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                             check=False).stdout.decode("utf-8").strip()
+        if val:
+            new = float(val) + shift_days
+            run(f"update_PRM {prm} {key} {new:.12f}")
+    for key in ("SC_clock_start", "SC_clock_stop"):
+        val = grep_value(prm, key, 3)
+        if val:
+            new = float(val) + shift_days
+            run(f"update_PRM {prm} {key} {new:.12f}")
+
+
+if __name__ == "__main__":
+    shift_atime_PRM()

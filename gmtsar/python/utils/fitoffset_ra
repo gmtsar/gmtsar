@@ -1,0 +1,48 @@
+#! /usr/bin/env python3
+"""fitoffset_ra — compute r.grd / a.grd alignment grids from xcorr offsets.
+
+Python port of csh fitoffset_ra.csh (D. Sandwell 2026). Fits a 2D
+polynomial to the xcorr offset estimates (using only entries with
+SNR > threshold), then resamples on the amp*.grd grid spacing to
+produce r.grd / a.grd (range / azimuth alignment grids).
+
+Usage:  fitoffset_ra npar_rng npar_azi xcorr.dat [SNR]
+"""
+import subprocess
+import sys
+from gmtsar_lib import run
+
+
+def fitoffset_ra():
+    if len(sys.argv) < 4:
+        sys.exit(
+            "Usage: fitoffset_ra npar_rng npar_azi xcorr.dat [SNR]\n"
+            "  npar_rng / npar_azi: 1-10 fit parameters\n"
+            "  SNR: optional cutoff (default 20)"
+        )
+    rng_p, azi_p, xcorr = sys.argv[1], sys.argv[2], sys.argv[3]
+    SNR = sys.argv[4] if len(sys.argv) == 5 else "20."
+
+    run(f"awk '{{ if ($5 > {SNR}) printf(\"%f %f %f \\n\", $1,$3,$2); }}' < {xcorr} > r.xyz")
+    run(f"awk '{{ if ($5 > {SNR}) printf(\"%f %f %f \\n\", $1,$3,$4); }}' < {xcorr} > a.xyz")
+
+    n_all = int(subprocess.run(f"wc -l < {xcorr}", shell=True,
+                               stdout=subprocess.PIPE,
+                               check=False).stdout.decode().strip())
+    n_pts = int(subprocess.run("wc -l < r.xyz", shell=True,
+                               stdout=subprocess.PIPE,
+                               check=False).stdout.decode().strip())
+    if n_pts < 8:
+        sys.exit(f" FAILED - not enough points ({n_pts}/{n_all}). Try lower SNR.")
+
+    run(f"gmt trend2d r.xyz -Fxym -N{rng_p}r > r_model.xyz")
+    run(f"gmt trend2d a.xyz -Fxym -N{azi_p}r > a_model.xyz")
+    run("gmt surface r_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Gr_tmp.grd")
+    run("gmt surface a_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Ga_tmp.grd")
+    run("gmt grdmath r_tmp.grd FLIPUD = r.grd")
+    run("gmt grdmath a_tmp.grd FLIPUD = a.grd")
+    run("rm -f r_model.xyz a_model.xyz r_tmp.grd a_tmp.grd")
+
+
+if __name__ == "__main__":
+    fitoffset_ra()

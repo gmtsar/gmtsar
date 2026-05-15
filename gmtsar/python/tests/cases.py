@@ -42,21 +42,49 @@ SLCDir = 'SLC'
 # Archive URL is always http://topex.ucsd.edu/gmtsar/tar/<case>.<ext>.
 # Pythonization of intfDirList was removed in v1.1.1; intf paths are now
 # auto-discovered from the filesystem by compare.py / freeze_reference.py.
+# Tiers:
+#   smoke : 1 case, ~4 min — pipeline-alive check
+#   fast  : 4 cases, ~25 min — covers ALOS/RS2/ERS/CSK SAT families
+#   full  : 14 single-pair cases, ~3 h cached — every SAT family + flagship S1s
+#   sbas  : multi-pair time-series stacks for Phase 4 SBAS validation
+#           (not invoked by sweep.sh by default; use TEST_TIER=sbas explicitly)
 CASES = {
-    'S1_Ridgecrest_EQ':    {'satellite': 'S1_TOPS',  'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'TSX_SLC_Hawaii':      {'satellite': 'TSX',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'ALOS_Baja_EQ':        {'satellite': 'ALOS',     'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
-    'ALOS_ERSDAC_L1.0':    {'satellite': 'ALOS',     'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'S1A_SLC_TOPS_LA':     {'satellite': 'S1_TOPS',  'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'S1A_SLC_TOPS_Greece': {'satellite': 'S1_TOPS',  'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'ALOS_SLC_L1.1':       {'satellite': 'ALOS_SLC', 'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'ERS_Hector_EQ':       {'satellite': 'ERS',      'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
-    'RS2_SLC_Hawaii':      {'satellite': 'RS2',      'ext': 'tar.gz', 'tiers': {'full', 'fast', 'smoke'}, 'enabled': True},
-    'ENVI_Baja_EQ':        {'satellite': 'ENVI',     'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'ENVI_Baja_EQ_SLC':    {'satellite': 'ENVI_SLC', 'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'CSK_RAW_Hawaii':      {'satellite': 'CSK_RAW',  'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
-    'CSK_SLC_Italy':       {'satellite': 'CSK_SLC',  'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'NISAR_SIM_ALOS':      {'satellite': 'ALOS',     'ext': 'tgz',    'tiers': {'full'},                'enabled': False},  # topex 403
+    # ---- single-pair, full sweep ----
+    'S1_Ridgecrest_EQ':         {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'TSX_SLC_Hawaii':           {'satellite': 'TSX',        'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ALOS_Baja_EQ':             {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
+    'ALOS_ERSDAC_L1.0':         {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'S1A_SLC_TOPS_LA':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'S1A_SLC_TOPS_Greece':      {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ALOS_SLC_L1.1':            {'satellite': 'ALOS_SLC',   'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ERS_Hector_EQ':            {'satellite': 'ERS',        'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
+    'RS2_SLC_Hawaii':           {'satellite': 'RS2',        'ext': 'tar.gz', 'tiers': {'full', 'fast', 'smoke'}, 'enabled': True},
+    'ENVI_Baja_EQ':             {'satellite': 'ENVI',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ENVI_Baja_EQ_SLC':         {'satellite': 'ENVI_SLC',   'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'CSK_RAW_Hawaii':           {'satellite': 'CSK_RAW',    'ext': 'tar.gz', 'tiers': {'full', 'fast'},        'enabled': True},
+    'CSK_SLC_Italy':            {'satellite': 'CSK_SLC',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+
+    # ---- single-pair, added in v1.10.0 from topex listing ----
+    'ALOS2_Brazil':             {'satellite': 'ALOS2',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ALOS2_Japan_Fugi_left':    {'satellite': 'ALOS2',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ALOS2_SCAN_SSAF':          {'satellite': 'ALOS2_SCAN', 'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'ALOS_haiti':               {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'NISAR_Ethiopia':           {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},  # replaces former NISAR_SIM_ALOS
+    'S1A_SLC_Napa_EQ':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'S1A_SLC_TOPS_COVE':        {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'S1_Larsen_C':              {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    'S1_SLC_TOPS_Ross_doubledifference': {'satellite': 'S1_TOPS', 'ext': 'tar.gz', 'tiers': {'full'},          'enabled': True},
+
+    # ---- not yet supported by p2p_processing SAT dispatch ----
+    'ALOS4_Pinon':              {'satellite': 'ALOS4',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},  # ALOS-4 SAT not yet in p2p_processing
+
+    # ---- multi-pair stacks (Phase 4 SBAS / time-series testing) ----
+    'ALOS_Hawaii_stack':        {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'sbas'},                'enabled': True},
+    'ALOS_Indio_SBAS':          {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'sbas'},                'enabled': True},
+    'ENVI_2907_stack':          {'satellite': 'ENVI',       'ext': 'tar.gz', 'tiers': {'sbas'},                'enabled': True},
+    'S1A_Stack_CPGF_T173':      {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'sbas'},                'enabled': True},
+    'kilauea_timeseries_sentinel_data':  {'satellite': 'S1_TOPS', 'ext': 'tar.gz', 'tiers': {'sbas'},          'enabled': True},
+    'kilauea_timeseries_sentinel_files': {'satellite': 'S1_TOPS', 'ext': 'tar.gz', 'tiers': {'sbas'},          'enabled': False},  # orbit / aux companion to *_data
 }
 
 # Helpers for consumers.
