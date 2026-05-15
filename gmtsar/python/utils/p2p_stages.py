@@ -518,7 +518,7 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
                 run(f"landmask {rcut}")
                 os.chdir(f"../iono_phase/{side}")
                 file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-        run('snaphu_interp.csh 0.05 0')
+        run('snaphu 0.05 0 1')
     os.chdir('..')
 
 
@@ -644,8 +644,8 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp)
         _ensure_landmask(sub)
 
     print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
-    snaphu_cmd = "snaphu_interp.csh" if near_interp == 1 else "snaphu.csh"
-    run(f"{snaphu_cmd} {threshold_snaphu} {defomax}")
+    # Python snaphu unifies snaphu/snaphu_interp; the 3rd arg is interp flag.
+    run(f"snaphu {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}")
     print('P2P 5: SNAPHU - END')
     os.chdir("../..")
 

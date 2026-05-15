@@ -106,7 +106,7 @@ def snaphu():
     print(' ')
     print('SNAPHU: run snaphu ... ...')
     
-    sharedir = '/usr/local/GMTSAR/share/gmtsar'
+    sharedir = resolve_sharedir()
     print(' ')
     print('SNAPHU: unwrapping phase with snaphu - higher threshold for faster unwrapping ... ...')
     
