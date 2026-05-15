@@ -69,11 +69,18 @@ CASES = {
     'ALOS2_Japan_Fugi_left':    {'satellite': 'ALOS2',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
     'ALOS2_SCAN_SSAF':          {'satellite': 'ALOS2_SCAN', 'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
     'ALOS_haiti':               {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'NISAR_Ethiopia':           {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},  # replaces former NISAR_SIM_ALOS
-    'S1A_SLC_Napa_EQ':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
+    # NISAR_Ethiopia uses NSR_A SAT type via p2p_processing_nsr — neither is
+    # supported by the Python p2p_processing dispatch yet. Disabled until either
+    # NSR_A SAT is added to pop_config + p2p_stages, or p2p_processing_nsr is ported.
+    'NISAR_Ethiopia':           {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},
+    # S1A_SLC_Napa uses manual make_slc_s1a + extend_orbit prep that has no
+    # single-script Python equivalent. Disabled until a build script is added.
+    'S1A_SLC_Napa_EQ':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},
     'S1A_SLC_TOPS_COVE':        {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
     'S1_Larsen_C':              {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},
-    'S1_SLC_TOPS_Ross_doubledifference': {'satellite': 'S1_TOPS', 'ext': 'tar.gz', 'tiers': {'full'},          'enabled': True},
+    # S1_SLC_TOPS_Ross requires a 3-pair double-difference workflow
+    # (p2p_S1_TOPS_doublediff.csh) — not yet ported to Python.
+    'S1_SLC_TOPS_Ross_doubledifference': {'satellite': 'S1_TOPS', 'ext': 'tar.gz', 'tiers': {'full'},          'enabled': False},
 
     # ---- not yet supported by p2p_processing SAT dispatch ----
     'ALOS4_Pinon':              {'satellite': 'ALOS4',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': False},  # ALOS-4 SAT not yet in p2p_processing
