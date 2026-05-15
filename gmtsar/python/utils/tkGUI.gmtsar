@@ -58,7 +58,7 @@ class MyWindow(tk.Tk):
                             'ALOS2_Brazil':     ['ALOS2', 8, 'ALOS-2 L1.1', 'tar.gz'],
                             'ALOS2_SCAN_SSAF':  ['ALOS2', 9, 'ALOS-2 L1.1 ScanSAR', 'tar.gz'],
                             'NISAR_SIM_ALOS':   ['ALOS', 10, 'NISAR_simulated_ALOS', 'tgz'],
-                            'ENVI_Baja_EQ':     ['ENVI', 11, 'Envisat''tar.gz'],
+                            'ENVI_Baja_EQ':     ['ENVI', 11, 'Envisat', 'tar.gz'],
                             'ENVI_Baja_EQ_SLC': ['ENVI_SLC', 12, 'Envisat SLC', 'tar.gz'],
                             'ERS_Hector_EQ':    ['ERS', 14, 'ERS', 'tar.gz'],
                             'CSK_RAW_Hawaii':   ['CSK_RAW', 15, 'COSMOS-SkyMed RAW', 'tar.gz'],
@@ -278,7 +278,8 @@ class MyWindow(tk.Tk):
                 os.chdir(case)
                 self.run_subprocess(['cleanup', 'all'])
                 self.run_subprocess(['cp', '-r', '../python/utils/README_'+case+'.txt', '.'])
-                self.run_subprocess(['./README_'+case+'.txt', '>', 'log.txt'])
+                # Shell needed so `>` performs redirection rather than being passed as a literal arg.
+                self.run_subprocess(['bash', '-c', f'./README_{case}.txt > log.txt'])
                 os.chdir('..')
         elif cmdType=='csh_test_all':
             for case in self.download_file_list:
@@ -302,6 +303,7 @@ class MyWindow(tk.Tk):
             self._run_and_print(command)
 
     def _run_and_print(self, command):
+        elapsed_time = 0.0
         try:
             print('Running command : ', command)
             # Redirect stdout and stderr to the text widget
@@ -312,8 +314,7 @@ class MyWindow(tk.Tk):
             for line in process.stdout:
                 print(line, end="")
             process.wait()
-            end_time = time.time()
-            elapsed_time = end_time - start_time
+            elapsed_time = time.time() - start_time
             print(f"Command completed in {elapsed_time:.2f} seconds for command {command}")
         except Exception as e:
             print(f"Subprocess error: {e}")
@@ -436,32 +437,32 @@ class MyWindow(tk.Tk):
     
     def download_data(self):
         sat = self.downloader.get()
-        format = self.sample_dict[sat][3]
-        filename = f"{sat}.{format}"
-        self.download_if_missing(filename)
+        ext = self.sample_dict[sat][3]              # 'tar.gz' or 'tgz'
+        filename = f"{sat}.{ext}"
+        self.download_if_missing(filename, sat)
 
-    def download_if_missing(self, filename):
+    def download_if_missing(self, filename, foldername):
         print(f"Downloading {filename}...")
         cmd = f"wget -c http://topex.ucsd.edu/gmtsar/tar/{filename}"
         self.run_subprocess(cmd.split())
         print(f"{filename} downloaded.")
-        self.extract_if_missing(filename[:-7])
-       
-    def extract_if_missing(self, foldername):
+        self.extract_if_missing(foldername, filename)
+
+    def extract_if_missing(self, foldername, archive):
+        """Extract <archive> into <foldername>/, creating the dir if missing.
+        Previously assumed `.tar.gz` (7 chars) in both filename slicing and
+        the tar command, breaking for `.tgz` cases like NISAR_SIM_ALOS."""
         if not os.path.exists(foldername):
             print(f"Extracting {foldername}...")
             self.run_subprocess(['mkdir', foldername])
-            cmd = f"tar -xzf {foldername}.tar.gz -C {foldername}"
-            self.run_subprocess(cmd.split())
-            print(f"{foldername} extracted.")
+        elif os.listdir(foldername):
+            print(f"{foldername} already exists. Skipping extraction.")
+            return
         else:
-            if os.listdir(foldername):
-                print(f"{foldername} already exists. Skipping extraction.")
-            else:
-                print(f"{foldername} is empty. Extracting again...")
-                cmd = f"tar -xzf {foldername}.tar.gz -C {foldername}"
-                self.run_subprocess(cmd.split())
-                print(f"{foldername} extracted.")
+            print(f"{foldername} is empty. Extracting again...")
+        cmd = f"tar -xzf {archive} -C {foldername}"
+        self.run_subprocess(cmd.split())
+        print(f"{foldername} extracted.")
 
     def find_image_pair(self):
         print(self.dataRootPath.get())
@@ -480,8 +481,6 @@ class MyWindow(tk.Tk):
                     filename_image_pair.append(file)
         elif self.SAT.get() == 'TSX':
             filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.cos')]
-        elif self.SAT.get() == 'ALOS2':
-            pass
         elif self.SAT.get() == 'ALOS_SLC':
             pass
         elif self.SAT.get() == 'ENVI':

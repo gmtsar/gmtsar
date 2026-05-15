@@ -1,0 +1,33 @@
+#! /usr/bin/env python3
+"""gmtsar_sharedir — Python port of csh gmtsar_sharedir.csh (PLAN Phase 1).
+
+Print the GMTSAR shared data directory ($GMTSAR/share/gmtsar). One-liner;
+exists so Python code can resolve the share dir without shelling out to csh.
+
+Usage:  gmtsar_sharedir
+Output: path on stdout
+
+This is a SCAFFOLD — not implemented.
+Reference: gmtsar/csh/gmtsar_sharedir.csh (4 lines).
+
+Implementation notes:
+- The legacy csh has the path hardcoded by the autoconf build:
+  `echo "/home/staff/dliu/gmtsar/share/gmtsar"`
+- Python version should resolve it dynamically from $GMTSAR env var
+  ($GMTSAR/share/gmtsar), or fall back to a configured constant.
+- Internal callers should prefer `os.environ['GMTSAR']` directly; this script
+  exists mostly for shell-pipeline callers (e.g. `set sharedir = \`gmtsar_sharedir\``).
+"""
+import os
+import sys
+
+
+def gmtsar_sharedir():
+    root = os.environ.get('GMTSAR')
+    if not root:
+        sys.exit("gmtsar_sharedir: $GMTSAR not set")
+    print(os.path.join(root, 'share', 'gmtsar'))
+
+
+if __name__ == "__main__":
+    gmtsar_sharedir()

@@ -1,0 +1,30 @@
+#! /usr/bin/env python3
+"""proj_ra2ll_ascii — Python port of csh proj_ra2ll_ascii.csh (PLAN Phase 1).
+
+ASCII (text-file) variant of proj_ra2ll (already ported, see proj_ra2ll).
+Reads range/azimuth/value triples from a text file and projects to
+lon/lat/value triples using trans.dat.
+
+Usage:  proj_ra2ll_ascii trans.dat input_ra.txt output_ll.txt
+
+This is a SCAFFOLD — not implemented.
+Reference: gmtsar/csh/proj_ra2ll_ascii.csh (57 lines).
+
+Implementation notes:
+- Same kernel as proj_ra2ll but with text I/O instead of GRD I/O.
+- Strongly consider sharing kernel via proj_lib.py with proj_ra2ll +
+  proj_ll2ra + proj_ll2ra_ascii (all four are 80% the same logic).
+"""
+import sys
+
+
+def proj_ra2ll_ascii():
+    if len(sys.argv) != 4:
+        sys.exit(
+            "Usage: proj_ra2ll_ascii trans.dat input_ra.txt output_ll.txt"
+        )
+    raise NotImplementedError("proj_ra2ll_ascii: PLAN Phase 1 scaffold — not yet implemented")
+
+
+if __name__ == "__main__":
+    proj_ra2ll_ascii()
