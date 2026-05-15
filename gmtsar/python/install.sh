@@ -143,6 +143,15 @@ if [[ $DO_BUILD -eq 1 ]]; then
   chmod +x "$REPO_ROOT/gmtsar/csh/"*.csh
   ln -sf "$REPO_ROOT/gmtsar/csh/"*.csh "$REPO_ROOT/bin/"
 
+  # Symlink deprecated per-SAT csh wrapper shims (p2p_ALOS.csh → p2p_processing.csh
+  # ALOS, etc.) so legacy tarball READMEs from topex.ucsd.edu/gmtsar/tar/ work
+  # out of the box. These names were superseded by p2p_processing.csh's SAT
+  # dispatch years ago, but some bundled READMEs still call them.
+  if [ -d "$REPO_ROOT/gmtsar/python/csh_shims" ]; then
+    chmod +x "$REPO_ROOT/gmtsar/python/csh_shims/"*.csh
+    ln -sf "$REPO_ROOT/gmtsar/python/csh_shims/"*.csh "$REPO_ROOT/bin/"
+  fi
+
   # Build FFTW threading shim — neuters fftwf_plan_with_nthreads at runtime
   # (LD_PRELOAD'd by runner.py). Without it, libgmt's pthread-based FFTW
   # spawns 14-19 threads per process and contends across pipelines.
