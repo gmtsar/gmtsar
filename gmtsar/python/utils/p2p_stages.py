@@ -321,12 +321,12 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
                 file_shuttle("../raw/offset*dat", ".", "link")
             
             if (skip_master == 0):
-                run("align_tops.csh "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1")
+                run("align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1")
             elif (skip_master == 1):
-                cmd = "align_tops.csh "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
+                cmd = "align_tops "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
                 run(cmd)
             elif (skip_master == 2):
-                cmd = "align_tops.csh "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" 0 dem.grd 1"
+                cmd = "align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" 0 dem.grd 1"
                 run(cmd)
             
             if (skip_master == 0 or skip_master == 2):
@@ -350,13 +350,13 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
                 file_shuttle("../raw/offset*.dat", ".", "link")
             
             if (skip_master == 0):
-                cmd = "align_tops.csh "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
+                cmd = "align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
                 run(cmd)
             elif (skip_master == 1):
-                cmd = "align_tops.csh "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
+                cmd = "align_tops "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
                 run(cmd)
             elif (skip_master == 2):
-                cmd = "align_tops.csh "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" 0 dem.grd 1"
+                cmd = "align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" 0 dem.grd 1"
                 run(cmd)
             
             if (skip_master == 0 or skip_master == 2):
@@ -527,7 +527,7 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
     """Form and filter the interferogram. Main path produces a single
     intf/<sub>/phasefilt.grd; iono=1 additionally produces high/low/orig
     interferograms in iono_phase/intf_{h,l,o}/ and a final corrected
-    phasefilt.grd via estimate_ionospheric_phase.csh."""
+    phasefilt.grd via estimate_ionospheric_phase."""
     print('P2P 4: INTF + FILTER - START')
     run('mkdir -p intf')
     run('cleanup intf')
@@ -575,7 +575,7 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
 
     os.chdir('iono_correction')
     if iono_skip_est == 0:
-        run(f"estimate_ionospheric_phase.csh ../intf_h ../intf_l ../intf_o "
+        run(f"estimate_ionospheric_phase ../intf_h ../intf_l ../intf_o "
             f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
         os.chdir(f"../../intf/{intfSubDirName}")
         file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
