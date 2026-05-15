@@ -1,0 +1,23 @@
+#! /usr/bin/env python3
+"""pre_proc_batch — preprocess a stack of images against a common master.
+
+PLAN Phase 2 SCAFFOLD — not yet implemented. Reference: gmtsar/csh/pre_proc_batch.csh
+(314 lines). Loops `pre_proc` over a data.in list and produces synchronized
+near_range / earth_radius / fd1 / num_patches values across all PRMs.
+
+Usage:  pre_proc_batch SAT data.in [near_range earth_radius num_patches fd1]
+"""
+import sys
+
+
+def pre_proc_batch():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: pre_proc_batch SAT data.in [near_range earth_radius num_patches fd1]\n"
+            "  PLAN Phase 2 scaffold — not yet implemented."
+        )
+    raise NotImplementedError("pre_proc_batch: Phase 2 scaffold")
+
+
+if __name__ == "__main__":
+    pre_proc_batch()

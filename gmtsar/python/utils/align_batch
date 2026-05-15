@@ -1,0 +1,28 @@
+#! /usr/bin/env python3
+"""align_batch — geometric alignment of a stack of images to a common master.
+
+PLAN Phase 2 SCAFFOLD — not yet implemented. Reference: gmtsar/csh/align_batch.csh
+(179 lines). For each aligned image in data.in (one master + N aligned),
+performs SAT_llt2rat-based alignment via topo.llt, then resamp + optional
+xcorr secondary pass.
+
+Usage:  align_batch RAW|SLC secondary_align(0|1) data.in
+
+data.in format:
+  line 1: master image basename
+  line 2+: aligned image basenames
+"""
+import sys
+
+
+def align_batch():
+    if len(sys.argv) != 4:
+        sys.exit(
+            "Usage: align_batch RAW|SLC secondary_align(0|1) data.in\n"
+            "  PLAN Phase 2 scaffold — not yet implemented."
+        )
+    raise NotImplementedError("align_batch: Phase 2 scaffold")
+
+
+if __name__ == "__main__":
+    align_batch()
