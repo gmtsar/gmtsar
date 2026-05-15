@@ -10,9 +10,9 @@ from gmtsar_lib import *
 
 def Error_Message():
     print(' ')
-    print('Usage: p2p_S1_TOPS_Frame.csh Master.SAFE Master.EOF Aligned.SAFE Aligned.EOF config.s1a.txt polarization parallel')  
+    print('Usage: p2p_S1_TOPS_Frame Master.SAFE Master.EOF Aligned.SAFE Aligned.EOF config.s1a.txt polarization parallel')  
     print(' ')
-    print('Example: Example: p2p_S1_TOPS_Frame.csh S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt vv 1')
+    print('Example: Example: p2p_S1_TOPS_Frame S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt vv 1')
     print(' Place the .SAFE file in the raw folder, DEM in the topo folder.')
     print(' During processing, F1, F2, F3 and merge folder will be generated.')
     print(' Final results will be placed in the merge folder, with phase.')
@@ -116,7 +116,7 @@ def mergeUnwrapGeocodeTops(correct_iono, det_stitch):
         print('not available yet for correct_iono!=0')
     else:
         file_shuttle('../config.py', '.', 'cp')
-        run('merge_unwrap_geocode_tops.csh tmp.filelist config.py '+str(det_stitch))
+        run('merge_unwrap_geocode_tops tmp.filelist config.py '+str(det_stitch))
 
 def p2pS1TopsFrame():
     print('P2P_S1_TOPS_FRAME - START')
