@@ -24,12 +24,25 @@ def Error_Message():
     print('   Step-Over Revealed by Sentinel-1A InSAR. IEEE Transactions on Geoscience and Remote Sensing.')
 
 def getFilenameWithPolXml(searchDir, searchStr1, pol, fileFormat):
-    fileList = os.listdir(searchDir+'/annotation')
+    """Return the stem (no extension) of the .xml in <searchDir>/annotation/
+    matching the given subswath/polarization. Returns None and exits with a
+    clear error if no match (e.g. tarball missing annotation files, or wrong
+    polarization specified for this SAFE)."""
+    selectedFile = None
+    annot_dir = searchDir + '/annotation'
+    if not os.path.isdir(annot_dir):
+        sys.exit(f"getFilenameWithPolXml: missing directory {annot_dir}")
+    fileList = os.listdir(annot_dir)
     for fileName in fileList:
         if (searchStr1 in fileName) and (pol in fileName) and (fileFormat in fileName):
             selectedFile = fileName[:-4]
             print(selectedFile)
-    return selectedFile   
+    if selectedFile is None:
+        sys.exit(f"getFilenameWithPolXml: no file matching {searchStr1!r}/"
+                 f"{pol!r}/{fileFormat!r} in {annot_dir} "
+                 f"(annotation dir has {len(fileList)} entries — likely an "
+                 f"incomplete tarball or wrong polarization arg)")
+    return selectedFile
 
 def linkFiles(subswathId, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList):
     rootDir = 'F'+str(subswathId+1)
