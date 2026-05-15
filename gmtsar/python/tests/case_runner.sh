@@ -50,7 +50,16 @@ fi
     if [ -z "$(find "$cshDir/intf" -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
         echo "[$case] no csh reference — running legacy csh recipe"
         t0=$SECONDS
-        ( cd "$cshDir" && cleanup all && csh README.txt > log.txt 2>&1 )
+        # Some tarballs (e.g. S1_Larsen_C) ship README_Frame.txt / README_proc.txt
+        # instead of a plain README.txt. Pick the most likely entry-point if
+        # plain README.txt is missing: prefer *_Frame*, then *proc*, then any.
+        readme="README.txt"
+        if [ ! -f "$cshDir/$readme" ]; then
+            for cand in "$cshDir"/README*Frame*.txt "$cshDir"/README*proc*.txt "$cshDir"/README_*.txt; do
+                [ -f "$cand" ] && readme=$(basename "$cand") && break
+            done
+        fi
+        ( cd "$cshDir" && cleanup all && csh "$readme" > log.txt 2>&1 )
         echo "$case csh used $((SECONDS-t0)) s" >> "$timeLog"
     fi
 ) &
