@@ -1,32 +1,23 @@
 #! /usr/bin/env python3
-"""gmtsar_sharedir — Python port of csh gmtsar_sharedir.csh (PLAN Phase 1).
+"""gmtsar_sharedir — print the GMTSAR shared data directory.
 
-Print the GMTSAR shared data directory ($GMTSAR/share/gmtsar). One-liner;
-exists so Python code can resolve the share dir without shelling out to csh.
+Python port of csh gmtsar_sharedir.csh. The legacy csh has the path
+hardcoded by autoconf at build time. This version resolves it dynamically:
+
+  1. If $GMTSAR is set AND $GMTSAR/share/gmtsar exists, use that.
+  2. Else, resolve relative to this script's own location:
+     <repo>/bin/gmtsar_sharedir  →  <repo>/share/gmtsar
+     (works when symlinked into bin/ by install.sh).
+  3. Else, error out with a clear message.
 
 Usage:  gmtsar_sharedir
-Output: path on stdout
-
-This is a SCAFFOLD — not implemented.
-Reference: gmtsar/csh/gmtsar_sharedir.csh (4 lines).
-
-Implementation notes:
-- The legacy csh has the path hardcoded by the autoconf build:
-  `echo "/home/staff/dliu/gmtsar/share/gmtsar"`
-- Python version should resolve it dynamically from $GMTSAR env var
-  ($GMTSAR/share/gmtsar), or fall back to a configured constant.
-- Internal callers should prefer `os.environ['GMTSAR']` directly; this script
-  exists mostly for shell-pipeline callers (e.g. `set sharedir = \`gmtsar_sharedir\``).
+Output: absolute path on stdout
 """
-import os
-import sys
+from gmtsar_lib import resolve_sharedir
 
 
 def gmtsar_sharedir():
-    root = os.environ.get('GMTSAR')
-    if not root:
-        sys.exit("gmtsar_sharedir: $GMTSAR not set")
-    print(os.path.join(root, 'share', 'gmtsar'))
+    print(resolve_sharedir())
 
 
 if __name__ == "__main__":

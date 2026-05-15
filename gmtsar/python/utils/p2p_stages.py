@@ -403,7 +403,7 @@ def _offset_topo_shift(master):
     os.chdir('SLC')
     run("gmt grdinfo ../topo/topo_ra.grd > tmp.txt")
     rng = grep_value("tmp.txt", "x_inc", 7)
-    run(f"slc2amp.csh {master}.PRM {rng} amp-{master}.grd")
+    run(f"slc2amp {master}.PRM {rng} amp-{master}.grd")
     os.chdir("..")
 
     print('P2P 3: entering topo/')
