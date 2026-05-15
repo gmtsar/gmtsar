@@ -22,71 +22,51 @@ from gmtsar_lib import *
 
 
 
+# Per-SAT raw input specs for preprocess validation.
+# Each entry: list of (suffix, fatal) tuples; suffix is appended to "raw/<name>".
+# ALOS family + ENVI_SLC are handled separately below (bare name / any-of).
+_RAW_FILE_SPEC = {
+    'ERS':      [('.dat', True),  ('.ldr', True)],
+    'ENVI':     [('.baq', False)],
+    'S1_STRIP': [('.xml', False), ('.tiff', False)],
+    'S1_TOPS':  [('.xml', False), ('.tiff', False), ('.EOF', False)],
+    'CSK_RAW':  [('.h5',  False)],
+    'CSK_SLC':  [('.h5',  False)],
+    'RS2':      [('.xml', False), ('.tif',  False)],
+    'TSX':      [('.xml', False), ('.cos',  False)],
+    'GF3':      [('.xml', False), ('.tiff', False)],
+}
+_ALOS_FAMILY = {'ALOS', 'ALOS2', 'ALOS_SLC', 'ALOS_SCAN'}
+_ENVI_SLC_EXTS = ('.N1', '.E1', '.E2')
+
+
+def _check_preprocess_inputs(SAT, master, aligned):
+    """Validate that the raw/* inputs exist before pre_proc runs.
+    Aborts (sys.exit) only for SATs where missing inputs are unrecoverable
+    (ALOS family, ENVI_SLC, ERS). Other SATs warn-only via check_file_report's
+    own stderr message, matching the legacy csh tolerance."""
+    if SAT in _ALOS_FAMILY:
+        for name in (master, aligned):
+            if not check_file_report(f"raw/{name}"):
+                sys.exit()
+        return
+    if SAT == 'ENVI_SLC':
+        for name in (master, aligned):
+            if not any(check_file_report(f"raw/{name}{ext}") for ext in _ENVI_SLC_EXTS):
+                sys.exit()
+        return
+    for ext, fatal in _RAW_FILE_SPEC.get(SAT, []):
+        for name in (master, aligned):
+            if not check_file_report(f"raw/{name}{ext}") and fatal:
+                sys.exit()
+
+
 def P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix):
-     
+
     print('P2P 1: PREPROCESS - START')
     print('P2P 1: Processing images '+master+' '+aligned)
-    
-    if SAT=="ALOS" or SAT=="ALOS2" or SAT=="ALOS_SLC" or SAT=="ALOS_SCAN":
-        if check_file_report("raw/"+master)==False:
-            sys.exit()
-        if check_file_report("raw/"+aligned)==False:
-            sys.exit()
-    elif SAT == "ENVI_SLC":
-        if check_file_report("raw/"+master+".N1") == False and \
-           check_file_report("raw/"+master+".E1") == False and \
-           check_file_report("raw/"+master+".E2") == False:
-            print(" no file raw/" + master)
-            sys.exit()
-        if check_file_report("raw/"+aligned+".N1") == False and \
-           check_file_report("raw/"+aligned+".E1") == False and \
-           check_file_report("raw/"+aligned+".E2") == False:
-            print(" no file raw/" + aligned)
-            sys.exit()
-    elif SAT == "ERS":
-        if check_file_report("raw/"+master+".dat") == False:
-            print(" no file raw/" + master + ".dat")
-            sys.exit()
-        if check_file_report("raw/"+aligned+".dat") == False:
-            print(" no file raw/" + aligned + ".dat")
-            sys.exit()
-        if check_file_report("raw/"+master+".ldr") == False:
-            print(" no file raw/" + master + ".ldr") 
-            sys.exit()
-        fn = "raw/"+aligned+".ldr"
-        if check_file_report(fn) == False:
-            print(" no file " + fn)
-            sys.exit()
-    elif SAT == "ENVI":
-        check_file_report("raw/"+master+".baq")
-        check_file_report("raw/"+aligned+".baq")
-    elif SAT == "S1_STRIP" or SAT == "S1_TOPS":   
-        check_file_report("raw/" + master  + ".xml")
-        check_file_report("raw/" + master  + ".tiff")
-        check_file_report("raw/" + aligned + ".xml")
-        check_file_report("raw/" + aligned + ".tiff")
-        if SAT == "S1_TOPS":
-            check_file_report("raw/" + master  + ".EOF")
-            check_file_report("raw/" + aligned + ".EOF")
-    elif SAT == "CSK_RAW" or SAT == "CSK_SLC":
-        check_file_report("raw/" + master  + ".h5")
-        check_file_report("raw/" + aligned + ".h5")
-    elif SAT == "RS2":
-        check_file_report("raw/" + master  + ".xml")
-        check_file_report("raw/" + master  + ".tif")
-        check_file_report("raw/" + aligned + ".xml")
-        check_file_report("raw/" + aligned + ".xml")
-    elif SAT == "TSX":
-        check_file_report("raw/" + master  + ".xml") 
-        check_file_report("raw/" + aligned + ".xml") 
-        check_file_report("raw/" + master  + ".cos") 
-        check_file_report("raw/" + aligned + ".cos")
-    elif SAT == "GF3":
-        check_file_report("raw/" + master  + ".xml") 
-        check_file_report("raw/" + aligned + ".xml")
 
-        check_file_report("raw/" + master  + ".tiff") 
-        check_file_report("raw/" + aligned + ".tiff")
+    _check_preprocess_inputs(SAT, master, aligned)
 
     if SAT=='S1_TOPS':
         master, aligned = renameMasterAlignedForS1tops(master, aligned)
@@ -116,113 +96,144 @@ def renameMasterAlignedForS1tops(master0, aligned0):
     aligned = 'S1_'+aligned0[15:15+8]+'_'+aligned0[24:24+6]+'_F'+aligned0[6:7]
     return master, aligned
     
+# --- P2P2 SAT dispatch constants ---
+# SATs that load .raw inputs (raw data → sarp focus step) vs everything else
+# which loads .SLC inputs directly. Used by P2P2FocusAlign.
+_SAT_RAW_INPUT = {'ERS', 'ENVI', 'ALOS', 'CSK_RAW'}
+
+# xcorr search parameters by SAT (everything not ALOS2_SCAN uses the default).
+_XCORR_DEFAULT_PARAMS    = "-xsearch 128 -ysearch 128 -nx 20 -ny 50"
+_XCORR_ALOS2_SCAN_PARAMS = "-xsearch 32 -ysearch 256 -nx 32 -ny 128"
+
+
+def _rm_slc_files(slc_dir, name):
+    """rm -f <slc_dir>/<name>.PRM* + .SLC + .LED — used by P2P2Clean to wipe
+    a single SAR product from a working directory before re-staging."""
+    for ext in ('.PRM*', '.SLC', '.LED'):
+        run(f"rm -f {slc_dir}/{name}{ext}")
+
+
+def _rm_slc_xml_tiff_eof(slc_dir, name):
+    """rm -f <slc_dir>/<name>.tiff + .xml + .EOF — TOPS/ENVI/etc auxiliary
+    files cleaned alongside the SAR product."""
+    for ext in ('.tiff', '.xml', '.EOF'):
+        run(f"rm -f {slc_dir}/{name}{ext}")
+
+
 def P2P2Clean(SAT, master, aligned, skip_master, iono):
-     
+    """Wipe SLC/{,L,H} working dirs prior to staging. skip_master controls
+    which side(s) to clear: 0 = both, 1 = aligned only, 2 = master only.
+    iono=1 also clears the SLC_L / SLC_H side dirs."""
     print('P2P 2: if stage<=2 and skip_2 == 0')
-     
-    if skip_master == 0 or skip_master == 2:
-        print(" ")
-        print(" if skip_master == 0 or 2")
-        print(" ")
-        run("rm -f SLC/" + master + ".PRM*")
-        run("rm -f SLC/" + master + ".SLC")
-        run("rm -f SLC/" + master + ".LED")
-    if skip_master == 0 or skip_master == 1:
-        print(" ")
-        print(" if skip_master == 0 or 1")
-        print(" ")
-        run("rm -f SLC/" + aligned + ".PRM*")
-        run("rm -f SLC/" + aligned + ".SLC")
-        run("rm -f SLC/" + aligned + ".LED")
-    if iono == 1:
-        print(" ")
-        print(" if iono == 1 and then check skip_master")
-        print(" ")
-        if skip_master == 0 or skip_master == 2:
-            run("rm -f SLC/" + sys.argv[2] + ".tiff")
-            run("rm -f SLC/" + sys.argv[2] + ".xml")
-            run("rm -f SLC/" + sys.argv[2] + ".EOF")
 
-            run("rm -f SLC_L/" + master + ".PRM*")
-            run("rm -f SLC_L/" + master + ".SLC")
-            run("rm -f SLC_L/" + master + ".LED")
-    
-            run("rm -f SLC_L/" + sys.argv[2] + ".tiff")
-            run("rm -f SLC_L/" + sys.argv[2] + ".xml")
-            run("rm -f SLC_L/" + sys.argv[2] + ".EOF")
+    if skip_master in (0, 2):
+        _rm_slc_files("SLC", master)
+    if skip_master in (0, 1):
+        _rm_slc_files("SLC", aligned)
 
-            run("rm -f SLC_H/" + master + ".PRM*")
-            run("rm -f SLC_H/" + master + ".SLC")
-            run("rm -f SLC_H/" + master + ".LED")
-     
-            run("rm -f SLC_H/" + sys.argv[2] + ".tiff")
-            run("rm -f SLC_H/" + sys.argv[2] + ".xml")
-            run("rm -f SLC_H/" + sys.argv[2] + ".EOF")
-        
-        if skip_master == 0 or skip_master == 1:
-            run("rm -f SLC/" + sys.argv[3] + ".tiff")
-            run("rm -f SLC/" + sys.argv[3] + ".xml")
-            run("rm -f SLC/" + sys.argv[3] + ".EOF")
+    if iono != 1:
+        return
 
-            run("rm -f SLC_L/" + aligned + ".PRM*")
-            run("rm -f SLC_L/" + aligned + ".SLC")
-            run("rm -f SLC_L/" + aligned + ".LED")
-    
-            run("rm -f SLC_L/" + sys.argv[3] + ".tiff")
-            run("rm -f SLC_L/" + sys.argv[3] + ".xml")
-            run("rm -f SLC_L/" + sys.argv[3] + ".EOF")
+    if skip_master in (0, 2):
+        _rm_slc_xml_tiff_eof("SLC", sys.argv[2])
+        for d in ("SLC_L", "SLC_H"):
+            _rm_slc_files(d, master)
+            _rm_slc_xml_tiff_eof(d, sys.argv[2])
 
-            run("rm -f SLC_H/" + aligned + ".PRM*")
-            run("rm -f SLC_H/" + aligned + ".SLC")
-            run("rm -f SLC_H/" + aligned + ".LED")
-     
-            run("rm -f SLC_H/" + sys.argv[3] + ".tiff")
-            run("rm -f SLC_H/" + sys.argv[3] + ".xml")
-            run("rm -f SLC_H/" + sys.argv[3] + ".EOF")
+    if skip_master in (0, 1):
+        _rm_slc_xml_tiff_eof("SLC", sys.argv[3])
+        for d in ("SLC_L", "SLC_H"):
+            _rm_slc_files(d, aligned)
+            _rm_slc_xml_tiff_eof(d, sys.argv[3])
+
+def _stage_slc_inputs(name, sat_uses_raw):
+    """Copy PRM and symlink the SAR product + LED from ../raw/ into the
+    current working directory. SATs in _SAT_RAW_INPUT use .raw inputs and a
+    subsequent sarp focusing step; others use pre-focused .SLC inputs."""
+    ext = '.raw' if sat_uses_raw else '.SLC'
+    run(f"cp ../raw/{name}.PRM .")
+    run(f"ln -sf ../raw/{name}{ext} .")
+    run(f"ln -sf ../raw/{name}.LED .")
+
+
+def _xcorr_and_fitoffset(SAT, master, aligned):
+    """xcorr master/aligned, then run fitoffset and append to aligned.PRM.
+    ALOS2_SCAN uses larger ysearch and has a manual median-filter step (legacy
+    code commented out); other SATs use default xcorr params, with fitoffset
+    polynomial degree 3 for .raw-input SATs and 2 for everything else."""
+    if SAT == "ALOS2_SCAN":
+        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}")
+        # Legacy csh did a median-filter pass on freq_xcorr.dat → freq_alos2.dat
+        # and `fitoffset 2 3 freq_alos2.dat 10 >> $aligned.PRM`. Preserved as a
+        # comment because the median step was never ported to Python.
+    else:
+        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}")
+        fit_dim = "3 3" if SAT in _SAT_RAW_INPUT else "2 2"
+        run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
+
+
+def _resamp_and_swap(master, aligned):
+    """resamp aligned vs master, then swap .SLCresamp/.PRMresamp into place."""
+    run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4")
+    delete(f"{aligned}.SLC")
+    file_shuttle(f"{aligned}.SLCresamp", f"{aligned}.SLC", 'mv')
+    file_shuttle(f"{aligned}.PRMresamp", f"{aligned}.PRM", 'cp')
+
+
+def _iono_LH_propagate_wavelength(slc_side, name, params_file):
+    """Inside SLC/, after split_spectrum produced params{1,2}: descend into
+    SLC_L or SLC_H, copy the PRM from SLC/, link the LED from raw/, and
+    replace the wavelength with the low/high-spectrum value parsed from
+    SLC/<params_file>. Used by P2P2FocusAlign iono path."""
+    os.chdir(f"../{slc_side}")
+    wl = grep_value(f"../SLC/{params_file}", "low_wavelength", 3)
+    run(f"cp ../SLC/{name}.PRM .")
+    run(f"ln -sf ../raw/{name}.LED .")
+    replace_strings(f"{name}.PRM", "wavelength", f"radar_wavelength = {wl}")
+
+
+def _iono_LH_fitoffset_and_resamp(SAT, master, aligned, tsx_in_xcorr_group):
+    """Inside SLC_L or SLC_H: cp aligned.PRM → PRM0, link the appropriate
+    freq_*.dat from SLC/, run fitoffset (3-way SAT dispatch), then resamp.
+    tsx_in_xcorr_group preserves legacy L-vs-H asymmetry on TSX."""
+    file_shuttle(f"{aligned}.PRM", f"{aligned}.PRM0", 'cp')
+    if SAT == "ALOS2_SCAN":
+        freq_link, fit_dim = "freq_alos2.dat", "3 3"
+    elif SAT in _SAT_RAW_INPUT or (tsx_in_xcorr_group and SAT == "TSX"):
+        freq_link, fit_dim = "freq_xcorr.dat", "3 3"
+    else:
+        freq_link, fit_dim = "freq_alos2.dat", "2 2"
+    run(f"ln -sf ../SLC/{freq_link}")
+    run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >>{aligned}.PRM")
+    _resamp_and_swap(master, aligned)
+
 
 def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
-     
+
     print('P2P 2: focus and align SLC images')
     print("P2P 2: ALIGN.CSH - START")
     print('P2P 2: entering directory SLC/')
-    
+
     if SAT != 'S1_TOPS':
-         
         print("P2P 2: if SAT is not S1_TOPS")
-        if SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
-            if skip_master == 0 or skip_master == 2:
-                run("cp ../raw/" + master + ".PRM .")
-                run("ln -sf ../raw/" + master + ".raw .")
-                run("ln -sf ../raw/" + master + ".LED .")
+        sat_uses_raw = SAT in _SAT_RAW_INPUT
 
-            if skip_master == 0 or skip_master == 1:
-                run("cp ../raw/" + aligned + ".PRM .")
-                run("ln -sf ../raw/" + aligned + ".raw .")
-                run("ln -sf ../raw/" + aligned + ".LED .")
-                
-                if iono == 1:
-                    # set chirp extension to zero for ionospheric phase estimation.
-                    replace_strings(master+".PRM", "fd1", "fd1 = 0.0000")
-                    replace_strings(master+".PRM", "chirp_ext", "chirp_ext = 0")
-                    
-                    replace_strings(aligned+".PRM", "fd1", "fd1 = 0.0000")
-                    replace_strings(aligned+".PRM", "chirp_ext", "chirp_ext = 0")
-        else:
-            run("cp ../raw/" + master + ".PRM .")
-            run("ln -sf ../raw/" + master + ".SLC .")
-            run("ln -sf ../raw/" + master + ".LED .")
+        if skip_master in (0, 2):
+            _stage_slc_inputs(master, sat_uses_raw)
+        if skip_master in (0, 1):
+            _stage_slc_inputs(aligned, sat_uses_raw)
+            if sat_uses_raw and iono == 1:
+                # Zero chirp extension for ionospheric phase estimation (ALOS path).
+                for name in (master, aligned):
+                    replace_strings(f"{name}.PRM", "fd1", "fd1 = 0.0000")
+                    replace_strings(f"{name}.PRM", "chirp_ext", "chirp_ext = 0")
 
-            run("cp ../raw/" + aligned + ".PRM .")
-            run("ln -sf ../raw/" + aligned + ".SLC .")
-            run("ln -sf ../raw/" + aligned + ".LED .")
-
-        if SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
-             
+        if sat_uses_raw:
             print('P2P 2: calling sarp for SAT==ERS/ENVI/ALOS/CSK_RAW')
-            if skip_master == 0 or skip_master == 2:
-                run("sarp " + master + ".PRM")
-            if skip_master == 0 or skip_master == 1:
-                run("sarp " + aligned + ".PRM")
+            if skip_master in (0, 2):
+                run(f"sarp {master}.PRM")
+            if skip_master in (0, 1):
+                run(f"sarp {aligned}.PRM")
        
         if iono == 1:
             print(" ")
@@ -237,129 +248,38 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
                 
                 file_shuttle('SLCH', '../SLC_H/'+master+'.SLC', 'mv')
                 file_shuttle('SLCL', '../SLC_L/'+master+'.SLC', 'mv')
-                os.chdir("../SLC_L")
-                wl1 = grep_value("../SLC/params1", "low_wavelength", 3)
-                cmd = "cp ../SLC/" + master + ".PRM ."
-                run(cmd)
-                cmd = "ln -sf ../raw" + master + ".LED ."
-                run(cmd)
-                replace_strings(master+".PRM", "wavelength", "radar_wavelength = "+wl1)
-                
-                os.chdir("../SLC_H")
-                wh1 = grep_value("../SLC/params1", "low_wavelength", 3)
-                cmd = "cp ../SLC/" + master + ".PRM ."
-                run(cmd)
-                cmd = "ln -sf ../raw" + master + ".LED ."
-                run(cmd)
-                replace_strings(master+".PRM", "wavelength", "radar_wavelength = "+wh1)
-                
+                _iono_LH_propagate_wavelength("SLC_L", master, "params1")
+                _iono_LH_propagate_wavelength("SLC_H", master, "params1")
                 os.chdir("../SLC")
-            
+
             if skip_master == 0 or skip_master == 1:
                 file_path = f"../raw/ALOS_fbd2fbs_log_{aligned}"
                 if check_file_report(file_path):
-                    run("split_spectrum " + aligned + ".PRM 1 > params2")
+                    run(f"split_spectrum {aligned}.PRM 1 > params2")
                 else:
-                    run("split_spectrum " + aligned + ".PRM > params2")
-                
-                cmd = "mv SLCH ../SLC_H/" + aligned + ".SLC"
-                run(cmd)
-                cmd = "mv SLCL ../SLC_L/" + aligned + ".SLC"
-                run(cmd)
-                
-                os.chdir("../SLC_L")
-                wl2 = grep_value("../SLC/params2", "low_wavelength", 3)
-                cmd = "cp ../SLC/" + aligned + ".PRM ."
-                run(cmd)
-                cmd = "ln -sf ../raw" + aligned + ".LED ."
-                run(cmd)
-                replace_strings(aligned+".PRM", "wavelength", "radar_wavelength = "+wl2)
-                
-                os.chdir("../SLC_H")
-                wh2 = grep_value("../SLC/params2", "low_wavelength", 3)
-                cmd = "cp ../SLC/" + aligned + ".PRM ."
-                run(cmd)
-                cmd = "ln -sf ../raw" + aligned + ".LED ."
-                run(cmd)
-                replace_strings(aligned+".PRM", "wavelength", "radar_wavelength = "+wh2)   
-        # endif (iono == 1)
-        #
-        if skip_master == 0 or skip_master == 1:
-            file_shuttle(aligned+'.PRM', aligned+'.PRM0', 'cp')
-            run("SAT_baseline " + master + ".PRM " + aligned + ".PRM0 >> " + aligned + ".PRM")
+                    run(f"split_spectrum {aligned}.PRM > params2")
 
-            if SAT == "ALOS2_SCAN":
-                run("xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 32 -ysearch 256 -nx 32 -ny 128")
-                # set amedian = `sort -n tmp.dat | awk ' { a[i++]=$1; } END { print a[int(i/2)]; }'`
-                # set amax = `echo $amedian | awk '{print $1+3}'`
-                # set amin = `echo $amedian | awk '{print $1-3}'`
-                # awk '{if($4 > '$amin' && $4 < '$amax') print $0}' < freq_xcorr.dat > freq_alos2.dat
-                # fitoffset 2 3 freq_alos2.dat 10 >> $aligned.PRM
-            elif SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW":
-                run("xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50")
-                run("fitoffset 3 3 freq_xcorr.dat 18 >> " + aligned + ".PRM")
-            else: 
-                run("xcorr " + master + ".PRM " + aligned + ".PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50")
-                run("fitoffset 2 2 freq_xcorr.dat 18 >> " + aligned + ".PRM")
-            
-            run("resamp " + master + ".PRM " + aligned + ".PRM " + aligned + ".PRMresamp " + aligned + ".SLCresamp 4")
-            delete(aligned + ".SLC")
-            file_shuttle(aligned+'.SLCresamp', aligned+'.SLC', 'mv')
-            file_shuttle(aligned+'.PRMresamp', aligned+'.PRM', 'cp')
+                run(f"mv SLCH ../SLC_H/{aligned}.SLC")
+                run(f"mv SLCL ../SLC_L/{aligned}.SLC")
+                _iono_LH_propagate_wavelength("SLC_L", aligned, "params2")
+                _iono_LH_propagate_wavelength("SLC_H", aligned, "params2")
+        # endif (iono == 1)
+
+        if skip_master in (0, 1):
+            file_shuttle(f"{aligned}.PRM", f"{aligned}.PRM0", 'cp')
+            run(f"SAT_baseline {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
+            _xcorr_and_fitoffset(SAT, master, aligned)
+            _resamp_and_swap(master, aligned)
             
             if iono == 1:
-                print(" ")
-                print("P2P 2: if iono == 1")
-                print(" ")
+                print("P2P 2: iono LH fitoffset + resamp")
+                # NOTE: legacy code includes TSX in the freq_xcorr group for SLC_L
+                # but not SLC_H. Preserved as-is since the iono path is not
+                # exercised by the test suite; likely a typo (see release notes).
                 os.chdir("../SLC_L")
-                cmd = "cp " + aligned + ".PRM " + aligned + ".PRM0"
-                run(cmd)
-                
-                if (SAT == "ALOS2_SCAN"):
-                    cmd = "ln -sf ../SLC/freq_alos2.dat"
-                    run(cmd)
-                    cmd = "fitoffset 3 3 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                elif (SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW" or SAT == "TSX"):
-                    cmd = "ln -sf ../SLC/freq_xcorr.dat"
-                    run(cmd)
-                    cmd = "fitoffset 3 3 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                else:
-                    cmd = "ln -sf ../SLC/freq_alos2.dat"
-                    run(cmd)
-                    cmd = "fitoffset 2 2 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                
-                cmd = "resamp "+master+".PRM "+aligned+".PRM "+aligned+".PRMresamp "+aligned+".SLCresamp 4"                
-                run(cmd)
-                delete(aligned + ".SLC")
-                file_shuttle(aligned+".SLCresamp", aligned+".SLC", "mv")
-                file_shuttle(aligned+".PRMresamp", aligned+".PRM", "cp")
-                
+                _iono_LH_fitoffset_and_resamp(SAT, master, aligned, tsx_in_xcorr_group=True)
                 os.chdir("../SLC_H")
-                file_shuttle(aligned+".PRM ", aligned+".PRM0", "cp")
-                if (SAT == "ALOS2_SCAN"):
-                    cmd = "ln -sf ../SLC/freq_alos2.dat"
-                    run(cmd)
-                    cmd = "fitoffset 3 3 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                elif (SAT == "ERS" or SAT == "ENVI" or SAT == "ALOS" or SAT == "CSK_RAW"):
-                    cmd = "ln -sf ../SLC/freq_xcorr.dat"
-                    run(cmd)
-                    cmd = "fitoffset 3 3 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                else:
-                    cmd = "ln -sf ../SLC/freq_alos2.dat"
-                    run(cmd)
-                    cmd = "fitoffset 2 2 freq_xcorr.dat 18 >>" + aligned + ".PRM"
-                    run(cmd)
-                    
-                cmd = "resamp "+master+".PRM "+aligned+".PRM "+aligned+".PRMresamp "+aligned+".SLCresamp 4"                
-                run(cmd)
-                delete(aligned + ".SLC")
-                file_shuttle(aligned+".SLCresamp", aligned+".SLC", "mv")
-                file_shuttle(aligned+".PRMresamp", aligned+".PRM", "cp")
+                _iono_LH_fitoffset_and_resamp(SAT, master, aligned, tsx_in_xcorr_group=False)
                 os.chdir("../SLC")
                 
     elif SAT == "S1_TOPS":
@@ -448,102 +368,83 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
             
             os.chdir("../SLC")
             
-def P2P2RegionCut(master, aligned, skip_master, iono):
-    print("P2P 2: region_cut !=-999 ")
-    print("P2P 2: cutting SLC image to " + str(region_cut))
-    if skip_master == 0 or skip_master == 2:
-        run("cut_slc " + master + ".PRM junk1 " + str(region_cut))
-        run("mv junk1.PRM " + master + ".PRM")
-        run("mv junk1.SLC " + master + ".SLC")
+def _cut_slc_to_region(name, junk_tag, region):
+    """cut_slc <name>.PRM → junkN.{PRM,SLC} then rename to <name>.{PRM,SLC}."""
+    run(f"cut_slc {name}.PRM {junk_tag} {region}")
+    file_shuttle(f"{junk_tag}.PRM", f"{name}.PRM", 'mv')
+    file_shuttle(f"{junk_tag}.SLC", f"{name}.SLC", 'mv')
 
-    if skip_master == 0 or skip_master == 1:
-        run("cut_slc " + aligned + ".PRM junk2 " + str(region_cut))
-        run("mv junk2.PRM " + aligned + ".PRM")
-        run("mv junk2.SLC " + aligned + ".SLC")
-    
+
+def P2P2RegionCut(master, aligned, skip_master, iono):
+    """Crop SLC images to `region_cut` and write back in place. With iono=1
+    repeats the crop in SLC_L and SLC_H. (Bug fix: legacy code referenced
+    master.{PRM,SLC} when cutting the aligned image in the L/H paths — now
+    correctly references aligned.)"""
+    print(f"P2P 2: region_cut={region_cut}, cutting SLC images")
+
+    def _cut_both_sides():
+        if skip_master in (0, 2):
+            _cut_slc_to_region(master, "junk1", region_cut)
+        if skip_master in (0, 1):
+            _cut_slc_to_region(aligned, "junk2", region_cut)
+
+    _cut_both_sides()
+
     if iono == 1:
-        print('P2P 2: iono = 1')
-        print('P2P 2: entering SLC_L')
-        os.chdir("../SLC_L")
-        if (skip_master == 0 or skip_master == 2):
-            run("cut_slc "+master+".PRM junk1 "+str(region_cut))
-            file_shuttle("junk1.PRM", master+".PRM", "mv")
-            file_shuttle("junk1.SLC", master+".SLC", "mv")
-        if (skip_master == 0 or skip_master == 1):
-            run("cut_slc "+aligned+".PRM junk2 "+str(region_cut))
-            file_shuttle("junk2.PRM", master+".PRM", "mv")
-            file_shuttle("junk2.SLC", master+".SLC", "mv")
-        
-        # redo everything for ../SLC_H
-        print('P2P 2: entering SLC_H')
-        os.chdir("../SLC_H")
-        if (skip_master == 0 or skip_master == 2):
-            run("cut_slc "+master+".PRM junk1 "+str(region_cut))
-            file_shuttle("junk1.PRM", master+".PRM", "mv")
-            file_shuttle("junk1.SLC", master+".SLC", "mv")
-        if (skip_master == 0 or skip_master == 1):
-            run("cut_slc "+aligned+".PRM junk2 "+str(region_cut))
-            file_shuttle("junk2.PRM", master+".PRM", "mv")
-            file_shuttle("junk2.SLC", master+".SLC", "mv")
+        for side in ("SLC_L", "SLC_H"):
+            print(f"P2P 2: entering {side}")
+            os.chdir(f"../{side}")
+            _cut_both_sides()
+
+def _offset_topo_shift(master):
+    """Generate amp-<master>.grd at the same range sampling as topo_ra.grd,
+    then run offset_topo to compute topo_shift.grd. Called when shift_topo=1."""
+    print('P2P 3: OFFSET_TOPO - START, entering SLC/')
+    os.chdir('SLC')
+    run("gmt grdinfo ../topo/topo_ra.grd > tmp.txt")
+    rng = grep_value("tmp.txt", "x_inc", 7)
+    run(f"slc2amp.csh {master}.PRM {rng} amp-{master}.grd")
+    os.chdir("..")
+
+    print('P2P 3: entering topo/')
+    os.chdir("topo")
+    file_shuttle(f"../SLC/amp-{master}.grd", ".", "link")
+    run(f"offset_topo amp-{master}.grd topo_ra.grd 0 0 7 topo_shift.grd")
+    os.chdir("..")
+    print("P2P 3: OFFSET_TOPO - END")
+
 
 def P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo):
+    """Generate topo_ra.grd from dem.grd and optionally shift it to align
+    against the master SLC. topo_phase=0 skips this stage entirely."""
     print('P2P 3: start from make topo_ra')
     run("cleanup topo")
-    
-    print('P2P 3: make topo_ra if there is dem.grd')
-    if topo_phase == 1: 
-        print(" ")
-        print('P2P 3: topo_phase=1')
-        print("P2P 3: DEM2TOPO_RA.CSH - START")
-        print("P2P 3: USER SHOULD PROVIDE DEM FILE")
-        
-        print('P2P 3: entering directory topo/')
-        os.chdir("topo")
-        file_shuttle('../SLC/'+master+'.PRM', 'master.PRM', 'cp')
-        run("ln -sf ../raw/" + master + ".LED .")
-        
-        if check_file_report('dem.grd')==True:
-            if topo_interp_mode==1:
-                run("dem2topo_ra master.PRM dem.grd 1")
-            else:
-                run("dem2topo_ra master.PRM dem.grd")
-        else:
-            print("no DEM file found: dem.grd")
-            sys.exit(1)
-        
-        print('P2P 3: exiting directory topo/')
-        os.chdir('..')
-        print('P2P 3: DEM2TOPO_RA.CSH - END')
-        print('P2P 3: shift topo_ra')
-        if shift_topo == 1:
-            print('P2P 3: OFFSET_TOPO - START')
-            print('P2P 3: entering directory SLC/')
-            os.chdir('SLC')
-            rng_samp_rate = grep_value(master+".PRM", "rng_samp_rate", 3)
-            run("gmt grdinfo ../topo/topo_ra.grd > tmp.txt")
-            rng = grep_value("tmp.txt", "x_inc", 7)
-            run('slc2amp.csh '+master+'.PRM '+str(rng)+' amp-'+master+'.grd')
-            print('P2P 3: exiting SLC/')
-            os.chdir("..")
-            
-            print('P2P 3: entering topo/')
-            os.chdir("topo")
-            file_shuttle("../SLC/amp-"+master+".grd", ".", "link")
-            run('offset_topo amp-'+master+'.grd topo_ra.grd 0 0 7 topo_shift.grd')
-            print('P2P 3: exiting topo/')
-            os.chdir("..")
-            print("P2P 3: OFFSET_TOPO - END")
-        elif shift_topo == 0:
-            print("P2P 3: NO TOPO_RA SHIFT ")
-        else:
-            print("P2P 3: wrong parameter: shift_topo " + shift_topo)
-            sys.exit(1)
-            
-    elif topo_phase == 0:
+
+    if topo_phase == 0:
         print("P2P 3: NO TOPO_RA is SUBSTRACTED")
+        return
+    if topo_phase != 1:
+        sys.exit(f"P2P 3: wrong parameter: topo_phase {topo_phase}")
+
+    print('P2P 3: DEM2TOPO_RA - START, entering topo/')
+    os.chdir("topo")
+    file_shuttle(f"../SLC/{master}.PRM", 'master.PRM', 'cp')
+    file_shuttle(f"../raw/{master}.LED", ".", 'link')
+
+    if not check_file_report('dem.grd'):
+        sys.exit("no DEM file found: dem.grd")
+    interp_arg = " 1" if topo_interp_mode == 1 else ""
+    run(f"dem2topo_ra master.PRM dem.grd{interp_arg}")
+
+    os.chdir('..')
+    print('P2P 3: DEM2TOPO_RA - END')
+
+    if shift_topo == 1:
+        _offset_topo_shift(master)
+    elif shift_topo == 0:
+        print("P2P 3: NO TOPO_RA SHIFT")
     else:
-        print("P2P 3: wrong parameter: topo_phase " + topo_phase)
-        sys.exit(1)
+        sys.exit(f"P2P 3: wrong parameter: shift_topo {shift_topo}")
 
 def switchMasterAligned(switch_master, master, aligned):
     print('P2P 4: select the master based on switch_master')
@@ -557,301 +458,217 @@ def switchMasterAligned(switch_master, master, aligned):
         sys.exit('P2P 4: wrong parameter: switch_master ' + switch_master)
     return ref, rep
 
-def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec, 
-                                dec, filter, compute_phase_gradient, iono, iono_dsamp):
+def _stage_intf_inputs(src_dir, link_exts=(), cp_exts=()):
+    """Glob files of given extensions from src_dir and link or cp them into
+    the current dir. Used by P2P4 for staging SLC/SLC_H/SLC_L → intf working
+    dirs."""
+    for ext in link_exts:
+        for f in glob.glob(f"{src_dir}/{ext}"):
+            file_shuttle(f, '.', 'link')
+    for ext in cp_exts:
+        for f in glob.glob(f"{src_dir}/{ext}"):
+            file_shuttle(f, '.', 'cp')
 
-    print('P2P 4: start from make and filter interferograms')
-    run('mkdir -p intf')
-    run('cleanup intf')
-    
-    print('P2P 4: INTF.CSH, FILTER.CSH - START')
-    print('P2P 4: entering intf/')
-    os.chdir('intf')
-    intfSubDirName = getIntfSubDirName(ref, rep)
-    run('mkdir -p '+intfSubDirName)
-    os.chdir(intfSubDirName)   
 
-    run('ln -sf ../../SLC/'+ref + '.LED .')
-    run('ln -sf ../../SLC/'+rep + '.LED .')
-    run('ln -sf ../../SLC/'+ref + '.SLC .')
-    run('ln -sf ../../SLC/'+rep + '.SLC .')
-    run('cp ../../SLC/' + ref + '.PRM .')
-    run('cp ../../SLC/' + rep + '.PRM .')
-    
+def _intf_and_filter(ref, rep, topo_phase, shift_topo, filter_cmd_callable):
+    """Run `intf` with the appropriate topo argument (topo_shift / topo_ra /
+    none, per topo_phase + shift_topo), then call filter_cmd_callable for
+    the filtering step. The caller supplies the filter command since the
+    main path uses runFilter (multi-arg) and the iono path uses a fixed
+    `filter ... 500 dec new_incx new_incy` form."""
     if topo_phase == 1:
-        if shift_topo == 1:
-            run('ln -s ../../topo/topo_shift.grd .')
-            run('intf ' + ref + '.PRM ' + rep + '.PRM -topo topo_shift.grd')
-            runFilter(ref, rep, filter, dec, range_dec, azimuth_dec, compute_phase_gradient)
-        else:
-            run('ln -s ../../topo/topo_ra.grd .')
-            run('intf ' + ref + '.PRM ' + rep + '.PRM -topo topo_ra.grd')
-            runFilter(ref, rep, filter, dec, range_dec, azimuth_dec, compute_phase_gradient)
+        topo_file = "topo_shift.grd" if shift_topo == 1 else "topo_ra.grd"
+        run(f"ln -sf ../../topo/{topo_file} .")
+        run(f"intf {ref}.PRM {rep}.PRM -topo {topo_file}")
     else:
-        print('P2P 4: NO TOPOGRAPHIC PHASE REMOVAL PORFORMED')
-        run('intf '+ref+'.PRM '+rep+'.PRM')
-        runFilter(ref, rep, filter, dec, range_dec, azimuth_dec, compute_phase_gradient)
-        
-    os.chdir('../..')
-    
-    if (iono == 1):
-        if os.path.exists('iono_phase'):
-             shutil.rmtree('iono_phase')
-        os.makedirs('iono_phase')
-        os.chdir('iono_phase')
-        directories = ['intf_o', 'intf_h', 'intf_l', 'iono_correction']
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
-        new_incx = int(range_dec) * int(iono_dsamp)
-        new_incy = int(azimuth_dec) * int(iono_dsamp)
-        os.chdir('intf_h')
-        files = glob.glob('../../SLC_H/*.SLC')
-        for file in files:
-            file_shuttle(file, '.', 'link')
-            
-        files = glob.glob('../../SLC_H/*.LED')
-        for file in files:
-            file_shuttle(file, '.', 'link')
-            
-        files = glob.glob('../../SLC_H/*.PRM')
-        for file in files:
-            file_shuttle(file, '.', 'cp')
+        print('P2P 4: NO TOPOGRAPHIC PHASE REMOVAL PERFORMED')
+        run(f"intf {ref}.PRM {rep}.PRM")
+    filter_cmd_callable()
 
-        files = glob.glob('../../SLC/params*')
-        for file in files:
-            file_shuttle(file, '.', 'cp')
-        
-        if (topo_phase == 1):
-            if (shift_topo == 1):
-                file_shuttle('../../topo/topo_shift.grd', '.', 'link')
-                run('intf '+ref+'.PRM '+rep+'.PRM -topo topo_shift.grd')
-                run('filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy)
+
+def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
+                     topo_phase, shift_topo, link_landmask_directly):
+    """One of the three nearly-identical iono blocks (intf_h, intf_l, intf_o).
+    Stages SLCs from slc_dir, runs intf+filter, snaphu_interp if requested.
+    link_landmask_directly=False does the full landmask-via-grdinfo dance
+    (only the first block, intf_h, needs that); the later blocks just link
+    the already-produced landmask_ra.grd."""
+    os.chdir(side)
+    _stage_intf_inputs(slc_dir,
+                       link_exts=('*.SLC', '*.LED'),
+                       cp_exts=('*.PRM',))
+    _stage_intf_inputs('../../SLC', cp_exts=('params*',))
+
+    def _iono_filter():
+        run(f"filter {ref}.PRM {rep}.PRM 500 {dec} {new_incx} {new_incy}")
+    _intf_and_filter(ref, rep, topo_phase, shift_topo, _iono_filter)
+
+    file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
+
+    if iono_skip_est == 0:
+        if mask_water == 1 or switch_land == 1:
+            if link_landmask_directly:
+                file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
             else:
-                file_shuttle('../../topo/topo_ra.grd', '.', 'link')
-            
-                run('intf '+ref+'.PRM '+rep+'.PRM -topo topo_ra.grd')
-                run('filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy)
-        else:
-            print('NO TOPOGRAPHIC PHASE REMOVAL PORFORMED')
-            run('intf '+ref+'.PRM '+rep+'.PRM')
-            run('filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy)
-        
-        file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
-        
-        if (iono_skip_est == 0):
-            if (mask_water == 1 or switch_land == 1):
+                # First block: compute landmask region from phase.grd then
+                # produce landmask_ra.grd via the landmask binary.
                 output = subprocess.check_output('gmt grdinfo phase.grd -I-', shell=True)
                 rcut = output[2:20].decode('utf-8')
-                
                 os.chdir('../../topo')
-                run('landmask '+rcut)
-                os.chdir('../iono_phase/intf_h')
+                run(f"landmask {rcut}")
+                os.chdir(f"../iono_phase/{side}")
                 file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
+        run('snaphu_interp.csh 0.05 0')
+    os.chdir('..')
 
-            run('snaphu_interp.csh 0.05 0')
-        os.chdir('..')
-        os.chdir('intf_h')
-        files = glob.glob('../../SLC_L/*.SLC')
-        for file in files:
-            file_shuttle(file, '.', 'link')
 
-        files = glob.glob('../../SLC_L/*.LED')
-        for file in files:
-            file_shuttle(file, '.', 'link')
-            
-        files = glob.glob('../../SLC_L/*.PRM')
-        for file in files:
-            file_shuttle(file, '.', 'cp')
+def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
+                                dec, filter, compute_phase_gradient, iono, iono_dsamp):
+    """Form and filter the interferogram. Main path produces a single
+    intf/<sub>/phasefilt.grd; iono=1 additionally produces high/low/orig
+    interferograms in iono_phase/intf_{h,l,o}/ and a final corrected
+    phasefilt.grd via estimate_ionospheric_phase.csh."""
+    print('P2P 4: INTF + FILTER - START')
+    run('mkdir -p intf')
+    run('cleanup intf')
 
-        files = glob.glob('../../SLC/params*')
-        for file in files:
-            file_shuttle(file, '.', 'cp')
-        
-        if (topo_phase == 1):
-            if (shift_topo == 1):
-                file_shuttle('../../topo/topo_shift.grd', '.', 'link')
-            
-                cmd = 'intf '+ref+'.PRM '+rep+'.PRM -topo topo_shift.grd'
-                run(cmd)
-                
-                cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-                run(cmd)
-            
-            else:
-                file_shuttle('../../topo/topo_ra.grd', '.', 'link')
-            
-                cmd = 'intf '+ref+'.PRM '+rep+'.PRM -topo topo_ra.grd'
-                run(cmd)
-                
-                cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-                run(cmd)
-            #endif (shift_topo == 1)
-        
-        else:
-            print('P2P 4: NO TOPOGRAPHIC PHASE REMOVAL PORFORMED')
-            
-            cmd = 'intf '+ref+'.PRM '+rep+'.PRM'
-            run(cmd)
-            
-            cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-            run(cmd)
-        #endif (topo_phase == 1)
-        
-        file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
-        
-        if (iono_skip_est == 0):
-            if (mask_water == 1 or switch_land == 1):
-                file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-            #endif (mask_water == 1 or switch_land == 1)
-            
-            cmd = 'snaphu_interp.csh 0.05 0'
-            run(cmd)
-            
-        os.chdir('..')
-        #endif iono_skip_est == 0
-        
-        # redo everything for intf_o
-         
-        
-        os.chdir('intf_o')
-        files = glob.glob('../../SLC/*.SLC')
-        for file in files:
-            file_shuttle(file, '.', 'link')
-            
-        files = glob.glob('../../SLC/*.LED')
-        for file in files:
-            file_shuttle(file, '.', 'link')
+    os.chdir('intf')
+    intfSubDirName = getIntfSubDirName(ref, rep)
+    run(f"mkdir -p {intfSubDirName}")
+    os.chdir(intfSubDirName)
 
-        files = glob.glob('../../SLC/*.PRM')
-        for file in files:
-            file_shuttle(file, '.', 'cp')
-        
-        if (topo_phase == 1):
-            if (shift_topo == 1):
-                file_shuttle('../../topo/topo_shift.grd', '.', 'link')
-            
-                cmd = 'intf '+ref+'.PRM '+rep+'.PRM -topo topo_shift.grd'
-                run(cmd)
-                
-                cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-                run(cmd)
-            
-            else:
-                file_shuttle('../../topo/topo_ra.grd', '.', 'link')
-            
-                cmd = 'intf '+ref+'.PRM '+rep+'.PRM -topo topo_ra.grd'
-                run(cmd)
-                
-                cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-                run(cmd)
-            #endif (shift_topo == 1)
-        
-        else:
-            print('NO TOPOGRAPHIC PHASE REMOVAL PORFORMED')
-            
-            cmd = 'intf '+ref+'.PRM '+rep+'.PRM'
-            run(cmd)
-            
-            cmd = 'filter '+ref+'.PRM '+rep+'.PRM 500 '+dec+' '+new_incx+' '+new_incy
-            run(cmd)
-        #endif (topo_phase == 1)
-        
-        file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
-        
-        if (iono_skip_est == 0):
-            if (mask_water == 1 or switch_land == 1):
-                file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-            #endif (mask_water == 1 or switch_land == 1)
-            
-            cmd = 'snaphu_interp.csh 0.05 0'
-            run(cmd)
-            
-        os.chdir('../iono_correction')
-         
-        #endif iono_skip_est == 0
-        
-        if (iono_skip_est == 0):
-            cmd = 'estimate_ionospheric_phase.csh ../intf_h ../intf_l ../intf_o ../../intf/'+intfSubDirName \
-                    +' '+iono_filt_rng+' '+iono_filt_azi
-            run(cmd)
-            os.chdir('../../intf/'+intfSubDirName)
-            file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
-            run('grdsample ../../iono_phase/iono_correction/ph_iono_orig.grd -Rphasefilt_non_corrected.grd -Gph_iono.grd')
-            run('grdmath phasefilt_non_corrected.grd ph_iono.grd SUB PI ADD 2 PI MUL MOD PI SUB = phasefilt.grd')
-            run('grdimage phasefilt.grd -JX6.5i -Bxaf+lRange -Byaf+lAzimuth -BWSen -Cphase.cpt -X1.3i -Y3i -P -K > phasefilt.ps')
-            run('psscale -Rphasefilt.grd -J -DJTC+w5i/0.2i+h -Cphase.cpt -Bxa1.57+l"Phase" -By+lrad -O >> phasefilt.ps')
-            run('gmt psconvert -Tf -P -A -Z phasefilt.ps')
-        
-        os.chdir('../../')
-    print('INTF.CSH, FILTER.CSH - END')
+    _stage_intf_inputs('../../SLC',
+                       link_exts=(f'{ref}.LED', f'{rep}.LED',
+                                  f'{ref}.SLC', f'{rep}.SLC'),
+                       cp_exts=(f'{ref}.PRM', f'{rep}.PRM'))
+
+    _intf_and_filter(
+        ref, rep, topo_phase, shift_topo,
+        lambda: runFilter(ref, rep, filter, dec, range_dec, azimuth_dec, compute_phase_gradient),
+    )
+    os.chdir('../..')
+
+    if iono != 1:
+        print('P2P 4: INTF + FILTER - END')
+        return
+
+    # iono=1: produce intf_h, intf_l, intf_o + iono correction.
+    # NOTE: legacy code had a typo where the intf_l block ran inside intf_h
+    # (os.chdir('intf_h') instead of 'intf_l' after the first block) — fixed
+    # below. iono path is not exercised by the test suite; see release notes.
+    if os.path.exists('iono_phase'):
+        shutil.rmtree('iono_phase')
+    os.makedirs('iono_phase')
+    os.chdir('iono_phase')
+    for d in ('intf_o', 'intf_h', 'intf_l', 'iono_correction'):
+        os.makedirs(d, exist_ok=True)
+
+    new_incx = int(range_dec) * int(iono_dsamp)
+    new_incy = int(azimuth_dec) * int(iono_dsamp)
+
+    _iono_intf_block('intf_h', '../../SLC_H', ref, rep, dec, new_incx, new_incy,
+                     topo_phase, shift_topo, link_landmask_directly=False)
+    _iono_intf_block('intf_l', '../../SLC_L', ref, rep, dec, new_incx, new_incy,
+                     topo_phase, shift_topo, link_landmask_directly=True)
+    _iono_intf_block('intf_o', '../../SLC',   ref, rep, dec, new_incx, new_incy,
+                     topo_phase, shift_topo, link_landmask_directly=True)
+
+    os.chdir('iono_correction')
+    if iono_skip_est == 0:
+        run(f"estimate_ionospheric_phase.csh ../intf_h ../intf_l ../intf_o "
+            f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
+        os.chdir(f"../../intf/{intfSubDirName}")
+        file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
+        run('grdsample ../../iono_phase/iono_correction/ph_iono_orig.grd '
+            '-Rphasefilt_non_corrected.grd -Gph_iono.grd')
+        run('grdmath phasefilt_non_corrected.grd ph_iono.grd SUB PI ADD '
+            '2 PI MUL MOD PI SUB = phasefilt.grd')
+        run('grdimage phasefilt.grd -JX6.5i -Bxaf+lRange -Byaf+lAzimuth '
+            '-BWSen -Cphase.cpt -X1.3i -Y3i -P -K > phasefilt.ps')
+        run('psscale -Rphasefilt.grd -J -DJTC+w5i/0.2i+h -Cphase.cpt '
+            '-Bxa1.57+l"Phase" -By+lrad -O >> phasefilt.ps')
+        run('gmt psconvert -Tf -P -A -Z phasefilt.ps')
+
+    os.chdir('../../')
+    print('P2P 4: INTF + FILTER - END')
 
 def runFilter(ref, rep, filter, dec, range_dec, azimuth_dec, compute_phase_gradient):
+    """Two-form filter: 3-arg (filter, dec, compute_phase_gradient) when both
+    range_dec and azimuth_dec are sentinel -999, else 5-arg with explicit
+    range/azimuth decimation."""
+    base = f"filter {ref}.PRM {rep}.PRM {filter} {dec}"
     if range_dec == -999 and azimuth_dec == -999:
-        run('filter '+ref+'.PRM '+rep+'.PRM '+str(filter)+' '+str(dec)+' '+str(compute_phase_gradient))
+        run(f"{base} {compute_phase_gradient}")
     else:
-        run('filter '+ref+'.PRM '+rep+'.PRM '+str(filter)+' '+str(dec)+' '+str(range_dec)+' '+str(azimuth_dec)+' '+str(compute_phase_gradient))
+        run(f"{base} {range_dec} {azimuth_dec} {compute_phase_gradient}")
+
 
 def getIntfSubDirName(ref, rep):
-    ref_id = int(float(grep_value("../raw/"+ref+".PRM", "SC_clock_start", 3)))
-    rep_id = int(float(grep_value("../raw/"+rep+".PRM", "SC_clock_start", 3)))
-    intfSubDirName = str(ref_id)+'_'+str(rep_id)
-    return intfSubDirName
-    
+    """Build the per-pair subdir name as '<ref_clock>_<rep_clock>'."""
+    ref_id = int(float(grep_value(f"../raw/{ref}.PRM", "SC_clock_start", 3)))
+    rep_id = int(float(grep_value(f"../raw/{rep}.PRM", "SC_clock_start", 3)))
+    return f"{ref_id}_{rep_id}"
+
+
+def _enter_intf_subdir(ref, rep):
+    """cd into intf/<sub>; returns the sub name for reuse."""
+    os.chdir("intf")
+    sub = getIntfSubDirName(ref, rep)
+    os.chdir(sub)
+    return sub
+
+
+def _ensure_landmask(sub):
+    """Build landmask_ra.grd in topo/ if missing, then link it into the
+    current intf/<sub>/ working dir. Bug-fixed: r_cut now holds the actual
+    output of `gmt grdinfo phase.grd -I-` (cols 3-20); legacy code stored
+    the command string itself. landmask_ra.grd existence check now uses a
+    string literal (legacy code referenced an undefined identifier)."""
+    output = subprocess.check_output('gmt grdinfo phase.grd -I- | cut -c3-20',
+                                     shell=True).decode('utf-8').strip()
+    os.chdir("../../topo")
+    if not check_file_report('landmask_ra.grd'):
+        run(f"landmask {output}")
+    os.chdir(f"../intf/{sub}")
+    file_shuttle("../../topo/landmask_ra.grd", ".", "link")
+
+
 def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp):
-    if threshold_snaphu != 0:
-        print('P2P 5: threshold_snaphu != 0')
-        print('P2P 5: entering intf/')
-        os.chdir("intf")
-        intfSubDirName = getIntfSubDirName(ref, rep)
-        os.chdir(intfSubDirName)
-    
-        print('P2P 5: landmask')
-        if mask_water == 1 or switch_land == 1:
-            r_cut = "gmt grdinfo phase.grd -I- | cut -c3-20"
-            os.chdir("../../topo")
-            if check_file_report(landmask_ra.grd) == False:
-                run("landmask " + r_cut)
-            os.chdir("../intf")
-            os.chdir(intfSubDirName)
-            run("ln -sf ../../topo/landmask_ra.grd .")
-        print('P2P 5: SNAPHU.CSH - START')
-        print('P2P 5: threshold_snaphu = ', threshold_snaphu)
-        if near_interp == 1:
-            run("snaphu_interp.csh " + str(threshold_snaphu) + " " + str(defomax))
-        else:
-            run("snaphu.csh " + str(threshold_snaphu) + " " + str(defomax))
-        print('P2P 5: SNAPHU.CSH - END')
-        os.chdir("../..")
-    else:
-        print('P2P 5: SKIP UNWRAP PAHSE') 
+    """Phase unwrap via snaphu; threshold_snaphu==0 skips the stage."""
+    if threshold_snaphu == 0:
+        print('P2P 5: SKIP UNWRAP PHASE')
+        return
+
+    sub = _enter_intf_subdir(ref, rep)
+    if mask_water == 1 or switch_land == 1:
+        _ensure_landmask(sub)
+
+    print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
+    snaphu_cmd = "snaphu_interp.csh" if near_interp == 1 else "snaphu.csh"
+    run(f"{snaphu_cmd} {threshold_snaphu} {defomax}")
+    print('P2P 5: SNAPHU - END')
+    os.chdir("../..")
+
 
 def P2P6Geocode(ref, rep, threshold_geocode, topo_phase):
-    if threshold_geocode != 0:
-        print('P2P 6: threshold_geocode != 0')
-        print('P2P 6: entering intf/')
-        os.chdir("intf")
-        intfSubDirName = getIntfSubDirName(ref, rep)
-        os.chdir(intfSubDirName)
-        
-        print('P2P 6: GEOCODE.CSH - START')
-        
-        if check_file_report("rain.grd") == True: 
-            delete("rain.grd")
-        if check_file_report("ralt.grd") == True:
-            delete("ralt.grd")
-        if check_file_report('trans.dat') == True:
-            delete('trans.dat')
-        if topo_phase == 1:
-            run('ln -sf ../../topo/trans.dat .')
-            print('threshold_geocode: ', threshold_geocode)
-            run('geocode ' + str(threshold_geocode))
-        else:
-            print('P2P 6: topo_ra is needed to geocode')
-            sys.exit(1)
-
-        print('P2P 6: GEOCODE.CSH - END')
-        os.chdir('../..')
-    else:
+    """Geocode the unwrapped phase; threshold_geocode==0 skips the stage."""
+    if threshold_geocode == 0:
         print('P2P 6: SKIP_GEOCODE')
+        return
+    if topo_phase != 1:
+        sys.exit('P2P 6: topo_ra is needed to geocode')
+
+    _enter_intf_subdir(ref, rep)
+    print('P2P 6: GEOCODE - START')
+
+    for stale in ('rain.grd', 'ralt.grd', 'trans.dat'):
+        if check_file_report(stale):
+            delete(stale)
+
+    file_shuttle("../../topo/trans.dat", ".", "link")
+    print(f"threshold_geocode: {threshold_geocode}")
+    run(f"geocode {threshold_geocode}")
+    print('P2P 6: GEOCODE - END')
+    os.chdir('../..')
         
         

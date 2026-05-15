@@ -61,9 +61,9 @@ For each case, `tests/runner.py`:
 
 Run sweep (full / tiered):
 ```
-bash gmtsar/python/tests/sweep.sh             # full sweep (~8 h)
-bash gmtsar/python/tests/sweep.sh --smoke     # 1 case  (~3 min — pipeline alive?)
-bash gmtsar/python/tests/sweep.sh --fast      # 4 cases (~30 min — ALOS/RS2/ERS/CSK paths)
+bash gmtsar/python/tests/sweep.sh             # full sweep (~3 h cached / ~8 h first run; Ridgecrest-bound)
+bash gmtsar/python/tests/sweep.sh --smoke     # 1 case  (~4 min — pipeline alive?)
+bash gmtsar/python/tests/sweep.sh --fast      # 4 cases (~25 min — ALOS/RS2/ERS/CSK paths)
 ```
 
 Run a custom subset:

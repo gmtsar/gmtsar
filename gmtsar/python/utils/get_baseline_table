@@ -1,0 +1,34 @@
+#! /usr/bin/env python3
+"""get_baseline_table — Python port of csh get_baseline_table.csh (PLAN Phase 1).
+
+Iterate over a list of PRM files and call baseline_table for each, building
+baseline_table.dat. Also produces baseline.ps showing the temporal/baseline
+scatter (via GMT pstext + psxy + psconvert).
+
+Usage:  get_baseline_table prmlist master_prm
+Product: baseline_table.dat, baseline.pdf (via psconvert -Tf)
+
+This is a SCAFFOLD — not implemented.
+Reference: gmtsar/csh/get_baseline_table.csh (29 lines).
+
+Implementation notes:
+- Reads prmlist (one PRM filename per line).
+- Calls baseline_table once per prm, appending to baseline_table.dat.
+- The plotting section uses `gmt gmtinfo` to auto-compute region; year axis
+  shifted by 1992 epoch (legacy). Bare minimum: replicate the plot via GMT.
+- Could share a render_baseline_plot() helper with select_pairs.
+"""
+import sys
+
+
+def get_baseline_table():
+    if len(sys.argv) != 3:
+        sys.exit(
+            "Usage: get_baseline_table prmlist master_prm\n"
+            "  product: baseline_table.dat (+ baseline.pdf)"
+        )
+    raise NotImplementedError("get_baseline_table: PLAN Phase 1 scaffold — not yet implemented")
+
+
+if __name__ == "__main__":
+    get_baseline_table()

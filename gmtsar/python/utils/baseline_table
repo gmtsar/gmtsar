@@ -1,0 +1,37 @@
+#! /usr/bin/env python3
+"""baseline_table — Python port of csh baseline_table.csh (PLAN Phase 1).
+
+Compute a table of baseline parameters from a master + aligned PRM pair.
+Output (stdout, space-separated):
+    sat_orb  aligned_time  aligned_days  Bpl  Bperp  xshift  yshift
+
+Where aligned_days is days since 1992 (ERS) or 2006 (ALOS) depending on SAT.
+The 3rd optional arg "GMT" produces a pstext-compatible row (legacy mode).
+
+Usage:  baseline_table master.PRM aligned.PRM [GMT]
+
+This is a SCAFFOLD — not implemented. Calling main() raises NotImplementedError.
+Reference: gmtsar/csh/baseline_table.csh (124 lines).
+
+Implementation notes:
+- Calls C binary `SAT_baseline master.PRM aligned.PRM` and parses its output.
+- Detects ENVISAT-as-ERS by filename prefix (first 10 chars) as a kludge over
+  SC_identity values. Preserve that detection.
+- SC_identity values: 1=ERS-1, 2=ERS-2, 4=ENVI, 5=ALOS-1, 6=ALOS-2, 7=TSX, 9=CSK, 10=RS2.
+- Day-of-year math wraps around 1992 (ERS) / 2006 (ALOS) epochs.
+"""
+import sys
+
+
+def baseline_table():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: baseline_table master.PRM aligned.PRM [GMT]\n"
+            "  [GMT] creates a table row for pstext\n"
+            "Output: sat_orb aligned_time aligned_days Bpl Bperp xshift yshift"
+        )
+    raise NotImplementedError("baseline_table: PLAN Phase 1 scaffold — not yet implemented")
+
+
+if __name__ == "__main__":
+    baseline_table()
