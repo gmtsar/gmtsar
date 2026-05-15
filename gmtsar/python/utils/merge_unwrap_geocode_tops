@@ -1,0 +1,28 @@
+#! /usr/bin/env python3
+"""merge_unwrap_geocode_tops — multi-burst S1 TOPS merge + unwrap + geocode.
+
+Python port of csh merge_unwrap_geocode_tops.csh. 275-line csh that
+merges multiple TOPS sub-swath interferograms, then unwraps and geocodes
+the result. Not yet implemented.
+
+This is currently the LAST csh shell-out from any Python entry point —
+called from utils/p2p_S1_TOPS_Frame line 119. Implementing this makes the
+Python pipeline fully csh-free.
+
+Usage:  merge_unwrap_geocode_tops tmp.filelist config.py [det_stitch]
+"""
+import sys
+
+
+def merge_unwrap_geocode_tops():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: merge_unwrap_geocode_tops tmp.filelist config.py [det_stitch]\n"
+            "  PLAN Phase 3 follow-up scaffold — not yet implemented.\n"
+            "  See gmtsar/csh/merge_unwrap_geocode_tops.csh (275 lines)."
+        )
+    raise NotImplementedError("merge_unwrap_geocode_tops: scaffold")
+
+
+if __name__ == "__main__":
+    merge_unwrap_geocode_tops()
