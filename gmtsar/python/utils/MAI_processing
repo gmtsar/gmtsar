@@ -1,0 +1,21 @@
+#! /usr/bin/env python3
+"""MAI_processing — Multiple Aperture Interferometry (SCAFFOLD).
+
+Python port of csh MAI_processing.csh. Specialized multi-aperture InSAR
+processing (forward-look + backward-look apertures combined to derive
+along-track displacement). Not yet implemented.
+
+Usage:  see MAI_processing.csh for full CLI (186 csh lines).
+"""
+import sys
+
+
+def MAI_processing():
+    sys.exit(
+        "PLAN Phase 5 scaffold — not yet implemented (186 csh lines).\n"
+        "Refer to gmtsar/csh/MAI_processing.csh for the legacy CLI."
+    )
+
+
+if __name__ == "__main__":
+    MAI_processing()
