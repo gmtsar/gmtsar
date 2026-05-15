@@ -34,6 +34,11 @@ def getFilenameWithPolXml(searchDir, searchStr1, pol, fileFormat):
         sys.exit(f"getFilenameWithPolXml: missing directory {annot_dir}")
     fileList = os.listdir(annot_dir)
     for fileName in fileList:
+        # Skip macOS AppleDouble resource files (._filename) — these get
+        # bundled into tarballs when the source was on a Mac and would
+        # otherwise be picked up as if they were real XML files.
+        if fileName.startswith('._') or fileName.startswith('.'):
+            continue
         if (searchStr1 in fileName) and (pol in fileName) and (fileFormat in fileName):
             selectedFile = fileName[:-4]
             print(selectedFile)
