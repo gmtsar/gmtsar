@@ -1,0 +1,43 @@
+#! /usr/bin/env python3
+"""make_los_ascii — emit a per-pixel LOS-with-look-vector ASCII table.
+
+Python port of csh make_los_ascii.csh.
+
+Usage:  make_los_ascii los.grd dem.grd -I0.01/0.01 PRM_file SAT
+Output: los.lltnde
+"""
+import os
+import sys
+from gmtsar_lib import run
+
+
+def make_los_ascii():
+    if len(sys.argv) < 6:
+        sys.exit(
+            "Usage: make_los_ascii los.grd dem.grd -I0.01/0.01 PRM_file SAT\n"
+            "Example: make_los_ascii los_ll.grd dem.grd -I0.01/0.01 "
+            "IMG-HH-ALOS2046743050-150405-WBDR1.1__D-F1.PRM ALOS\n"
+            "Output: los.lltnde"
+        )
+    los, dem, inc_flag, prm, sat = sys.argv[1:6]
+    V = "" if os.path.isfile(os.path.expanduser("~/.quiet")) else "-V"
+    # Legacy: ERS uses ENVI_look binary
+    if sat == "ERS":
+        sat = "ENVI"
+
+    run(f"gmt grdsample {dem} -Gtmp_topo.grd `gmt grdinfo {los} -I-` "
+        f"`gmt grdinfo {los} -I` -F")
+    run(f"gmt grdmath {los} 0 MUL 1 ADD tmp_topo.grd MUL = tmp_topo.grd")
+    run(f"gmt grd2xyz {los} > tmp.xyz")
+    run("gmt grd2xyz tmp_topo.grd > tmp_topo.xyz")
+    run(f"gmt blockmedian tmp.xyz `gmt grdinfo {los} -I-` {inc_flag} {V} > tmp_b.xyz")
+    run(f"gmt blockmedian tmp_topo.xyz `gmt grdinfo {los} -I-` {inc_flag} {V} > tmp_topo_b.xyz")
+
+    run(f"{sat}_look {prm} < tmp_topo_b.xyz > tmp_topo_b_n.lltn")
+    run("awk '{ a=$3; getline <\"tmp_topo_b_n.lltn\"; "
+        "print $1,$2,$3,$4,$5,$6,a,-1}' tmp_b.xyz > los.lltnde")
+    run("rm -f tmp*")
+
+
+if __name__ == "__main__":
+    make_los_ascii()
