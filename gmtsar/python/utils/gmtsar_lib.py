@@ -13,6 +13,32 @@
 import sys, os, re, configparser
 import subprocess, glob
 
+
+def resolve_sharedir():
+    """Return the GMTSAR shared data directory ($GMTSAR/share/gmtsar).
+    First tries $GMTSAR env var; falls back to walking up from this file's
+    location looking for share/gmtsar. Raises SystemExit if not found."""
+    gmtsar = os.environ.get('GMTSAR')
+    if gmtsar:
+        candidate = os.path.join(gmtsar, 'share', 'gmtsar')
+        if os.path.isdir(candidate):
+            return candidate
+
+    # Walk up from this file's location (handles direct + symlinked installs).
+    cur = os.path.dirname(os.path.realpath(__file__))
+    for _ in range(5):
+        candidate = os.path.join(cur, 'share', 'gmtsar')
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    sys.exit("resolve_sharedir: could not locate share/gmtsar directory "
+             "(set $GMTSAR or install via install.sh --build)")
+
+
 def check_file_report(fn):
     # Check if a file exists.
     # If not, print error message.
