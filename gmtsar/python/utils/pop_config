@@ -14,7 +14,8 @@ import sys
 
 VALID_SATS = (
     'ERS', 'ENVI', 'ENVI_SLC', 'ALOS', 'ALOS_SLC', 'ALOS2', 'ALOS2_SCAN',
-    'S1_STRIP', 'S1_TOPS', 'CSK_RAW', 'CSK_SLC', 'TSX', 'RS2', 'GF3',
+    'ALOS4', 'S1_STRIP', 'S1_TOPS', 'CSK_RAW', 'CSK_SLC', 'TSX', 'RS2', 'GF3',
+    'NSR_A', 'NSR_B',
 )
 
 # Per-SAT deltas vs the base defaults. Anything not listed inherits the base.
@@ -25,6 +26,12 @@ SAT_OVERRIDES = {
     'ERS':        {'shift_topo': 1},
     'ALOS2':      {'SLC_factor': 2.0},
     'ALOS2_SCAN': {'filter_wavelength': 400, 'dec_factor': 4, 'range_dec': 4, 'azimuth_dec': 8, 'det_stitch': 0},
+    # ALOS-4 (L-band, launched 2024): similar to ALOS-2 SLC defaults.
+    'ALOS4':      {'SLC_factor': 2.0},
+    # NSR_A / NSR_B: NISAR repeat-pass interferograms (port of p2p_processing_nsr).
+    # Treated similarly to ALOS_SLC for the standard P2P stages.
+    'NSR_A':      {'SLC_factor': 2.0},
+    'NSR_B':      {'SLC_factor': 2.0},
     'RS2':        {'filter_wavelength': 100},
     'TSX':        {'filter_wavelength': 100},
     'S1_TOPS':    {'spec_div': 0, 'spec_mode': 1, 'range_dec': 8, 'azimuth_dec': 2, 'det_stitch': 0},
