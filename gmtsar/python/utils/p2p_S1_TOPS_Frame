@@ -117,7 +117,11 @@ def merge(skip_master, fmList, fsList):
                 f.write(pth[i]+'/:'+prm1m[i]+':'+prm1s[i]+'\n')
                 
         sys.path.insert(0, os.getcwd())
-        from config import correct_iono, iono_filt_rng, iono_filt_azi, det_stitch
+        import config as _cfg
+        correct_iono = getattr(_cfg, 'correct_iono', 0)
+        # det_stitch is S1_TOPS-specific; missing in import_csh_config'd configs.
+        # Default to 0 (no stitching) — matches csh p2p_S1_TOPS_Frame.csh default.
+        det_stitch = getattr(_cfg, 'det_stitch', 0)
         mergeUnwrapGeocodeTops(correct_iono, det_stitch)
     else:
         print('P2P_S1_TOPS_FRAME: No radar product is produced as only master image is processed.')

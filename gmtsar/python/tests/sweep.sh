@@ -48,16 +48,51 @@ log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 log "=== sweep started ==="
 log "cases: $cases"
 
-# Kill any pre-existing wgets targeting our dataset dir. They survive across
-# sweep restarts (backgrounded with &, own pgrp), and concurrent wgets writing
-# to the same file via -c corrupt the partial download. Always one wget per
-# case for the lifetime of this script.
-orphans=$(pgrep -f "wget .*${DATASET_DIR}" 2>/dev/null || true)
-if [ -n "$orphans" ]; then
-    log "killing orphan wgets from previous run: $(echo $orphans | tr '\n' ' ')"
-    kill -9 $orphans 2>/dev/null || true
-    sleep 1
+# Skip cases that already have an all-SUCCESS results/<case>.json from this code
+# version. Restarting a failed/interrupted sweep should not re-verify what's
+# already passing. Set $SWEEP_FORCE=1 to disable this and re-run everything.
+# Results invalidate when the code changes — wipe work/results/ to force re-run
+# across versions.
+if [ -z "${SWEEP_FORCE:-}" ]; then
+    new_cases=""
+    for c in $cases; do
+        rj="$WORK/results/$c.json"
+        if [ -f "$rj" ] && $PY -c "
+import json,sys
+d=json.load(open('$rj'))
+comps=d.get('comparisons',[])
+# A genuinely verified case has ALL comparisons SUCCESS AND at least 6 of
+# them (3 PNG + 3 grd). Fewer than 6 means the python run aborted mid-pipeline
+# (e.g. unwrap crash) so the comparison set is incomplete — re-run not skip.
+sys.exit(0 if len(comps) >= 6 and all(x.get('status')=='SUCCESS' for x in comps) else 1)
+" 2>/dev/null; then
+            log "SKIP $c (already verified — results/$c.json all-SUCCESS; SWEEP_FORCE=1 to override)"
+        else
+            new_cases+="$c "
+        fi
+    done
+    cases="$new_cases"
+    if [ -z "$(echo $cases)" ]; then
+        log "all cases already verified — nothing to do"
+        exit 0
+    fi
 fi
+
+# Detect pre-existing wgets targeting our dataset dir. Concurrent wgets writing
+# to the same file via -c corrupt the partial download, so we must serialize.
+# But if a wget is already running for a tarball we want, WAIT for it rather
+# than killing — the user may have an out-of-band download going. We'll
+# selectively skip wget for cases whose target is being downloaded already.
+declare -A EXTERN_WGET_PID
+for pid in $(pgrep -f "wget .*${DATASET_DIR}" 2>/dev/null || true); do
+    cmdline=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+    for c in $cases; do
+        if echo "$cmdline" | grep -q -F "${TARBALL[$c]}"; then
+            EXTERN_WGET_PID[$c]=$pid
+            log "external wget already running for $c (pid $pid) — will wait for it"
+        fi
+    done
+done
 
 # Kick off a background `wget -c` for every case at startup. wget -c does a
 # HEAD against the server: it's near-instant if the file is already complete,
@@ -66,16 +101,23 @@ fi
 # already complete will essentially skip the wait and run immediately.
 declare -A DL_PID
 for c in $cases; do
-    log "DOWNLOAD start (background) $c"
-    wget -c -q --timeout=60 --tries=3 "${URL[$c]}" -O "${TARBALL[$c]}" &
-    DL_PID[$c]=$!
+    if [ -n "${EXTERN_WGET_PID[$c]:-}" ]; then
+        log "DOWNLOAD using external wget for $c (pid ${EXTERN_WGET_PID[$c]})"
+        DL_PID[$c]=${EXTERN_WGET_PID[$c]}
+    else
+        log "DOWNLOAD start (background) $c"
+        wget -c -q --timeout=60 --tries=3 "${URL[$c]}" -O "${TARBALL[$c]}" &
+        DL_PID[$c]=$!
+    fi
 done
 
 # Dynamic scheduling with bounded parallelism. Pick whichever case's wget has
 # finished first; launch up to MAX_PARALLEL case runs concurrently. Each case
 # run uses ~2 cores (csh + python pipelines in parallel within the case), so
-# MAX_PARALLEL=4 = ~8 cores busy plus FFTW shim keeps each FFT serial.
-MAX_PARALLEL=${MAX_PARALLEL:-4}
+# MAX_PARALLEL=12 = ~24 cores busy on a 64-core box; FFTW shim keeps each FFT
+# serial so this stays well under the core count. Watch swap if you push higher
+# — heavy cases (S1_Ridgecrest_EQ, ALOS2_SCAN_SSAF) can RAM-pressure the box.
+MAX_PARALLEL=${MAX_PARALLEL:-12}
 log "max parallel cases: $MAX_PARALLEL"
 
 run_case() {
@@ -117,11 +159,36 @@ while [ -n "$(echo "$remaining" | tr -d ' ')" ] || [ $(jobs -rp | wc -l) -gt 0 ]
         continue
     fi
     remaining=$(echo "$remaining" | tr ' ' '\n' | grep -vx "$next" | tr '\n' ' ')
-    # Reap the wget exit status.
-    wait "${DL_PID[$next]}"; rc=$?
+    # Reap the wget exit status. `wait` only works on child PIDs of this shell;
+    # for an externally-running wget we adopted via EXTERN_WGET_PID, just check
+    # the file landed.
+    if [ -n "${EXTERN_WGET_PID[$next]:-}" ]; then
+        rc=0; [ ! -s "${TARBALL[$next]}" ] && rc=1
+    else
+        wait "${DL_PID[$next]}"; rc=$?
+    fi
     if [ $rc -ne 0 ]; then
         log "DOWNLOAD FAIL $next (wget rc=$rc) — skipping"
         [ ! -s "${TARBALL[$next]}" ] && rm -f "${TARBALL[$next]}"
+        continue
+    fi
+    # Verify tarball is a valid gzip — catches truncated/corrupted downloads
+    # (e.g. concurrent wgets fighting, NFS write errors). per project_rules.md
+    # #1: don't fall through to extraction on bad data — remove and skip so the
+    # case is retried next sweep with a fresh download.
+    # IMPORTANT: only delete on a "real" gzip-detected corruption (rc=1).
+    # rc=137/143 mean gzip was killed (SIGKILL/SIGTERM) — likely an external
+    # pkill that matched the tarball filename, not an actual data problem.
+    # Deleting on signal would force a needless 44GB re-download.
+    gzip -t "${TARBALL[$next]}" 2>/dev/null
+    gz_rc=$?
+    if [ $gz_rc -ne 0 ]; then
+        if [ $gz_rc -ge 128 ]; then
+            log "INTEGRITY CHECK killed (rc=$gz_rc) for $next — skipping run, leaving tarball intact for retry"
+            continue
+        fi
+        log "INTEGRITY FAIL $next (gzip rc=$gz_rc) — tarball corrupt; removing and skipping"
+        rm -f "${TARBALL[$next]}"
         continue
     fi
     log "DOWNLOAD OK $next ($(du -h "${TARBALL[$next]}" | cut -f1))"
