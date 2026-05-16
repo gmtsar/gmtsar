@@ -97,7 +97,13 @@ def geocode():
     print('GEOCODE: line-of-sight displacement ... ...')
     
     if check_file_report('unwrap_mask.grd')==True:
-        wavel = grep_value('*.PRM','wavelength',3)
+        # csh equivalent: `grep wavelength *.PRM | awk 'NR == 1 {print $3}'`.
+        # Python needs an explicit glob — open('*.PRM') treats the literal
+        # filename and errors.
+        prm_files = sorted(glob.glob('*.PRM'))
+        if not prm_files:
+            raise FileNotFoundError("geocode: no *.PRM files in current dir for wavelength lookup")
+        wavel = grep_value(prm_files[0], 'wavelength', 3)
         cmd = 'gmt grdmath unwrap_mask.grd '+str(wavel)+' MUL -79.58 MUL = los.grd'
         run(cmd)
         run('gmt grdgradient los.grd -Nt.9 -A0. -Glos_grad.grd')

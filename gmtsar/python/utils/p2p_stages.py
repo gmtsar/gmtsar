@@ -307,7 +307,7 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
             file_shuttle(f"{aligned}.PRM", f"{aligned}.PRM0", 'cp')
             run(f"SAT_baseline {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
             _xcorr_and_fitoffset(SAT, master, aligned)
-            _resamp_and_swap(master, aligned)
+            _resamp_and_swap(master, aligned, SAT)
             
             if iono == 1:
                 print("P2P 2: iono LH fitoffset + resamp")
@@ -413,11 +413,13 @@ def _cut_slc_to_region(name, junk_tag, region):
     file_shuttle(f"{junk_tag}.SLC", f"{name}.SLC", 'mv')
 
 
-def P2P2RegionCut(master, aligned, skip_master, iono):
+def P2P2RegionCut(master, aligned, skip_master, iono, region_cut):
     """Crop SLC images to `region_cut` and write back in place. With iono=1
     repeats the crop in SLC_L and SLC_H. (Bug fix: legacy code referenced
     master.{PRM,SLC} when cutting the aligned image in the L/H paths — now
-    correctly references aligned.)"""
+    correctly references aligned.) region_cut was previously a free-name
+    reference to the caller's module global — now passed explicitly so the
+    function works regardless of where it's imported from."""
     print(f"P2P 2: region_cut={region_cut}, cutting SLC images")
 
     def _cut_both_sides():
@@ -671,7 +673,7 @@ def _ensure_landmask(sub):
     file_shuttle("../../topo/landmask_ra.grd", ".", "link")
 
 
-def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp):
+def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax=0):
     """Phase unwrap via snaphu; threshold_snaphu==0 skips the stage."""
     if threshold_snaphu == 0:
         print('P2P 5: SKIP UNWRAP PHASE')
