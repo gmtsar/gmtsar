@@ -34,6 +34,16 @@ if [ -n "$preloadShim" ] && [ -f "$preloadShim" ]; then
     export LD_PRELOAD="$preloadShim"
 fi
 
+# Ensure the gmt binary and gmtsar tools are in PATH for both the csh side
+# (which calls `gmt ...` directly from bundled csh recipes) and the py side
+# (whose Python utilities subprocess-call `gmt ...`). Without this, sweeps
+# launched from a shell lacking `conda activate gmtsar` will silently fail
+# in dem2topo_ra (gmt surface → 1×1 grid → no topo_ra.grd) and csh recipes
+# (`gmt: Command not found.` in log). Was the root cause of v1.12.0's
+# false-pass on COVE/Larsen — their topo_ra.grd never got built but the
+# auto-discovered comparison set hid the missing files.
+export PATH=/home/staff/dliu/anaconda3/envs/gmtsar/bin:/home/staff/dliu/gmtsar/bin:$PATH
+
 # Extract tarball into each tree if the tree's intf/ isn't there yet.
 # (Don't search the whole tree for .grd: bundled tarballs include topo/dem.grd,
 # which would falsely look like a finished run.)

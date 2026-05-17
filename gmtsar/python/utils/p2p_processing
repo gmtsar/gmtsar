@@ -177,12 +177,15 @@ def p2p_processing(debug):
         cmdAppendix += ' -skip_master ' + str(skip_master)
     print('P2P 0: commadline appendix is ', cmdAppendix)
     
-    if SAT=='S1_TOPS':
-        print('P2O 0: Modify threshold_geocode=0, threshold_snaphu=0, iono_skip_est=1')
-        threshold_geocode = 0
-        threshold_snaphu = 0
-        iono_skip_est = 1
-        
+    # NB: threshold_geocode / threshold_snaphu / iono_skip_est were previously
+    # force-zeroed here for SAT=='S1_TOPS'. That made the multi-subswath Frame
+    # workflow work (per-subswath skips snaphu+geocode, merge handles them)
+    # but silently broke standalone single-subswath S1_TOPS runs like
+    # Ridgecrest H_res. The override now lives in p2p_S1_TOPS_Frame's
+    # processOneSubswath via _override_thresholds — narrowly scoped to the
+    # Frame context. Standalone callers see the config they supplied.
+
+
     if stage == 1 and skip_1 == 0:
         P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix)
     if debug==1:
@@ -205,7 +208,7 @@ def p2p_processing(debug):
         P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
         # NSR_A/B skips region_cut per legacy csh; everything else honors it.
         if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
-            P2P2RegionCut(master, aligned, skip_master, iono)
+            P2P2RegionCut(master, aligned, skip_master, iono, region_cut)
         os.chdir('..')
         print('P2P 2: ALIGN.CSH - END')
     if debug==1:
@@ -225,7 +228,7 @@ def p2p_processing(debug):
         input('Press Enter to continue to Phase 5...')
         
     if stage <=5 and skip_5 == 0:
-        P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp)
+        P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
     if debug==1:
         input('Press Enter to continue to Phase 6...')
     
