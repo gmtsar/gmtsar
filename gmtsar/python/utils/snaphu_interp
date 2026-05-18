@@ -25,7 +25,7 @@ def main():
         )
     # Insert interp=1 after the first two args.
     new_args = args[:2] + ["1"] + args[2:]
-    os.execvp("snaphu", ["snaphu"] + new_args)
+    os.execvp("snaphu.py", ["snaphu.py"] + new_args)
 
 
 if __name__ == "__main__":
