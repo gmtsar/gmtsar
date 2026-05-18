@@ -33,7 +33,7 @@ def _unwrap_one(args):
     if custom_script:
         cmd = f"{custom_script} {intf_dir} > {log_file} 2>&1"
     else:
-        cmd = f"cd {intf_dir} && snaphu {threshold} 0 {interp} > ../{log_file} 2>&1"
+        cmd = f"cd {intf_dir} && snaphu.py {threshold} 0 {interp} > ../{log_file} 2>&1"
     rc = subprocess.run(cmd, shell=True).returncode
     return (intf_dir, rc)
 

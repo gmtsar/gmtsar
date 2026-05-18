@@ -558,7 +558,7 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
                 run(f"landmask {rcut}")
                 os.chdir(f"../iono_phase/{side}")
                 file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-        run('snaphu 0.05 0 1')
+        run('snaphu.py 0.05 0 1')
     os.chdir('..')
 
 
@@ -685,7 +685,10 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
 
     print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
     # Python snaphu unifies snaphu/snaphu_interp; the 3rd arg is interp flag.
-    run(f"snaphu {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}")
+    # Use snaphu.py (Python wrapper) explicitly. The bare name `snaphu` is
+    # the upstream C binary which has a different CLI; collision with our
+    # wrapper was the root cause of ALOS_haiti's silent snaphu failure.
+    run(f"snaphu.py {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}")
     print('P2P 5: SNAPHU - END')
     os.chdir("../..")
 
