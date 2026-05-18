@@ -48,6 +48,40 @@ log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
 log "=== sweep started ==="
 log "cases: $cases"
 
+# Per project rule #6: capture hardware + software snapshot so scorecards
+# from different hosts/runs are comparable. Single file per sweep.
+PERF_FILE="$WORK/perf_$(date +%Y%m%d_%H%M%S).txt"
+{
+    echo "=== hardware ==="
+    echo "host: $(hostname)"
+    echo "cpu_model: $(awk -F: '/^model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ *//')"
+    echo "cpu_cores_logical: $(nproc)"
+    echo "ram_total: $(awk '/^MemTotal:/ {printf \"%.1fG\\n\", $2/1024/1024}' /proc/meminfo)"
+    echo "workdir_fs: $(stat -f -c '%T (%n)' "$WORK" 2>/dev/null || stat --file-system -c '%T' "$WORK")"
+    echo "workdir_mount: $(df "$WORK" | awk 'NR==2 {print $1}')"
+    echo ""
+    echo "=== software ==="
+    echo "kernel: $(uname -srm)"
+    echo "python: $($PY --version 2>&1)"
+    echo "gmt: $(gmt --version 2>/dev/null || echo 'gmt not on PATH at sweep time')"
+    echo "gmtsar_bin: $(which gmtsar 2>/dev/null || echo 'gmtsar not on PATH')"
+    echo "git_sha: $(cd "$TESTSYS/../.." && git rev-parse --short HEAD 2>/dev/null || echo 'no git')"
+    echo "git_branch: $(cd "$TESTSYS/../.." && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+    echo "git_dirty: $(cd "$TESTSYS/../.." && (git diff --quiet 2>/dev/null && echo no) || echo yes)"
+    echo ""
+    echo "=== thread limits (intended by case_runner.sh) ==="
+    echo "OMP_NUM_THREADS=${OMP_NUM_THREADS:-unset}"
+    echo "MKL_NUM_THREADS=${MKL_NUM_THREADS:-unset}"
+    echo "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-unset}"
+    echo "FFTW_NUM_THREADS=${FFTW_NUM_THREADS:-unset}"
+    echo ""
+    echo "=== sweep ==="
+    echo "started: $(ts)"
+    echo "cases: $cases"
+    echo "max_parallel: ${MAX_PARALLEL:-12}"
+} > "$PERF_FILE"
+log "hw+sw snapshot → $PERF_FILE"
+
 # Skip cases that already have an all-SUCCESS results/<case>.json from this code
 # version. Restarting a failed/interrupted sweep should not re-verify what's
 # already passing. Set $SWEEP_FORCE=1 to disable this and re-run everything.
