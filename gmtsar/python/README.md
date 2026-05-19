@@ -99,4 +99,4 @@ Version history: see [`release_notes_v<latest>.md`](.) at this directory's root 
 
 ## Acknowledgments
 
-Portions of the 2026-05 testing-system overhaul, consolidated installer (`install.sh`), FFTW threading shim (`fftw_force_serial.c`), and vectorized Python xcorr (`xcorr_py`) were developed in collaboration with Anthropic's Claude Code (Claude Opus 4.7).
+Portions of the 2026-05 testing-system overhaul, consolidated installer (`install.sh`), Docker dev environment (`docker/`), FFTW threading shim (`fftw_force_serial.c`), and vectorized Python xcorr (`xcorr_py`) were developed in collaboration with Anthropic's Claude Code (Claude Opus 4.7).
