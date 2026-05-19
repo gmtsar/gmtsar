@@ -3,7 +3,7 @@
 frozen reference, if present). Emits human-readable lines on stdout AND writes
 a machine-readable JSON sidecar per case at <workdir>/results/<case>.json so
 report.py can aggregate without log scraping."""
-import glob, json, os, time
+import glob, json, os, re, time
 from datetime import datetime, timezone
 import numpy as np
 import xarray as xr
@@ -20,6 +20,13 @@ fileNameList = ['corr_ll.png','display_amp_ll.png','phasefilt_mask_ll.png',
         # `$wavel` literal-shell-var bug never surfaced. Now included so that
         # any LOS-stage regression is caught.
         'los_ll.grd']
+
+# Optional files: produced by some recipes and not others, depending on whether
+# threshold flags enable the LOS / geocode-2 path. When one side has the file
+# and the other doesn't, treat as recipe-divergence (skipped) rather than FAIL.
+# A real regression on these is caught via the py-vs-frozen pair when frozen
+# reference exists.
+OPTIONAL_FILES = {'los_ll.grd'}
 pyRoot    = pythonRunRoot.rstrip(os.sep)   # today's python outputs
 cshRoot   = cshRefRoot.rstrip(os.sep)      # today's csh outputs
 frozenRoot = referenceRoot.rstrip(os.sep)  # frozen reference (committed in tree)
@@ -290,6 +297,14 @@ for caseName in caseNameList:
                         'reason': f'{fileName} missing on {missing_side}',
                         'expected_path': expected_path,
                         'pair': label, 'intf': intf}
+            # Per-subswath _ll files (multi-subswath cases like ALOS2_SCAN):
+            # bundled csh README only geocodes at the merge level, py recipe
+            # geocodes per-subswath too. Same asymmetry as los_ll.grd. Skip
+            # rather than FAIL when the absent side simply doesn't run that
+            # step at per-subswath level. Merge-level _ll files are still
+            # compared strictly.
+            persubswath_ll = ('_ll.' in fileName and
+                              bool(re.match(r'^F\d+/', intf or '')))
             # py-vs-csh: both expected to exist; missing on either side = FAIL
             if py_ok and csh_ok:
                 print(f'  [py-vs-csh]', end=' ')
@@ -297,9 +312,17 @@ for caseName in caseNameList:
                 r['pair'] = 'py-vs-csh'; r['intf'] = intf
                 case_results['comparisons'].append(r)
             elif py_ok and not csh_ok:
-                case_results['comparisons'].append(_absent('py-vs-csh', 'csh', csh))
+                if fileName in OPTIONAL_FILES or persubswath_ll:
+                    print(f'  [py-vs-csh] SKIP: {fileName} optional, '
+                          f'absent on csh (recipe divergence)')
+                else:
+                    case_results['comparisons'].append(_absent('py-vs-csh', 'csh', csh))
             elif csh_ok and not py_ok:
-                case_results['comparisons'].append(_absent('py-vs-csh', 'py', py))
+                if fileName in OPTIONAL_FILES or persubswath_ll:
+                    print(f'  [py-vs-csh] SKIP: {fileName} optional, '
+                          f'absent on py (recipe divergence)')
+                else:
+                    case_results['comparisons'].append(_absent('py-vs-csh', 'py', py))
             # csh-vs-frozen: only meaningful if frozen reference is present
             # for this case. Don't FAIL on missing frozen since frozen ref
             # is gitignored / not always available.

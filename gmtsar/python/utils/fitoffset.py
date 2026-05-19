@@ -102,7 +102,7 @@ def fitoffset():
             for i in range(k):
                 f.write(str(r[i])+' '+ str(a[i])+' '+str(dra[i])+'\n')
         # cmd = 'gmt trend2d xyz -Fxyz -N'+str(npar_rng)+'r -V > /dev/null'
-        tmp = subprocess.run(['gmt','trend2d','xyz','-Fxyz','-N'+str(npar_rng)+'r','-V'], 
+        tmp = subprocess.run(['gmt','trend2d','xyz','-Fxyz','-N'+str(npar)+'r','-V'],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         verbose_message = tmp.stderr
         for line in verbose_message.split('\n'):

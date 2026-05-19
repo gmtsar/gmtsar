@@ -189,9 +189,16 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
     for .raw-input SATs and 2 for everything else."""
     if SAT == "ALOS2_SCAN":
         run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}")
-        # Legacy csh did a median-filter pass on freq_xcorr.dat → freq_alos2.dat
-        # and `fitoffset 2 3 freq_alos2.dat 10 >> $aligned.PRM`. Preserved as a
-        # comment because the median step was never ported to Python.
+        # Median-filter the azimuth-shift column of freq_xcorr.dat, keep rows
+        # within median±3, then fit a 2-rng/3-az polynomial with SNR≥10.
+        # Mirrors gmtsar/csh/align_ALOS2_SCAN.csh lines 80-86.
+        import numpy as np
+        x = np.loadtxt("freq_xcorr.dat")
+        az = np.sort(x[:, 3])
+        amed = az[len(az) // 2]
+        keep = (x[:, 3] > amed - 3) & (x[:, 3] < amed + 3)
+        np.savetxt("freq_alos2.dat", x[keep], fmt="%g")
+        run(f"fitoffset.py 2 3 freq_alos2.dat 10 >> {aligned}.PRM")
     elif SAT in _NSR_FAMILY:
         # NISAR: build amp grid from master at decimation 4, then xcorr with
         # 40x40 grid and fitoffset_ra with 10/10 polynomial.
@@ -202,7 +209,7 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
     else:
         run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}")
         fit_dim = "3 3" if SAT in _SAT_RAW_INPUT else "2 2"
-        run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
+        run(f"fitoffset.py {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
 
 
 def _resamp_and_swap(master, aligned, SAT=None):
@@ -242,7 +249,7 @@ def _iono_LH_fitoffset_and_resamp(SAT, master, aligned, tsx_in_xcorr_group):
     else:
         freq_link, fit_dim = "freq_alos2.dat", "2 2"
     run(f"ln -sf ../SLC/{freq_link}")
-    run(f"fitoffset {fit_dim} freq_xcorr.dat 18 >>{aligned}.PRM")
+    run(f"fitoffset.py {fit_dim} freq_xcorr.dat 18 >>{aligned}.PRM")
     _resamp_and_swap(master, aligned, SAT)
 
 
