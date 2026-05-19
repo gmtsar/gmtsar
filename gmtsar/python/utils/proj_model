@@ -1,0 +1,64 @@
+#! /usr/bin/env python3
+"""proj_model — project an ENU velocity/displacement model into radar LOS.
+
+Python port of csh proj_model.csh (X. Tong, D. Sandwell 2013). Builds
+ENU look-vector grids that match the model resolution, then computes
+LOS = ve * look_E + vn * look_N + vu * look_U.
+
+Usage:  proj_model SAT ve.grd vn.grd vu.grd master.PRM dem.grd los.grd
+
+SAT can be ALOS / ERS / ENVI / SAT (generic).
+"""
+import os
+import sys
+from gmtsar_lib import run
+
+
+def proj_model():
+    if len(sys.argv) != 8:
+        sys.exit(
+            "Usage: proj_model SAT ve.grd vn.grd vu.grd master.PRM dem.grd los.grd\n"
+            "  Project a simulated ENU crust-motion model to radar LOS.\n"
+            "  SAT: ALOS / ERS / ENVI / SAT (generic)."
+        )
+    SAT, ve, vn, vu, prm, dem, out = sys.argv[1:8]
+    if SAT not in ("ENVI", "ERS", "ALOS", "SAT"):
+        sys.exit("SAT must be ALOS / ENVI / ERS / SAT")
+    for f in (ve, vn, vu, prm, dem):
+        if not os.path.isfile(f):
+            sys.exit(f"input file not found: {f}")
+
+    # Get the model grid's increments to match against.
+    import subprocess
+    inc = subprocess.run(f"gmt grdinfo -I {ve}", shell=True,
+                         stdout=subprocess.PIPE, check=False
+                         ).stdout.decode("utf-8").strip()
+
+    run("gmt set FORMAT_GEO_OUT D")
+    run(f"gmt grd2xyz {dem} -fg | {SAT}_look {prm} -bos > look.xyz")
+
+    # Three passes (E/N/U components of the look vector) at the model resolution.
+    for col, side in ((3, "e"), (4, "n"), (5, "u")):
+        run(f"gmt blockmedian look.xyz -i0,1,{col} -bi6f "
+            f"`gmt grdinfo -I- {dem}` {inc} -bo -fg | "
+            f"gmt surface -fg -bi -Gtmp.grd {inc} "
+            f"`gmt grdinfo -I- {dem}` -T0.5")
+        run(f"gmt grdsample tmp.grd -T -Gll{side}.grd")
+
+    # Resample the input velocity grids onto the look-vector grid region/inc.
+    region = subprocess.run("gmt grdinfo -I- llu.grd", shell=True,
+                            stdout=subprocess.PIPE, check=False
+                            ).stdout.decode("utf-8").strip()
+    for src, tag in ((ve, "e"), (vn, "n"), (vu, "u")):
+        run(f"gmt grdsample {src} {region} {inc} -Gtmpv{tag}.grd -fg")
+
+    # LOS = ve·lle + vn·lln + vu·llu
+    run(f"gmt grdmath tmpve.grd lle.grd MUL tmpvn.grd lln.grd MUL ADD "
+        f"tmpvu.grd llu.grd MUL ADD = {out}")
+
+    run("rm -f look.xyz tmp.grd lle.grd lln.grd llu.grd "
+        "tmpve.grd tmpvn.grd tmpvu.grd")
+
+
+if __name__ == "__main__":
+    proj_model()

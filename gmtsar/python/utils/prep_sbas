@@ -1,0 +1,82 @@
+#! /usr/bin/env python3
+"""prep_sbas — build intf.tab + scene.tab inputs for the sbas binary.
+
+Python port of csh prep_sbas.csh (X. Xu 2016). Reads intf.in (pairs list)
+and baseline_table.dat (scenes) and produces:
+
+  intf.tab   : "<phase.grd> <corr.grd> <ref_id> <rep_id> <bperp_delta>"  per pair
+  scene.tab  : "<sc_id> <day_of_year>"                                    per scene
+
+Echoes the sbas command line at the end.
+
+Usage:  prep_sbas intf.in baseline_table.dat file_path phase_name corr_name
+"""
+import os
+import subprocess
+import sys
+
+
+def _capture(cmd):
+    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                          check=False).stdout.decode("utf-8").strip()
+
+
+def _find_in_table(table, key, awk_prog):
+    """Run `grep KEY table | awk awk_prog` and return the first hit."""
+    return _capture(f"grep {key} {table} | awk '{awk_prog}'")
+
+
+def prep_sbas():
+    if len(sys.argv) != 6:
+        sys.exit(
+            "Usage: prep_sbas intf.in baseline_table.dat file_path phase_name corr_name\n"
+            "Example: prep_sbas intf.in baseline_table.dat ../merge corrected/unwrap.grd corr.grd\n"
+            "Outputs: intf.tab, scene.tab"
+        )
+    intf_in, table, file_path, phase_file, corr_file = sys.argv[1:6]
+
+    for f in ("intf.tab", "scene.tab"):
+        if os.path.isfile(f):
+            os.remove(f)
+
+    last_ref_id, last_rep_id = None, None
+    ni = 0
+
+    with open(intf_in) as f, open("intf.tab", "w") as out:
+        for line in f:
+            line = line.strip()
+            if ":" not in line:
+                continue
+            ref, rep = line.split(":", 1)
+            ref_id = _find_in_table(table, ref, "{printf(\"%d\", int($2))}")
+            rep_id = _find_in_table(table, rep, "{printf(\"%d\", int($2))}")
+            print(f"{ref_id} {rep_id}")
+            b1 = float(_find_in_table(table, ref, "{print $5}"))
+            b2 = float(_find_in_table(table, rep, "{print $5}"))
+            bp = b2 - b1
+            out.write(f"{file_path}/{ref_id}_{rep_id}/{phase_file} "
+                      f"{file_path}/{ref_id}_{rep_id}/{corr_file} "
+                      f"{ref_id} {rep_id} {bp}\n")
+            last_ref_id, last_rep_id = ref_id, rep_id
+            ni += 1
+
+    ns = 0
+    with open(table) as f, open("scene.tab", "w") as out:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            sc_id = int(float(parts[1]))   # truncate to int
+            dy    = parts[2]
+            out.write(f"{sc_id} {dy}\n")
+            ns += 1
+
+    sample = f"{file_path}/{last_ref_id}_{last_rep_id}/{phase_file}"
+    xdim = _capture(f"gmt grdinfo -C {sample} | awk '{{print $10}}'")
+    ydim = _capture(f"gmt grdinfo -C {sample} | awk '{{print $11}}'")
+
+    print(f"\nsbas intf.tab scene.tab {ni} {ns} {xdim} {ydim}\n")
+
+
+if __name__ == "__main__":
+    prep_sbas()

@@ -1,0 +1,69 @@
+#! /usr/bin/env python3
+"""pre_proc_nsr — preprocess NISAR RSLC (.h5) data, both A and B frequencies.
+
+Python port of csh pre_proc_nsr.csh (D. Sandwell, 11/2025).
+
+Reads SLC_factor and region_cut from the supplied config file, then calls
+`make_slc_nsr` (C binary) twice — once for the A frequency (AHH polarization)
+and once for B (BHH polarization). For each, runs `calc_dop_orb` and
+appends its output to the resulting PRM.
+
+The output stem name is derived from the NISAR filename via positional
+substring: `NSR_<substr(name, 44, 8)>` — i.e. characters 44-51 of the
+full NISAR_L1_PR_RSLC_... filename.
+
+Usage:  pre_proc_nsr file.h5 config.txt
+Output: <NSR_YYYYMMDD>A.{PRM,SLC,LED} and <NSR_YYYYMMDD>B.{PRM,SLC,LED}
+"""
+import os
+import sys
+from gmtsar_lib import run
+
+
+def _get_config(path, key, default=""):
+    """grep <key> <path> | awk '{print $3}'."""
+    with open(path) as f:
+        for line in f:
+            if key in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[2]
+    return default
+
+
+def pre_proc_nsr():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: pre_proc_nsr file.h5 config.txt\n"
+            "  file.h5: NISAR RSLC HDF5 product\n"
+            "  config.txt: must contain SLC_factor and region_cut entries"
+        )
+    h5_file, config = sys.argv[1], sys.argv[2]
+
+    # Derive stem name from the NISAR filename: csh uses awk substr($1, 44, 8)
+    # which is 1-based start=44 length=8 → Python slice [43:51].
+    stem = "NSR_" + os.path.basename(h5_file)[43:51]
+    print(f"stemname {stem}")
+
+    SLC_factor = _get_config(config, "SLC_factor")
+    print(f"SLC_factor {SLC_factor}")
+    region_cut = _get_config(config, "region_cut")
+    print(f"region_cut {region_cut}")
+
+    # A frequency
+    print(f"{stem}.PRM")
+    run(f"make_slc_nsr {h5_file} {stem}A AHH {SLC_factor} {region_cut}")
+    run(f"calc_dop_orb {stem}A.PRM tmp 0 0")
+    run(f"cat tmp >> {stem}A.PRM")
+    run("rm -f tmp")
+
+    # B frequency
+    print(f"{stem}.PRM")
+    run(f"make_slc_nsr {h5_file} {stem}B BHH {SLC_factor} {region_cut}")
+    run(f"calc_dop_orb {stem}B.PRM tmp 0 0")
+    run(f"cat tmp >> {stem}B.PRM")
+    run("rm -f tmp")
+
+
+if __name__ == "__main__":
+    pre_proc_nsr()

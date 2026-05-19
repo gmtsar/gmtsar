@@ -1,0 +1,117 @@
+#! /usr/bin/env python3
+"""import_csh_config — convert a tarball-shipped csh config (e.g. config.alos.txt,
+config.s1a.txt, config.txt) into a Python config.py that `p2p_processing` can
+import.
+
+The csh config format is `name = value` lines, with `#` comments. Empty values
+mean "use the default" (csh's p2p_processing.csh resolves these via pop_config's
+fallbacks). To preserve that semantic when crossing to Python, empty values are
+rewritten as -999 — the sentinel `p2p_processing` already treats as "skip this
+parameter / use built-in default".
+
+Why: every test tarball from topex.ucsd.edu ships a bundled config.*.txt that is
+the ground truth used by the legacy csh side. If the Python side ran with
+`pop_config`-defaults instead, the two pipelines would silently process with
+different thresholds (e.g. threshold_snaphu, defomax, threshold_geocode) and
+their outputs wouldn't be comparable. This utility makes the bundled config the
+single source of truth for both sides.
+
+Usage:  import_csh_config <bundled.txt> <out.py>
+"""
+import sys
+
+# Parameters that p2p_processing imports as required (must appear in config.py).
+REQUIRED = (
+    'proc_stage', 'skip_stage', 'skip_master',
+    'skip_1', 'skip_2', 'skip_3', 'skip_4', 'skip_5', 'skip_6',
+    'num_patches', 'earth_radius', 'near_range', 'fd1',
+    'region_cut', 'geometric_coreg',
+    'topo_phase', 'topo_interp_mode', 'shift_topo',
+    'switch_master', 'filter_wavelength', 'dec_factor',
+    'compute_phase_gradient', 'correct_iono',
+    'iono_filt_rng', 'iono_filt_azi', 'iono_dsamp', 'iono_skip_est',
+    'threshold_snaphu', 'near_interp', 'mask_water', 'defomax',
+    'threshold_geocode',
+)
+
+# Defaults for required params not present in the bundled config. csh's
+# p2p_processing.csh fills these from pop_config.csh; we mirror the same.
+DEFAULTS = {
+    'proc_stage': 1, 'skip_stage': -999, 'skip_master': 0,
+    'skip_1': 0, 'skip_2': 0, 'skip_3': 0, 'skip_4': 0, 'skip_5': 0, 'skip_6': 0,
+    'num_patches': -999, 'earth_radius': -999, 'near_range': -999, 'fd1': -999,
+    'region_cut': -999, 'geometric_coreg': 0,
+    'topo_phase': 1, 'topo_interp_mode': 0, 'shift_topo': 0,
+    'switch_master': 0, 'filter_wavelength': 200, 'dec_factor': 2,
+    'compute_phase_gradient': 0, 'correct_iono': 0,
+    'iono_filt_rng': 1.0, 'iono_filt_azi': 1.0, 'iono_dsamp': 1, 'iono_skip_est': 1,
+    'threshold_snaphu': 0, 'near_interp': 0, 'mask_water': 1, 'defomax': 0,
+    'threshold_geocode': 0.10,
+}
+
+
+def _coerce(v):
+    """Render a value the way Python config.py needs. Empty → -999 sentinel."""
+    s = v.strip()
+    if s == '':
+        return '-999'
+    # numeric (int/float) values stay as-is; strings get quoted.
+    try:
+        int(s); return s
+    except ValueError:
+        pass
+    try:
+        float(s); return s
+    except ValueError:
+        pass
+    # fraction like '300/5900/0/25000' (region_cut) or any other token — quote it.
+    return repr(s)
+
+
+def parse_csh_config(path):
+    """Return {param: rendered_value} for every `name = value` line."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            if not line or '=' not in line:
+                continue
+            name, _, value = line.partition('=')
+            out[name.strip()] = _coerce(value)
+    return out
+
+
+def render(parsed):
+    lines = [
+        '#! /usr/bin/env python3',
+        '# Imported from bundled csh config by import_csh_config.',
+        '',
+    ]
+    for key in REQUIRED:
+        val = parsed.get(key, str(DEFAULTS[key]))
+        lines.append(f'{key:22s} = {val}')
+
+    # Optional params (SLC_factor, range_dec, azimuth_dec, det_stitch, spec_div,
+    # spec_mode) — emitted only if present in the bundled config. p2p_processing
+    # uses `'<key>' in dir(config)` to detect them.
+    for key in sorted(set(parsed) - set(REQUIRED)):
+        # Skip non-config keys like SAT (handled via CLI), or anything unknown
+        # to p2p_processing. Only pass through keys we know it reads.
+        if key in ('SAT',):
+            continue
+        lines.append(f'{key:22s} = {parsed[key]}')
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit("Usage: import_csh_config <bundled.txt> <out.py>")
+    src, dst = sys.argv[1], sys.argv[2]
+    parsed = parse_csh_config(src)
+    with open(dst, 'w') as f:
+        f.write(render(parsed))
+    print(f"import_csh_config: wrote {dst} from {src} ({len(parsed)} params)")
+
+
+if __name__ == "__main__":
+    main()

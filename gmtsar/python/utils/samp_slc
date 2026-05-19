@@ -1,0 +1,69 @@
+#! /usr/bin/env python3
+"""samp_slc — resample a focused SLC to a new PRF and/or rng_samp_rate.
+
+Python port of csh samp_slc.csh (X. Xu 2018). Builds two temporary PRMs
+(tmp_master / tmp_aligned) with the target sampling, then uses resamp
+to produce the new SLC.
+
+Usage:  samp_slc image_stem new_prf new_rng_samp_rate
+Use 0 in new_prf or new_rng_samp_rate to skip resampling along that axis.
+"""
+import sys
+from gmtsar_lib import run, grep_value
+
+
+def samp_slc():
+    if len(sys.argv) != 4:
+        sys.exit(
+            "Usage: samp_slc image_stem new_prf new_rng_samp_rate\n"
+            "Example: samp_slc IMG-ALPSRP022200660-H1.1__A 2000 3200000\n"
+            "Use 0 to skip resampling on that axis."
+        )
+    image, nprf, nrsr = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+    if nprf == 0 and nrsr == 0:
+        sys.exit("specify at least one of new_prf/new_rng_samp_rate to be non-zero")
+
+    oprf = float(grep_value(f"{image}.PRM", "PRF", 3))
+    orsr = float(grep_value(f"{image}.PRM", "rng_samp_rate", 3))
+    trsr = nrsr / orsr if nrsr != 0 else 1.0
+    tprf = nprf / oprf if nprf != 0 else 1.0
+
+    if tprf < 1 and nprf != 0:
+        print("Downsampling along azimuth is not recommended, may cause aliasing ...")
+    if trsr < 1 and nrsr != 0:
+        print("Downsampling along range   is not recommended, may cause aliasing ...")
+
+    run(f"cp {image}.PRM tmp_master.PRM")
+    run(f"cp {image}.PRM tmp_aligned.PRM")
+
+    if nrsr != 0:
+        r = -(1 - 1.0 / trsr)
+        tmp = int(grep_value("tmp_master.PRM", "num_rng_bins", 3))
+        # Round to nearest multiple of 4
+        new_num_rng_bins = int(tmp * trsr / 4) * 4
+        run(f"update_PRM tmp_aligned.PRM stretch_r {r:.10f}")
+        run(f"update_PRM tmp_master.PRM rng_samp_rate {nrsr}")
+        run(f"update_PRM tmp_master.PRM num_rng_bins {new_num_rng_bins}")
+        bytes_per_line = new_num_rng_bins * 4
+        run(f"update_PRM tmp_master.PRM bytes_per_line {bytes_per_line}")
+        run(f"update_PRM tmp_master.PRM good_bytes_per_line {bytes_per_line}")
+
+    if nprf != 0:
+        a = -(1 - 1.0 / tprf)
+        tmp = int(grep_value("tmp_master.PRM", "num_lines", 3))
+        new_nl = int(tmp * tprf / 4) * 4
+        run(f"update_PRM tmp_aligned.PRM a_stretch_a {a:.10f}")
+        run(f"update_PRM tmp_master.PRM PRF {nprf}")
+        run(f"update_PRM tmp_master.PRM num_lines {new_nl}")
+        run(f"update_PRM tmp_master.PRM num_valid_az {new_nl}")
+        run(f"update_PRM tmp_master.PRM num_patches 1")
+        run(f"update_PRM tmp_master.PRM nrows {new_nl}")
+
+    run("resamp tmp_master.PRM tmp_aligned.PRM tmp_aligned.PRMresamp tmp_aligned.SLCresamp 4")
+    run(f"mv tmp_master.PRM {image}.PRM")
+    run(f"mv tmp_aligned.SLCresamp {image}.SLC")
+    run("rm -f tmp*")
+
+
+if __name__ == "__main__":
+    samp_slc()

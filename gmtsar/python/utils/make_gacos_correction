@@ -1,0 +1,25 @@
+#! /usr/bin/env python3
+"""make_gacos_correction — tropospheric correction via GACOS (SCAFFOLD).
+
+Python port of csh make_gacos_correction.csh (W. Tang 2018; Z. Xiangjun 2024;
+H. Xu 2025). 200-line csh. Not yet implemented; complex GACOS-specific I/O
+pipeline (.ztd files + .rsc metadata, per-date master/slave ZTDs).
+
+Usage:  make_gacos_correction intf_dir GACOS_path ref_range ref_azimuth dem.grd
+"""
+import sys
+
+
+def make_gacos_correction():
+    if len(sys.argv) != 6:
+        sys.exit(
+            "Usage: make_gacos_correction intf_dir GACOS_path ref_range "
+            "ref_azimuth dem.grd\n"
+            "  PLAN Phase 5 scaffold — not yet implemented (200 csh lines).\n"
+            "  GACOS files (.ztd, .rsc) must exist in GACOS_path."
+        )
+    raise NotImplementedError("make_gacos_correction: Phase 5 scaffold")
+
+
+if __name__ == "__main__":
+    make_gacos_correction()

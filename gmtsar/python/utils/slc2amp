@@ -1,62 +1,51 @@
 #! /usr/bin/env python3
-"""
-# slc2amp is part of GMTSAR. 
-# slc2amp is migrated from slc2amp.csh by Dunyu Liu on 20231110.
-# slc2amp.csh was originally written on 20091123 by Xiaopeng Tong.
+"""slc2amp — convert a complex SLC file to a real amplitude grd.
 
-# Purpose: to convert a complex SLC file to a real amplitude grd
-#   file using optional filter and a PRM file. 
-"""
+Python port of csh slc2amp.csh (X. Tong 2009). Applies a gauss5x3 filter
+from the GMTSAR shared filters directory.
 
-import sys, os, re, configparser
-import subprocess, glob, shutil
-from gmtsar_lib import * 
+Usage:  slc2amp filein.PRM rng_dec fileout.grd
+  rng_dec — range decimation
+    1 for ERS / ENVISAT / ALOS FBD
+    2 for ALOS FBS
+    4 for TSX
+Example: slc2amp IMG-HH-ALPSRP055750660-H1.0__A.PRM 2 amp-ALPSRP055750660-H1.0__A.grd
+
+History:
+  2009-11-23: Original csh by X. Tong.
+  2023-11-10: Initial Python port by Dunyu Liu (had a hardcoded sharedir
+              and a `fil1` typo that would have NameError'd; never tested).
+  2026-05-14: Repaired — uses gmtsar_sharedir.resolve_sharedir() for the
+              filters path, and the call site is now wired up in
+              p2p_stages.py.
+"""
+import sys
+
+from gmtsar_lib import run, resolve_sharedir
+
 
 def slc2amp():
-    
-    def Error_Message():
-        print( " ")
-        print( "Usage: slc2amp.csh filein.PRM rng_dec fileout.grd ")  
-        print( " ")
-        print( " run_dec is range decimation ")
-        print( " e.g., 1 for ERS ENVISAT ALOS FBD ")
-        print( "       2 for ALOS FBS ")
-        print( "       4 for TSX ")
-        print( " ")
-        print( " Example: slc2amp IMG-HH-ALPSRP055750660-H1.0__A.PRM 2 amp-ALPSRP055750660-H1.0__A.grd ")
-        print( " ")
-        
-    print('SLC2AMP - START ... ...')
-    print('SLC2AMP: input arguments are ', sys.argv)
-    
-    n = len(sys.argv)
-    if n!=4:
-        print('FILTER: Wrong # of input arguments; # should be 3 ... ...')
-        Error_Message()
-    
-    sharedir = '/usr/local/GMTSAR/share/gmtsar'
-    filt1 = sharedir + '/filters/gauss5x3'
-    filt2 = sharedir + '/filters/gauss9x5'
-    print('SLC2AMP: define the filters, which are ',filt1, filt2)
-    
-    print(' SLC2AMP: filter the amplitudes done in conv ... ...')
-    print(' SLC2AMP: check the input and output filename before ... ...')
-    
-    if (sys.argv[1].find('PRM')>=0 or sys.argv[1].find('prm')>=0) and sys.argv[3].find('grd')>=0: 
-        print(' ')
-        print('SLC2AMP: range decimation is ', sys.argv[2])
-        run('conv 4 '+sys.argv[2]+' '+fil1+' '+sys.argv[1]+' '+sys.argv[3]+'=bf')
-    else:
-        print('SLC2AMP: wrong filename, exiting ... ...')
-    
-    print('SLC2AMP: get the zmin and zmax values ... ...')
-    run('gmt grdmath '+sys.argv[3]+'=bf 1 MUL = '+sys.argv[3])
-    
-    print("SLC2AMP - END ... ...")
+    if len(sys.argv) != 4:
+        sys.exit(
+            "Usage: slc2amp filein.PRM rng_dec fileout.grd\n"
+            "  rng_dec is range decimation\n"
+            "  e.g. 1 for ERS ENVISAT ALOS FBD, 2 for ALOS FBS, 4 for TSX"
+        )
+    prm_in, rng_dec, grd_out = sys.argv[1], sys.argv[2], sys.argv[3]
 
-def _main_func(description):
-    slc2amp()
+    if not ("PRM" in prm_in or "prm" in prm_in):
+        sys.exit(f"slc2amp: expected .PRM input filename, got {prm_in}")
+    if "grd" not in grd_out:
+        sys.exit(f"slc2amp: expected .grd output filename, got {grd_out}")
+
+    sharedir = resolve_sharedir()
+    filt = f"{sharedir}/filters/gauss5x3"
+
+    print(f"SLC2AMP: range decimation = {rng_dec}")
+    run(f"conv 4 {rng_dec} {filt} {prm_in} {grd_out}=bf")
+    # Force z-range refresh on the output grid (matches legacy csh final step).
+    run(f"gmt grdmath {grd_out}=bf 1 MUL = {grd_out}")
+
 
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    slc2amp()

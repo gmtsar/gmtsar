@@ -1,0 +1,16 @@
+# Python framework local artifacts (kept out of git, kept inside gmtsar/python/)
+__pycache__/
+*.pyc
+fftw_force_serial.so
+
+# macOS Finder droppings — caught by upstream-bound PR before the python tree
+# ends up there. Was previously in the root .gitignore as a fork-only drift;
+# moved here to keep root .gitignore clean and let the python tree be the
+# single source of fork drift.
+.DS_Store
+utils/.DS_Store
+
+# Frozen csh-output reference (~5.8 GB, mostly S1_Ridgecrest_EQ at 3.7 GB).
+# Produced locally by tests/freeze_reference.py; not shipped via git.
+# Future: distribute as a GitHub Release asset + fetch_reference.sh.
+tests/reference/

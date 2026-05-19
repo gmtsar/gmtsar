@@ -1,0 +1,6 @@
+# Sentinel-1 TOPS test recipe over Niaragua (COVE area).
+# Translated from the bundled README.txt; uses the multi-burst p2p_S1_TOPS_Frame
+# Python entry point (replaces csh p2p_S1_TOPS_Frame.csh in v1.9.0).
+# Last args: polarization=vv, parallel=0 (sequential subswaths).
+
+p2p_S1_TOPS_Frame S1A_IW_SLC__1SDV_20180317T235700_20180317T235727_021062_0242D6_6F45.SAFE S1A_OPER_AUX_POEORB_OPOD_20180406T120838_V20180316T225942_20180318T005942.EOF S1A_IW_SLC__1SDV_20180329T235700_20180329T235727_021237_024860_7623.SAFE S1A_OPER_AUX_RESORB_OPOD_20180330T044439_V20180329T235400_20180330T031129.EOF config.py vv 0

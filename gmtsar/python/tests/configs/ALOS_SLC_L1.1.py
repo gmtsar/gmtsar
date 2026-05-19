@@ -1,0 +1,35 @@
+#! /usr/bin/env python3
+# Imported from bundled csh config by import_csh_config.
+
+proc_stage             = 1
+skip_stage             = -999
+skip_master            = 0
+skip_1                 = 0
+skip_2                 = 0
+skip_3                 = 0
+skip_4                 = 0
+skip_5                 = 0
+skip_6                 = 0
+num_patches            = -999
+earth_radius           = -999
+near_range             = -999
+fd1                    = -999
+region_cut             = -999
+topo_phase             = 1
+topo_interp_mode       = 0
+shift_topo             = 1
+switch_master          = 0
+filter_wavelength      = 200
+dec_factor             = 2
+compute_phase_gradient = 0
+correct_iono           = 0
+iono_filt_rng          = 1.0
+iono_filt_azi          = 1.0
+iono_dsamp             = 1
+iono_skip_est          = 1
+threshold_snaphu       = 0
+near_interp            = 0
+mask_water             = 1
+defomax                = 0
+threshold_geocode      = .10
+geometric_coreg        = 0

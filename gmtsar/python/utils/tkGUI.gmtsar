@@ -1,0 +1,540 @@
+#! /usr/bin/env python3
+import tkinter as tk
+from tkinter import ttk
+import subprocess, os, signal, sys, threading, time, datetime
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg as FigureCanvas
+from PIL import Image
+matplotlib.use('TkAgg')
+
+# 20250212/dliu@ig.utexas.edu
+ 
+class MyWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("GMTSAR v6.5")
+        self.geometry("1000x600")
+        nGridX = 25
+        nGridY = 15
+        pixelAlongX = 1000/nGridX #40 pixels
+        pixelAlongY = 600/nGridY #30 pixels 
+        style = ttk.Style()
+        print(style.theme_names())
+        style.theme_use('clam')
+        pixelMargin = 4
+        stickyOption = "nesw"
+        ConfigBlockStartRow=5 
+        RunCMDBlockStartRow=8
+        PlotResultBlockStartRow=10 
+        
+        if PlotResultBlockStartRow>nGridY-4:
+            print('WARNING: Vertical grids not enough.')    
+
+        ultra_light_blue = "#E0F7FF"
+
+        for i in range(nGridX):
+            self.grid_columnconfigure(i, minsize=pixelAlongX, weight=1)
+        for i in range(nGridY):
+            self.grid_rowconfigure(i, minsize=pixelAlongY, weight=1)
+        buttonWidth = 5 # characters
+
+        self.rsa_index = 0
+        self.snapshot_index = 0
+        self.scaling_fig_index = 0
+
+        self.plotting_method = 'png'
+
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # data structure for self.sample_dict
+        # keys: tar file name (format .tar.gz is not shown);
+        # values: [satellite name, index on topex, name of the link shown on topex]
+        self.sample_dict = {'test_GMTSAR':      ['NONE', 1, 'Script to Test All Cases Below', 'tar.gz'],    
+                            'ALOS_Baja_EQ':     ['ALOS', 2, 'ALOS-1 L1.0 (standard format CEOS)', 'tar.gz'], 
+                            'ALOS_ERSDAC_L1.0': ['ALOS', 3, 'ALOS-1 L1.0 (ERSDAC format)', 'tar.gz'], 
+                            'ALOS_SLC_L1.1':    ['ALOS_SLC', 4, 'ALOS-1 L1.1', 'tar.gz'],
+                            'ALOS-ionosphere-correction': ['ALOS', 5, 'ALOS-1 L1.0 (ionosphere correction)', 'tar.gz'],
+                            'ALOS2_Brazil':     ['ALOS2', 8, 'ALOS-2 L1.1', 'tar.gz'],
+                            'ALOS2_SCAN_SSAF':  ['ALOS2', 9, 'ALOS-2 L1.1 ScanSAR', 'tar.gz'],
+                            'NISAR_SIM_ALOS':   ['ALOS', 10, 'NISAR_simulated_ALOS', 'tgz'],
+                            'ENVI_Baja_EQ':     ['ENVI', 11, 'Envisat', 'tar.gz'],
+                            'ENVI_Baja_EQ_SLC': ['ENVI_SLC', 12, 'Envisat SLC', 'tar.gz'],
+                            'ERS_Hector_EQ':    ['ERS', 14, 'ERS', 'tar.gz'],
+                            'CSK_RAW_Hawaii':   ['CSK_RAW', 15, 'COSMOS-SkyMed RAW', 'tar.gz'],
+                            'CSK_SLC_Italy':    ['CSK_SLC', 16, 'COSMOS-SkyMed SLC', 'tar.gz'],
+                            'RS2_SLC_Hawaii' :  ['RS2', 17, 'RADARSAT-2', 'tar.gz'], 
+                            'S1A_SLC_TOPS_LA':  ['S1_TOPS_Frame', 18, 'Sentinel-1 TOPS Los Angeles', 'tar.gz'],
+                            'S1A_SLC_TOPS_COVE':['S1_TOPS_Frame', 19, 'Sentinel-1 TOPS Niaragua', 'tar.gz'],
+                            'S1A_SLC_TOPS_Greece':['S1_TOPS_Frame', 20, 'Sentinel-1 TOPS Greece', 'tar.gz'],
+                            'S1_Larsen_C':      ['S1_TOPS', 23, 'Sentinel-1 TOPS Larsen Ice Shelf', 'tar.gz'],
+                            'S1_Ridgecrest_EQ': ['S1_TOPS', 25, 'Sentinel-1 TOPS Ridgecrest M7.1 EQ and phase gradient', 'tar.gz'],
+                            'TSX_SLC_Hawaii':   ['TSX', 29, 'TerraSAR-X', 'tar.gz']}
+        
+        self.download_file_list = sorted(list(self.sample_dict.keys()), key=str.lower)
+        self.sat_list = sorted(list(set([v[0] for v in self.sample_dict.values()])), key=str.lower)
+
+        # Create frame1 for system controls
+        self.frame1 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
+        self.frame1.grid(row=0, column=0, rowspan=3, columnspan=8, sticky=stickyOption, padx=pixelMargin, pady=pixelMargin)
+        self.reconfigureFrameWeight(self.frame1)
+        
+        gmtsarPathLabel = ttk.Label(self.frame1, text="GMTSAR bin")
+        gmtsarPathLabel.grid(row=0, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.gmtsarPathChooser = ttk.Entry(self.frame1)
+        self.gmtsarPathChooser.grid(row=0, column=2, rowspan=1, columnspan=6, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.gmtsarPath = 'python'
+        try:
+            exePaths = os.environ.get('PATH', '').split(os.pathsep)
+            exePaths.append(os.path.join(os.getcwd(), 'python/utils/'))
+            for path in exePaths:
+                fullPath = os.path.join(path, 'p2p_processing')
+                if os.path.isfile(fullPath):
+                    self.gmtsarPath = path
+        except Exception as e:
+            self.gmtsarPath = 'No DR4GM exes are found in $PATH; please exit and assign.'
+        self.gmtsarPathChooser.insert(0, self.gmtsarPath)
+        os.environ['PATH'] = self.gmtsarPath + ':' + os.environ.get('PATH', '')
+        sys.path.append(self.gmtsarPath)
+        
+        self.dataRootPath = tk.StringVar()
+        self.dataRootPath.set(os.getcwd())
+        
+        self.currentPath = tk.StringVar()
+        self.currentPath.set(os.getcwd())
+        
+        # downloader
+        runDownloader = ttk.Button(self.frame1, text="Download", command=self.download_data)
+        runDownloader.grid(row=3, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.downloader = ttk.Combobox(self.frame1, values=self.download_file_list)
+        self.downloader.set('RS2_SLC_Hawaii')
+        self.downloader.grid(row=3, column=2, rowspan=1, columnspan=6, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        setDataPathLabel = ttk.Label(self.frame1, text="Data path")
+        setDataPathLabel.grid(row=4, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.navigateButton = tk.Menubutton(self.frame1, textvariable=self.dataRootPath, relief=tk.RAISED, width=buttonWidth, anchor="e")
+        self.navigateButton.grid(row=4, column=2, rowspan=1, columnspan=6, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.navigateButton.menu = tk.Menu(self.navigateButton, tearoff=0)
+        self.navigateButton["menu"] = self.navigateButton.menu
+        self.updateDropdownMenu()
+
+        # Create frame2 for setting up parameters
+        self.frame2 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
+        self.frame2.grid(row=ConfigBlockStartRow-1, column=0, rowspan=1, columnspan=8, sticky=stickyOption, padx=pixelMargin, pady=pixelMargin)
+        self.reconfigureFrameWeight(self.frame2)
+        frame2_label = ttk.Label(self.frame2, text="Configuration", font=("Arial", 14, "bold"), background=ultra_light_blue)
+        frame2_label.grid(padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        runConfigButton = ttk.Button(self, text="Config", command=lambda:self.runCommand('pop_config'))
+        runConfigButton.grid(row=ConfigBlockStartRow, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+                  
+        SATLabel = ttk.Label(self, text="Choose SAT")
+        SATLabel.grid(row=ConfigBlockStartRow, column=2, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        self.SAT = ttk.Combobox(self, values=self.sat_list)
+        self.SAT.grid(row=ConfigBlockStartRow, column=5, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.SAT.set('RS2')
+
+        block_start_row = ConfigBlockStartRow+1
+        block_start_col = 0
+        checkbox_height = 1
+        checkbox_width = 2
+        _, self.P1 = self.add_checkbox("Preproc", [block_start_row, block_start_col, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+        _, self.P2 = self.add_checkbox("FocAlig", [block_start_row, block_start_col+checkbox_width, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+        _, self.P3 = self.add_checkbox("MakTopo", [block_start_row, block_start_col+2*checkbox_width, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+        _, self.P4 = self.add_checkbox("Interfe", [block_start_row+1, block_start_col, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+        _, self.P5 = self.add_checkbox("Unwrap",  [block_start_row+1, block_start_col+checkbox_width, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+        _, self.P6 = self.add_checkbox("Geocode", [block_start_row+1, block_start_col+2*checkbox_width, checkbox_height, checkbox_width, pixelMargin, stickyOption])
+
+        # Run GMTSAR
+        self.frame3 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
+        self.frame3.grid(row=RunCMDBlockStartRow, column=0, rowspan=1, columnspan=8, sticky=stickyOption, padx=pixelMargin, pady=pixelMargin)
+        self.reconfigureFrameWeight(self.frame3)
+        frame3_label = ttk.Label(self.frame3, text="Running GMTSAR", font=("Arial", 14, "bold"), background=ultra_light_blue)
+        frame3_label.grid(padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        runGMTSARButton = ttk.Button(self, text="p2p_processing", command=lambda:self.runCommand('p2p_processing'))
+        runGMTSARButton.grid(row=RunCMDBlockStartRow+1, column=0, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        runCshTestAllButton = ttk.Button(self, text="CshTestAll", command=lambda:self.runCommand('csh_test_all'))
+        runCshTestAllButton.grid(row=RunCMDBlockStartRow+1, column=3, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        runPythonTestAllButton = ttk.Button(self, text="PyTestAll", command=lambda:self.runCommand('python_test_all'))
+        runPythonTestAllButton.grid(row=RunCMDBlockStartRow+1, column=6, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        self.frame4 = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
+        self.frame4.grid(row=PlotResultBlockStartRow, column=0, rowspan=1, columnspan=8, sticky=stickyOption, padx=pixelMargin, pady=pixelMargin)
+        self.reconfigureFrameWeight(self.frame4)
+        frame4_label = ttk.Label(self.frame4, text="Showing results", font=("Arial", 14, "bold"), background=ultra_light_blue)
+        frame4_label.grid(padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        plotDispMaskllButton = ttk.Button(self, text="corr_ll", command=self.load_corr_ll)
+        plotDispMaskllButton.grid(row=PlotResultBlockStartRow+1, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        plotDispAmpllButton = ttk.Button(self, text="disp_amp_ll", command=self.load_disp_amp_ll)
+        plotDispAmpllButton.grid(row=PlotResultBlockStartRow+1, column=2, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+
+        plotDispMaskllButton = ttk.Button(self, text="phase_mask_ll", command=self.load_phase_mask_ll)
+        plotDispMaskllButton.grid(row=PlotResultBlockStartRow+1, column=5, rowspan=1, columnspan=3, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+                
+        plotDispMaskllButton = ttk.Button(self, text="phasefilt_mask_ll", command=self.load_phasefilt_mask_ll)
+        plotDispMaskllButton.grid(row=PlotResultBlockStartRow+2, column=0, rowspan=1, columnspan=4, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        
+        # Clean block
+        cleanButton = ttk.Button(self, text="Clean", command=self.clean)
+        cleanButton.grid(row=14, column=0, rowspan=1, columnspan=2, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+                        
+        self.figureCanvas = tk.Frame(self)
+        self.figureCanvas.grid(row=0, column=8, rowspan=nGridY-4, columnspan=nGridX-8, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.figureCanvas.grid_propagate(False)
+
+        # Canvas blcok for results and operation output
+        fig = plt.figure()
+        canvas = FigureCanvas(fig, master=self.figureCanvas)
+        canvas.draw()
+        canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+    
+        self.stdoutCanvas = tk.Frame(self, bg=ultra_light_blue, bd=2, relief="sunken")
+        self.stdoutCanvas.grid(row=nGridY-4, column=8, rowspan=5, columnspan=nGridX-8, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        self.stdoutCanvas.grid_propagate(False)
+        stdout_widget = tk.Text(self.stdoutCanvas, wrap=tk.WORD, bg=ultra_light_blue, bd=2, relief="sunken")
+        stdout_widget.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+        sys.stdout = stdoutRedirector(stdout_widget)
+
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+    def getDirectoryContents(self, path):
+        try:
+            contents = os.listdir(path)
+            contents.insert(0, '..')
+            return contents
+        except FileNotFoundError:
+            return []
+
+    def updateDataPath(self):
+        self.dataRootPath.set(self.currentPath.get())
+    
+    def updateDropdownMenu(self):
+        self.navigateButton.menu.delete(0,'end')
+        currentDir = self.currentPath.get()
+        for item in sorted(self.getDirectoryContents(currentDir), key=str.lower):
+            self.navigateButton.menu.add_command(
+                label=item,
+                command = lambda item=item:self.changeDirectory(item)
+            )
+
+    def changeDirectory(self, item):
+        if item == "..":
+            new_path = os.path.dirname(self.currentPath.get())
+        else:
+            new_path = os.path.join(self.currentPath.get(), item)
+
+        if os.path.isdir(new_path):
+            os.chdir(new_path)
+            print('Navigating to ',os.getcwd())
+            self.currentPath.set(new_path)
+            self.dataRootPath.set(new_path)
+            self.updateDropdownMenu()
+            if item != "..":
+                self.dataRootPath.set(new_path)
+
+    def reconfigureFrameWeight(self, frame):
+        for i in range(frame.grid_info().get("columnspan")):
+            frame.grid_columnconfigure(i, weight=1)
+        for i in range(frame.grid_info().get("rowspan")):
+            frame.grid_rowconfigure(i, weight=1)
+
+    def on_closing(self):
+        self.quit()
+        self.destroy()
+        sys.exit()
+    
+    def runCommand(self, cmdType):
+        if cmdType=='pop_config':
+            # Run pop_config SAT first to generate default config.py, then modify parameters inside. 
+            self.run_subprocess_wait(['pop_config', self.SAT.get()])
+            # Open config.py and modify parameters based on GUI inputs.
+            print("P1 value:", self.P1.get())
+            if self.P1.get() == 'n':
+                self.setting_config_params('skip_1', 0, 1)
+            if self.P2.get() == 'n':
+                self.setting_config_params('skip_2', 0, 1)
+            if self.P3.get() == 'n':
+                self.setting_config_params('skip_3', 0, 1)
+            if self.P4.get() == 'n':
+                self.setting_config_params('skip_4', 0, 1)
+            if self.P5.get() == 'n':
+                self.setting_config_params('skip_5', 0, 1)
+            if self.P6.get() == 'n':
+                self.setting_config_params('skip_6', 0, 1)
+
+        elif cmdType=='p2p_processing':
+            filename_image_pair = self.find_image_pair()
+            self.run_subprocess(['p2p_processing', self.SAT.get(), filename_image_pair[0], filename_image_pair[1], 'config.py'])
+        elif cmdType=='python_test_all':
+            for case in self.download_file_list:
+                os.chdir(case)
+                self.run_subprocess(['cleanup', 'all'])
+                self.run_subprocess(['cp', '-r', '../python/utils/README_'+case+'.txt', '.'])
+                # Shell needed so `>` performs redirection rather than being passed as a literal arg.
+                self.run_subprocess(['bash', '-c', f'./README_{case}.txt > log.txt'])
+                os.chdir('..')
+        elif cmdType=='csh_test_all':
+            for case in self.download_file_list:
+                full_path = os.path.abspath(case)
+                print(f"Processing: {full_path}")
+                if os.path.exists(full_path):
+                    os.chdir(full_path)
+                    print(f"Now in directory: {os.getcwd()}")  # Confirm
+                    self.run_subprocess(['bash','README.txt'])
+                    os.chdir('..')
+
+    def run_subprocess(self, command):
+            # background running.
+            threading.Thread(
+                target=lambda: self._run_and_print(command),
+                daemon=True
+            ).start()
+
+    def run_subprocess_wait(self, command):
+            # no background running.
+            self._run_and_print(command)
+
+    def _run_and_print(self, command):
+        elapsed_time = 0.0
+        try:
+            print('Running command : ', command)
+            # Redirect stdout and stderr to the text widget
+            start_time = time.time()
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
+            for line in process.stdout:
+                print(line, end="")
+            process.wait()
+            elapsed_time = time.time() - start_time
+            print(f"Command completed in {elapsed_time:.2f} seconds for command {command}")
+        except Exception as e:
+            print(f"Subprocess error: {e}")
+        return elapsed_time
+    
+    def setting_config_params(self, var, old_params, new_params):
+        with open('config.py', 'r') as file:
+            lines = file.readlines()
+
+        for  i, line in enumerate(lines):
+            if line.startswith(var):
+                lines[i] = var + ' = ' + str(new_params) + '\n'
+        
+        with open('config.py', 'w') as file:
+            file.writelines(lines)
+
+        print('Old param of '+var+' is changed to '+str(new_params))
+        
+    def display_image(self, image_path):
+
+        if self.plotting_method == 'png':
+            img = Image.open(image_path)
+            fig, ax = plt.subplots(dpi=600)
+            ax.imshow(img)
+            ax.axis('off')
+            # Add the new plot to the figureCanvas
+            canvas = FigureCanvas(fig, master=self.figureCanvas)
+            canvas.draw()   
+            # Use grid instead of pack to make it responsive
+            canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+            
+            # Ensure that the canvas expands to fill available space
+            self.figureCanvas.grid_rowconfigure(0, weight=1)
+            self.figureCanvas.grid_columnconfigure(0, weight=1)
+            
+            # Make sure the widget also expands within its parent
+            self.grid_rowconfigure(self.figureCanvas.grid_info()["row"], weight=1)
+            self.grid_columnconfigure(self.figureCanvas.grid_info()["column"], weight=1)
+
+        else:
+            for widget in self.figureCanvas.winfo_children():
+                widget.destroy()  
+
+            fig = pickle.load(open(image_path, 'rb'))
+
+            def resize_figure(event=None):
+                # Get the canvas size after window is rendered
+                canvas_width = self.figureCanvas.winfo_width()
+                canvas_height = self.figureCanvas.winfo_height()
+
+                # Resize the figure to match the canvas size
+                fig.set_size_inches(canvas_width / fig.dpi, canvas_height / fig.dpi)
+                fig.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
+                
+                # Redraw the canvas
+                canvas.draw()
+
+            canvas = FigureCanvas(fig, master=self.figureCanvas)
+            canvas.draw()
+            canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+            self.figureCanvas.grid_rowconfigure(0, weight=1)
+            self.figureCanvas.grid_columnconfigure(0, weight=1)
+            
+            self.figureCanvas.bind("<Configure>", resize_figure)
+            self.figureCanvas.grid_propagate(False)
+            self.figureCanvas.update()
+
+    def locate_result_filepath(self, filename):
+        for root, dirs, files in os.walk('intf'):
+            print(root, dirs, files)
+            for file in files:
+                if file == filename+'.png':
+                    filepath = os.path.join(root, filename)
+        return filepath
+
+    def load_corr_ll(self):
+        filename = 'corr_ll'
+        filepath = self.locate_result_filepath(filename)
+        self.display_image(filepath+'.'+self.plotting_method)
+
+    def load_disp_amp_ll(self):
+        filename = 'display_amp_ll'
+        filepath = self.locate_result_filepath(filename)
+        self.display_image(filepath+'.'+self.plotting_method)
+
+    def load_phase_mask_ll(self):
+        filename = 'phase_mask_ll'
+        filepath = self.locate_result_filepath(filename)
+        self.display_image(filepath+'.'+self.plotting_method)
+
+    def load_phasefilt_mask_ll(self):
+        filename = 'phasefilt_mask_ll'
+        filepath = self.locate_result_filepath(filename)
+        self.display_image(filepath+'.'+self.plotting_method)
+
+    def load_snapshot(self):
+        figure_files = [f for f in os.listdir() if f.endswith('.'+self.plotting_method) and 'gMap' in f]
+        latest_file = max(figure_files, key=os.path.getmtime)
+        self.display_image(latest_file)
+    
+    def update_snapshot_id(self):
+        self.snapshot_index += 1
+        if self.snapshot_index >= self.total_snapshot_files:
+            self.snapshot_index = 0
+        return self.snapshot_index
+    
+    def add_checkbox(self, checkbutton_label, pos=[0, 0, 1, 1, 5, 5, 'nesw']):
+        process_or_not = tk.StringVar(value='y')
+        #font = tk.font.Font(size=10)
+        checkbutton = tk.Checkbutton(self, text=checkbutton_label, variable=process_or_not, onvalue='y', offvalue='n')
+        start_row = pos[0]
+        start_col = pos[1]
+        row_span = pos[2]
+        col_span = pos[3]
+        pixelMargin = pos[4]
+        stickyOption = pos[5]
+        checkbutton.grid(row=start_row, column=start_col, rowspan=row_span, columnspan=col_span, padx=pixelMargin, pady=pixelMargin, sticky=stickyOption)
+        return checkbutton, process_or_not
+    
+    def download_data(self):
+        sat = self.downloader.get()
+        ext = self.sample_dict[sat][3]              # 'tar.gz' or 'tgz'
+        filename = f"{sat}.{ext}"
+        self.download_if_missing(filename, sat)
+
+    def download_if_missing(self, filename, foldername):
+        print(f"Downloading {filename}...")
+        cmd = f"wget -c http://topex.ucsd.edu/gmtsar/tar/{filename}"
+        self.run_subprocess(cmd.split())
+        print(f"{filename} downloaded.")
+        self.extract_if_missing(foldername, filename)
+
+    def extract_if_missing(self, foldername, archive):
+        """Extract <archive> into <foldername>/, creating the dir if missing.
+        Previously assumed `.tar.gz` (7 chars) in both filename slicing and
+        the tar command, breaking for `.tgz` cases like NISAR_SIM_ALOS."""
+        if not os.path.exists(foldername):
+            print(f"Extracting {foldername}...")
+            self.run_subprocess(['mkdir', foldername])
+        elif os.listdir(foldername):
+            print(f"{foldername} already exists. Skipping extraction.")
+            return
+        else:
+            print(f"{foldername} is empty. Extracting again...")
+        cmd = f"tar -xzf {archive} -C {foldername}"
+        self.run_subprocess(cmd.split())
+        print(f"{foldername} extracted.")
+
+    def find_image_pair(self):
+        print(self.dataRootPath.get())
+        dir = self.dataRootPath.get() + '/raw/'
+        raw_image_files = [f for f in os.listdir(dir)] # remove after only the last dot
+        print(raw_image_files)
+        filename_image_pair = []
+        if self.SAT.get() == 'RS2':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.PRM')]
+        elif self.SAT.get() == 'CSK_RAW' or self.SAT.get() == 'CSK_SLC':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.h5')]
+        elif self.SAT.get() == 'ALOS' or self.SAT.get() == 'ALOS2':
+            filename_image_pair = []
+            for file in raw_image_files:
+                if (os.path.splitext(file)[1] == ".0__A" or os.path.splitext(file)[1] == ".1__A") and file.startswith('IMG-'):
+                    filename_image_pair.append(file)
+        elif self.SAT.get() == 'TSX':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.cos')]
+        elif self.SAT.get() == 'ALOS_SLC':
+            pass
+        elif self.SAT.get() == 'ENVI':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.baq')]
+        elif self.SAT.get() == 'ENVI_SLC':
+            filename_image_pair = [os.path.splitext(f)[0] for f in raw_image_files if f.endswith('.N1')]
+
+        filename_image_pair = sorted(filename_image_pair, key=str.lower)
+        if len(filename_image_pair) != 2:
+            raise ValueError("There should be exactly two raw image files in the directory but get "+str(len(filename_image_pair)))
+        
+        print(filename_image_pair)
+        return filename_image_pair
+
+    def clean(self):
+        self.run_subprocess(['rm', '-rf', 'intf', 'SLC'])
+        print('Cleaned result directories intf/, SLC/ ...')
+
+class stdoutRedirector:
+    def __init__(self, widget, logfile_path='stdout.log'):
+        self.widget = widget
+        self.log_file = open(logfile_path, 'a')
+
+    def write(self, string):
+        timestamp = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
+        log_entry = timestamp + string if string.strip() else string
+
+        # write to GUI widget
+        self.widget.configure(state='normal')
+        self.widget.insert(tk.END, string)
+        self.widget.configure(state='disabled')
+        self.widget.yview(tk.END)
+
+        # write to log file
+        self.log_file.write(log_entry)
+        self.log_file.flush()
+
+    def flush(self):
+        pass
+    def close(self):
+        self.widget.configure(state='normal')
+        self.widget.delete(1.0, tk.END)
+        self.widget.configure(state='disabled')
+
+
+def signal_handler(sig, frame):
+    print('Exiting. You pressed Ctrl+C!')
+    sys.exit(0)
+    
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+    try:
+        app = MyWindow()
+        app.mainloop()
+    except KeyboardInterrupt:
+        print("Application closed by user")
+        sys.exit(0)

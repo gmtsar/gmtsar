@@ -1,0 +1,59 @@
+#! /usr/bin/env python3
+"""tide_correction — solid-earth tide correction for InSAR phase.
+
+Python port of csh tide_correction.csh (X. Xu 2018). Computes the LOS
+projection of the solid-earth tide displacement between two acquisition
+times, projects it into radar coordinates, and converts to a phase
+correction in radians.
+
+Usage:  tide_correction PRM1 PRM2 dem.grd
+Output: tide.grd (radar coordinates, range × azimuth, in radians)
+"""
+import sys
+from gmtsar_lib import run, grep_value
+
+
+def tide_correction():
+    if len(sys.argv) < 4:
+        sys.exit(
+            "Usage: tide_correction PRM1 PRM2 dem.grd\n"
+            "  Output: tide.grd"
+        )
+    prm, prm2, dem = sys.argv[1], sys.argv[2], sys.argv[3]
+    inc1, inc2 = "0.02/0.02", "200/50"
+
+    rng  = grep_value(prm, "num_rng_bins",   3)
+    azi  = grep_value(prm, "num_lines",      3)
+    wave = grep_value(prm, "wavelength",     3)
+    tt1  = grep_value(prm, "SC_clock_start", 3)
+    tt2  = grep_value(prm2, "SC_clock_start", 3)
+    print(f"Computing tidal correction for dates {tt1} {tt2} ...")
+
+    run(f"gmt grdsample {dem} -I{inc1} -Gtmp_dem.grd")
+    run("gmt grd2xyz tmp_dem.grd | awk '{print $1,$2}' > topo.ll")
+    run(f"solid_tide {tt1} < topo.ll > topo1.llenu")
+    run(f"solid_tide {tt2} < topo.ll > topo2.llenu")
+    # Per-cell ENU tide difference (paste prm2 next to prm1; columns 1-5 are
+    # lon lat E N U from prm1 and 6-10 from prm2; output is E_d N_d U_d).
+    run("paste topo1.llenu topo2.llenu | "
+        "awk '{printf(\"%.6f %.6f %.12f %.12f %.12f \\n\", "
+        "$1,$2,$8-$3,$9-$4,$10-$5)}' > topo.llenu")
+
+    # LOS projection via SAT_look (look vectors); then radar coords.
+    run("gmt grd2xyz tmp_dem.grd > topo.llt")
+    run(f"SAT_look {prm} < topo.llt > topo.lltn")
+    run("paste topo.llenu topo.lltn | "
+        "awk '{printf(\"%.12f\\n\", ($3*$9) + ($4*$10) + ($5*$11))}' > topo.d")
+
+    run(f"SAT_llt2rat {prm} 1 < topo.llt > topo.ratll")
+    # -ph_correction = -tide_LOS * 4π / λ
+    run(f"paste topo.ratll topo.d | "
+        f"awk '{{printf(\"%.6f %.6f %.12f\\n\", $1,$2,-$6*2.0*2.0*3.141592653/{wave})}}' > topo.rad")
+    run(f"gmt blockmedian topo.rad -R0/{rng}/0/{azi} -I{inc2} -r > tmp.rad")
+    run(f"gmt surface tmp.rad -R0/{rng}/0/{azi} -I{inc2} -T0.5 -r -Gtide.grd")
+
+    run("rm -f tmp_dem.grd tmp.rad topo*")
+
+
+if __name__ == "__main__":
+    tide_correction()
