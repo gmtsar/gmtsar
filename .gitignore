@@ -256,10 +256,5 @@ preproc/LT1_preproc/include
 preproc/LT1_preproc/lib
 preproc/LT1_preproc/src/make_slc_lt1
 preproc/LT1_preproc/src/make_slc_lt1.o
-<<<<<<< HEAD
-gmtsar/python/utils/.DS_Store
-.DS_Store
-=======
 preproc/LT1_preproc/src_orbit/ext_orb_lt1
 preproc/LT1_preproc/src_orbit/ext_orb_lt1.o
->>>>>>> upstream/master
