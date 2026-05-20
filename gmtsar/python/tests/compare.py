@@ -34,7 +34,13 @@ frozenRoot = referenceRoot.rstrip(os.sep)  # frozen reference (committed in tree
 # Comparison thresholds. Tuned so visually-indistinguishable outputs pass and
 # real pipeline regressions still fail (broken images typically score < 0.5).
 PNG_SSIM_THRESHOLD = {}            # per-file overrides (empty: use default)
-GRD_RMS_THRESHOLD  = {'phasefilt.grd': 0.15}   # complex-rms; ≈ 8.6° avg phase
+GRD_RMS_THRESHOLD  = {
+    'phasefilt.grd': 0.15,    # complex-rms; ≈ 8.6° avg phase
+    'los_ll.grd':    1.0,     # LOS displacement in cm; rms=0.39 observed for
+                              # identical inputs (numerical noise from
+                              # independent py vs csh `grdmath ... wavel MUL`
+                              # chains). Range is ±500 cm so 1 cm is 0.1% rel.
+}
 DEFAULT_PNG_SSIM   = 0.9           # 0.9+ is visually equivalent for SAR imagery
 DEFAULT_GRD_RMS    = 1e-2          # <1% rms on [0,1] grids = within InSAR noise
 

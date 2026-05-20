@@ -177,6 +177,12 @@ def preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix):
     additionalFlag = ''
     if SAT=='ALOS_SLC':
         additionalFlag = '-ALOS1'
+    elif SAT=='ALOS4':
+        # Match csh/pre_proc.csh:307-312: ALOS4 (PALSAR-3) needs -ALOS4 + an
+        # explicit -rbias correction. Without these, ALOS_pre_process_SLC ran
+        # in legacy mode and emitted no PRM/SLC files, causing the entire
+        # ALOS4_Pinon recipe to fail downstream.
+        additionalFlag = '-ALOS4 -rbias 2.5'
     if skip_master==0 or skip_master==2:
         run('ALOS_pre_process_SLC '+'IMG-'+masterCut+' LED-'+masterLed+' '+cmdAppendix+' '+additionalFlag)
     if skip_master==0 or skip_master==1:
@@ -385,7 +391,10 @@ def pre_proc():
         preprocEnvi(master, aligned, skip_master, NEAR, RAD, num_patches, FD1)
     elif SAT=='ENVI_SLC':
         preprocEnvislc(master, aligned, skip_master, RAD)
-    elif SAT=='ALOS_SLC' or SAT=='ALOS2' or SAT=='ALOS2_SCAN':
+    elif SAT=='ALOS_SLC' or SAT=='ALOS2' or SAT=='ALOS2_SCAN' or SAT=='ALOS4':
+        # ALOS4 routes here per csh/pre_proc.csh:282; the inner function adds
+        # the -ALOS4 -rbias 2.5 flags. Previously fell through the dispatch
+        # silently and emitted no PRM files.
         preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix)
     elif SAT=='CSK_RAW':
         preprocCskraw(master, aligned, skip_master, RAD, FD1)
