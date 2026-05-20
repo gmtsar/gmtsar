@@ -77,23 +77,48 @@ def read_slc(path: str, n_rows: int, n_cols: int) -> np.ndarray:
 # ------------------------------------------------------- core xcorr block ---
 def freq_xcorr_patch(patch_m: np.ndarray, patch_a: np.ndarray,
                      nx_corr: int, ny_corr: int,
+                     xsearch: int, ysearch: int,
                      ) -> tuple[float, float, float]:
     """Single-patch freq-domain cross-correlation.
 
-    Mirrors do_freq_corr() in do_freq_xcorr.c:
-      - FFT both patches
-      - Multiply M by conj(A); apply (-1)^(i+j) sign for fftshift effect
-      - Inverse FFT, take magnitude
-      - Find peak in the central `ny_corr x nx_corr` region
-      - Return (xoff, yoff, max_corr) — offsets in pixels relative to
-        the patch centre, corr normalised by mean correlation surface.
+    Mirrors do_freq_corr() + assign_values() in xcorr.c:
+      1. Convert complex SLC → real amplitude (|SLC|). Phase has no useful
+         signal for image-to-image alignment; amplitude has real
+         scene-structure correlation.
+      2. Demean both amplitude patches (subtract per-patch mean) — removes
+         the DC spike from the FFT and lets the real correlation peak
+         emerge.
+      3. Apply edge mask to the aligned patch — zero out a border equal
+         to (xsearch, ysearch) on each side. Suppresses wrap-around
+         contamination in the circular FFT correlation.
+      4. FFT-multiply M * conj(A) with (-1)^(i+j) checkerboard sign
+         (fftshift trick), inverse FFT → correlation magnitude.
+      5. Crop to the central nx_corr × ny_corr search window.
+      6. Peak find + parabolic sub-pixel refinement.
+
+    Without steps 1-3, direct complex-SLC correlation is pure noise
+    (random SAR phase masks the real shift signal). This was the bug
+    in the Phase A first attempt against live data.
     """
     npy, npx = patch_m.shape
-    # Forward FFTs
-    F_m = np.fft.fft2(patch_m)
-    F_a = np.fft.fft2(patch_a)
-    # Element-wise multiply M * conj(A) with (-1)^(i+j) checkerboard sign
-    # (this is equivalent to an fftshift on the correlation surface)
+
+    # 1. Complex → amplitude, float32 for FFT speed.
+    amp_m = np.abs(patch_m).astype(np.float32)
+    amp_a = np.abs(patch_a).astype(np.float32)
+    # 2. Demean (per patch).
+    amp_m -= amp_m.mean()
+    amp_a -= amp_a.mean()
+    # 3. Mask the aligned patch's edges (matches make_mask() in xcorr.c).
+    if ysearch > 0:
+        amp_a[:ysearch, :] = 0
+        amp_a[-ysearch:, :] = 0
+    if xsearch > 0:
+        amp_a[:, :xsearch] = 0
+        amp_a[:, -xsearch:] = 0
+
+    # 4. FFT-multiply with checkerboard sign for the fftshift effect.
+    F_m = np.fft.fft2(amp_m)
+    F_a = np.fft.fft2(amp_a)
     ii, jj = np.meshgrid(np.arange(npy), np.arange(npx), indexing="ij")
     sign = ((-1.0) ** ((ii + jj) % 2)).astype(np.float32)
     F_xc = F_m * np.conj(F_a) * sign
@@ -149,20 +174,24 @@ def run_xcorr(master_prm: str, aligned_prm: str,
     if m_nx == 0 or m_ny == 0:
         raise SystemExit(f"xcorr_py: master.PRM missing num_rng_bins / num_valid_az ({master_prm})")
 
-    # Patch size: nominal 2*search + corr window. Match C defaults.
+    # Patch + correlation sizes — must match C parse_xcorr_input.c:
+    # -xsearch X overrides: xsearch=X, nx_corr=2*X, npx=nx_corr+2*xsearch=4X.
     nx_corr = 2 * xsearch
     ny_corr = 2 * ysearch
-    npx = 2 ** int(np.ceil(np.log2(2 * nx_corr)))
-    npy = 2 ** int(np.ceil(np.log2(2 * ny_corr)))
+    npx = nx_corr + 2 * xsearch     # = 4 * xsearch
+    npy = ny_corr + 2 * ysearch
 
-    # Location grid in master image (avoid edges)
-    x_inc = (m_nx - npx) // nx if nx > 1 else 0
-    y_inc = (m_ny - npy) // ny if ny > 1 else 0
+    # Location grid — match C get_locations.c exactly so (x,y) align.
+    # x = npx + i*x_inc for i in [2..nxl+1];   y = npy + j*y_inc for j in [1..nyl]
+    x_inc = (m_nx - 2 * (xsearch + nx_corr)) // (nx + 3)
+    y_inc = (m_ny - 2 * (ysearch + ny_corr)) // (ny + 1)
     if x_inc <= 0 or y_inc <= 0:
-        raise SystemExit("xcorr_py: image too small for requested nx/ny grid")
+        raise SystemExit(f"xcorr_py: image too small "
+                         f"(m={m_nx}x{m_ny}, patch {npx}x{npy}, search {xsearch}x{ysearch})")
 
     print(f"xcorr_py: master {m_nx}x{m_ny}, patch {npx}x{npy}, "
-          f"grid {nx}x{ny}, search {xsearch}x{ysearch}")
+          f"grid {nx}x{ny}, search {xsearch}x{ysearch}, "
+          f"x_inc={x_inc} y_inc={y_inc}")
 
     # Load SLCs (memory: a SLC can be ~GB; stream patches in production,
     # but for the stub we load the whole thing for simplicity)
@@ -178,19 +207,27 @@ def run_xcorr(master_prm: str, aligned_prm: str,
     m_slc = read_slc(m_slc_path, m_ny, m_nx)
     a_slc = read_slc(a_slc_path, a_ny, a_nx)
 
-    # Initial offsets from PRM
-    x_offset = _i(pm, "rshift") + _i(pa, "rshift")
-    y_offset = _i(pm, "ashift") + _i(pa, "ashift")
+    # Initial offsets — the C code defaults x_offset/y_offset to 0 and does
+    # NOT read rshift/ashift from the PRM. xcorr's purpose is to MEASURE
+    # the offset; consumers (fitoffset, resamp) will write rshift/ashift
+    # into the PRM downstream. If a future caller needs to seed an initial
+    # guess (e.g. for very large offsets), add a CLI flag.
+    x_offset = 0
+    y_offset = 0
 
     rows = []
-    for iy in range(ny):
-        y0 = iy * y_inc
-        if y0 + npy > m_ny or y0 + npy > a_ny:
-            break
-        for ix in range(nx):
-            x0 = ix * x_inc
-            if x0 + npx > m_nx or x0 + npx > a_nx:
-                break
+    # C loop order: outer j (1..nyl), inner i (2..nxl+1). Patch *centre* at
+    # (npx + i*x_inc, npy + j*y_inc); patch *origin* is centre - npx//2.
+    for j in range(1, ny + 1):
+        cy = npy + j * y_inc
+        y0 = cy - npy // 2
+        if y0 < 0 or y0 + npy > m_ny:
+            continue
+        for i in range(2, nx + 2):
+            cx = npx + i * x_inc
+            x0 = cx - npx // 2
+            if x0 < 0 or x0 + npx > m_nx:
+                continue
             patch_m = m_slc[y0:y0 + npy, x0:x0 + npx]
             # Aligned patch from same nominal location plus initial offset
             ax0 = x0 + x_offset
@@ -200,13 +237,10 @@ def run_xcorr(master_prm: str, aligned_prm: str,
                 continue
             patch_a = a_slc[ay0:ay0 + npy, ax0:ax0 + npx]
             xoff, yoff, snr = freq_xcorr_patch(patch_m, patch_a,
-                                               nx_corr, ny_corr)
-            # Account for initial offset
+                                               nx_corr, ny_corr,
+                                               xsearch, ysearch)
             xoff_total = xoff + x_offset
             yoff_total = yoff + y_offset
-            # Patch centre as the recorded (x, y)
-            cx = x0 + npx // 2
-            cy = y0 + npy // 2
             rows.append((cx, xoff_total, cy, yoff_total, snr))
 
     with open(outfile, "w") as f:
