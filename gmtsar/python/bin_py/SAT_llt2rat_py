@@ -170,17 +170,13 @@ def _range_at(orb_pos: np.ndarray, i: int, xp: float, yp: float, zp: float
 def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
            stai: int = 0, endi: int | None = None,
            tol: float = 1.0) -> tuple[float, float]:
-    """Golden-section search for time-of-closest-approach.
+    """Golden-section search for time-of-closest-approach (scalar version).
 
-    orb_pos: (nrec, 4) — [t, px, py, pz] pre-sampled orbit.
-    xp, yp, zp: target ECEF coords.
-    Returns (range, time_at_min) — minimum range and the orbit time at
-    which it occurs.
+    Used by unit tests; the driver uses `goldop_batch` for the live workload.
     """
     if endi is None:
         endi = orb_pos.shape[0] - 1
     a, b = stai, endi
-    # Standard golden-section search on integer-indexed orbit samples
     while (b - a) > 2:
         c = int(a + C_GOLD * (b - a))
         d = int(a + (1 - C_GOLD) * (b - a))
@@ -192,7 +188,6 @@ def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
             b = d
         else:
             a = c
-    # Final fine scan
     best_i = a
     best_r = _range_at(orb_pos, a, xp, yp, zp)
     for i in range(a + 1, b + 1):
@@ -201,6 +196,75 @@ def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
             best_r = r
             best_i = i
     return best_r, float(orb_pos[best_i, 0])
+
+
+def goldop_batch(orb_pos: np.ndarray, targets: np.ndarray
+                 ) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised golden-section bisection for many targets.
+
+    Mirrors the C `goldop` algorithm — O(log nrec) iterations per target —
+    but each iteration operates on arrays of size N=len(targets) at once.
+    Memory is O(N), not O(N × nrec); per-iteration cost is ~5 numpy ops
+    of size N. Beats both the serial Python form (Python-loop overhead)
+    and the "full distance matrix" form (allocation explosion at large
+    N × nrec).
+
+    orb_pos: (nrec, 4)  — [t, px, py, pz]
+    targets: (N, 3)     — ECEF (xp, yp, zp) per target
+    Returns (ranges, times) — minimum range + orbit time per target.
+    """
+    op_xyz = orb_pos[:, 1:4]                  # (nrec, 3)
+    op_t = orb_pos[:, 0]                      # (nrec,)
+    N = targets.shape[0]
+    nrec = op_xyz.shape[0]
+
+    def _r2_at(idx: np.ndarray) -> np.ndarray:
+        """Squared range from targets to orbit position at sample indices.
+        idx: (N,) int array of orbit-sample indices.
+        Returns (N,) squared distances."""
+        p = op_xyz[idx]                       # (N, 3) fancy-indexed
+        d = targets - p                       # (N, 3)
+        return np.einsum("ij,ij->i", d, d)    # (N,)
+
+    a = np.zeros(N, dtype=np.int64)
+    b = np.full(N, nrec - 1, dtype=np.int64)
+
+    # Standard golden-section bisection, run for all targets in lock-step.
+    # Continues until (b - a) <= 2 everywhere (~log2(nrec) ≈ 11 for RS2).
+    while True:
+        spread = b - a
+        if int(spread.max()) <= 2:
+            break
+        c = (a + (C_GOLD       * spread).astype(np.int64))
+        d = (a + ((1 - C_GOLD) * spread).astype(np.int64))
+        # avoid c == d (rare when spread is small)
+        eq = c == d
+        d = np.where(eq, c + 1, d)
+        rc = _r2_at(c)
+        rd = _r2_at(d)
+        # rc < rd → bracket on left half [a, d]; else right half [c, b]
+        left = rc < rd
+        b = np.where(left, d, b)
+        a = np.where(left, c, a)
+
+    # Final fine scan over the remaining [a..b] window (max 3 samples each).
+    # Build (N, 3) array of candidate squared ranges, take per-row argmin.
+    cand_idx = np.stack([a, a + 1, b], axis=1)            # (N, 3)
+    cand_idx = np.clip(cand_idx, 0, nrec - 1)
+    # Squared range at each candidate
+    p0 = op_xyz[cand_idx[:, 0]]; d0 = targets - p0
+    p1 = op_xyz[cand_idx[:, 1]]; d1 = targets - p1
+    p2 = op_xyz[cand_idx[:, 2]]; d2 = targets - p2
+    r2 = np.stack([
+        np.einsum("ij,ij->i", d0, d0),
+        np.einsum("ij,ij->i", d1, d1),
+        np.einsum("ij,ij->i", d2, d2),
+    ], axis=1)
+    pick = r2.argmin(axis=1)
+    best_idx = cand_idx[np.arange(N), pick]
+    ranges = np.sqrt(r2[np.arange(N), pick])
+    times = op_t[best_idx]
+    return ranges, times
 
 
 # ---------------------------------------------------------- C6 polyfit refine ---
@@ -254,8 +318,8 @@ def doppler_correct(range_pix: float, azi_pix: float, rng0: float,
     fdd1 = _prm_f(prm, "fdd1")
     near_range = _prm_f(prm, "near_range")
     num_rng_bins = _prm_i(prm, "num_rng_bins")
-    vel = _prm_f(prm, "vel")
-    lambda_ = _prm_f(prm, "lambda")
+    vel = _prm_f(prm, "SC_vel") or _prm_f(prm, "vel")
+    lambda_ = _prm_f(prm, "radar_wavelength") or _prm_f(prm, "lambda")
     prf = _prm_f(prm, "PRF")
     dopc = fd1 + fdd1 * (near_range + dr * num_rng_bins / 2.0)
     rdd = vel * vel / rng0
@@ -290,12 +354,20 @@ def main() -> int:
         led_path = os.path.join(os.path.dirname(ns.prm), led_path)
     meta, orbit = read_led(led_path)
 
-    # Constants
-    fs = _prm_f(prm, "fs")
+    # Constants — PRM key names differ from the C struct field names that
+    # SAT_llt2rat.c uses internally. Mapping:
+    #   C prm.fs      ↔ PRM rng_samp_rate
+    #   C prm.ra      ↔ PRM equatorial_radius
+    #   C prm.rc      ↔ PRM polar_radius
+    #   C prm.RE      ↔ PRM earth_radius
+    #   C prm.vel     ↔ PRM SC_vel
+    #   C prm.lambda  ↔ PRM radar_wavelength
+    fs = _prm_f(prm, "rng_samp_rate") or _prm_f(prm, "fs")
     dr = 0.5 * SOL / fs
-    ra = _prm_f(prm, "ra")
-    rc = _prm_f(prm, "rc")
-    re_radius = _prm_f(prm, "RE")
+    ra = _prm_f(prm, "equatorial_radius") or _prm_f(prm, "ra") or 6378137.0
+    rc = _prm_f(prm, "polar_radius") or _prm_f(prm, "rc") or 6356752.31
+    re_radius = (_prm_f(prm, "earth_radius") or _prm_f(prm, "RE")
+                 or 6371000.0)
     flattening = (ra - rc) / ra if ra > 0 else 0.0
 
     nrows = _prm_i(prm, "nrows")
@@ -317,41 +389,80 @@ def main() -> int:
     a0 = -20.0
     af = num_patches * num_valid_az + 20.0
 
-    out_rows = []
+    # Read ALL input xyz rows up front, then process vectorised.
+    lonlath = []
     for line in sys.stdin:
         parts = line.split()
         if len(parts) < 3:
             continue
         try:
-            rln, rlt, rht = float(parts[0]), float(parts[1]), float(parts[2])
+            lonlath.append((float(parts[0]), float(parts[1]),
+                            float(parts[2])))
         except ValueError:
             continue
-        # NB: C input order is "lon lat h" (rln, rlt, rht)
-        xyz = plh2xyz(np.array([rlt]), np.array([rln]), np.array([rht]),
-                      ra, flattening)[0]
-        # Recompute height as r - RE (matches C convention)
-        h_local = np.sqrt(xyz[0] ** 2 + xyz[1] ** 2 + xyz[2] ** 2) - re_radius
+    if not lonlath:
+        return 0
+    arr = np.array(lonlath, dtype=np.float64)
+    lon = arr[:, 0]
+    lat = arr[:, 1]
+    hgt = arr[:, 2]
 
-        rng0, tm = goldop(orb_pos, xyz[0], xyz[1], xyz[2])
-        if ns.precise == 1:
-            rng0, tm = polyfit_refine(orbit, tm, xyz[0], xyz[1], xyz[2])
+    # plh2xyz vectorised over all targets
+    xyz = plh2xyz(lat, lon, hgt, ra, flattening)   # (N, 3)
+    # Local height: |xyz| - RE
+    h_local = np.sqrt((xyz ** 2).sum(axis=1)) - re_radius
 
-        range_pix, azi_pix = to_pixel_coords(rng0, tm, prm, dr, t1)
-        range_pix, azi_pix = doppler_correct(range_pix, azi_pix, rng0,
-                                             prm, dr)
+    # Batched goldop — one (N, nrec) range matrix, row-wise argmin.
+    rng0, tm = goldop_batch(orb_pos, xyz)
 
-        # Envisat correction (SC_identity == 4)
-        if _prm_i(prm, "SC_identity") == 4:
-            range_pix += 8.4
-            azi_pix += 4.0
+    # Optional polyfit refinement (precise=1): scalar loop, slow path.
+    if ns.precise == 1:
+        for k in range(xyz.shape[0]):
+            rng0[k], tm[k] = polyfit_refine(orbit, tm[k],
+                                            xyz[k, 0], xyz[k, 1], xyz[k, 2])
 
-        # Filter out points outside the image bounds (binary modes only)
-        if otype > 1 and (range_pix < r0 or range_pix > rf
-                          or azi_pix < a0 or azi_pix > af):
-            continue
-        # C convention: lon normalised to [-180, 180]
-        lon_out = rln if rln <= 180.0 else rln - 360.0
-        out_rows.append((range_pix, azi_pix, h_local, lon_out, rlt))
+    # Vectorised pixel-coord conversion
+    near_range = _prm_f(prm, "near_range")
+    rshift = _prm_f(prm, "rshift")
+    sub_int_r = _prm_f(prm, "sub_int_r")
+    chirp_ext = _prm_f(prm, "chirp_ext")
+    ashift = _prm_f(prm, "ashift")
+    sub_int_a = _prm_f(prm, "sub_int_a")
+    range_pix = (rng0 - near_range) / dr - (rshift + sub_int_r) + chirp_ext
+    azi_pix = prf * (tm - t1) - (ashift + sub_int_a)
+
+    # Optional Doppler correction
+    fd1 = _prm_f(prm, "fd1")
+    if fd1 != 0.0:
+        fdd1 = _prm_f(prm, "fdd1")
+        num_rng_bins = _prm_i(prm, "num_rng_bins")
+        dopc = fd1 + fdd1 * (near_range + dr * num_rng_bins / 2.0)
+        rdd = vel * vel / rng0
+        daa = -0.5 * (lambda_ * dopc) / rdd
+        drr = 0.5 * rdd * daa * daa / dr
+        daa = prf * daa
+        range_pix = range_pix + drr
+        azi_pix = azi_pix + daa
+
+    # Envisat correction (SC_identity == 4)
+    if _prm_i(prm, "SC_identity") == 4:
+        range_pix += 8.4
+        azi_pix += 4.0
+
+    # lon normalised to [-180, 180]
+    lon_out = np.where(lon <= 180.0, lon, lon - 360.0)
+
+    # Bounds filter for binary output modes
+    if otype > 1:
+        keep = ((range_pix >= r0) & (range_pix <= rf)
+                & (azi_pix >= a0) & (azi_pix <= af))
+        range_pix = range_pix[keep]
+        azi_pix = azi_pix[keep]
+        h_local = h_local[keep]
+        lon_out = lon_out[keep]
+        lat = lat[keep]
+
+    out_rows = list(zip(range_pix, azi_pix, h_local, lon_out, lat))
 
     # Write output
     if otype == 1:
