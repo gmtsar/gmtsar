@@ -100,7 +100,11 @@ done
 # untouched.
 for readme in "$cshDir"/README*.txt; do
     [ -f "$readme" ] || continue
-    sed -i -E 's|^(p2p_(ALOS2_SCAN|S1_TOPS)_Frame\.csh .*\.txt) 0$|\1 1  # patched: parallel (case_runner.sh)|' "$readme"
+    # Use @ as the sed delimiter; the search pattern contains `|` in the
+    # (ALOS2_SCAN|S1_TOPS) alternation, which would otherwise be parsed as the
+    # delimiter and silently break the substitution. The bug left
+    # ALOS2_SCAN_SSAF running F1..F5 sequentially (~8h instead of ~2.5h).
+    sed -i -E 's@^(p2p_(ALOS2_SCAN|S1_TOPS)_Frame\.csh .*\.txt) 0$@\1 1  # patched: parallel (case_runner.sh)@' "$readme"
 done
 
 # csh reference (background) — only build if no outputs in intf/.
@@ -151,10 +155,15 @@ fi
 # divergence won't be caught until compare.py much later. The Ridgecrest
 # filter_wavelength=160 vs csh's 200 burned ~4 hours before surfacing.
 if [ -n "$bundledCfgs" ] && [ -f "$stagedConfig" ]; then
+    # Strip matching surrounding quotes; the python config commonly writes
+    # 'string' values as Python string literals (e.g. region_cut='18000/23000/...')
+    # while csh ships them bare. Without this normalization, NISAR_Ethiopia's
+    # region_cut tripped the drift guard and the entire py recipe was skipped.
+    norm() { sed -e "s/^'//" -e "s/'$//" -e 's/^"//' -e 's/"$//'; }
     drift=""
     for key in filter_wavelength region_cut threshold_snaphu threshold_geocode dec_factor proc_stage; do
-        v_csh=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$bundledCfgs" | head -1 | awk -F= '{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2}' | awk '{print $1}')
-        v_py=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$stagedConfig" | head -1 | awk -F= '{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2}' | awk '{print $1}')
+        v_csh=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$bundledCfgs" | head -1 | awk -F= '{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2}' | awk '{print $1}' | norm)
+        v_py=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$stagedConfig" | head -1 | awk -F= '{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2); print $2}' | awk '{print $1}' | norm)
         # Treat py's -999 sentinel as "use default" — ignore drift in that case.
         if [ "$v_py" = "-999" ] || [ -z "$v_csh" ] || [ -z "$v_py" ]; then continue; fi
         if [ "$v_csh" != "$v_py" ]; then

@@ -84,9 +84,38 @@ log "hw+sw snapshot → $PERF_FILE"
 
 # Skip cases that already have an all-SUCCESS results/<case>.json from this code
 # version. Restarting a failed/interrupted sweep should not re-verify what's
-# already passing. Set $SWEEP_FORCE=1 to disable this and re-run everything.
-# Results invalidate when the code changes — wipe work/results/ to force re-run
-# across versions.
+# already passing.
+#
+# SWEEP_FORCE=1 — rerun from scratch. Wipes csh_test/<case>, python_test/<case>,
+# and results/<case>.json for every requested case, so case_runner.sh re-extracts
+# the tarball and re-runs both pipelines + compare. Wall time ~3h for the full
+# 21-case sweep. Results invalidate when the code changes; this is the
+# across-versions re-validation path.
+if [ -n "${SWEEP_FORCE:-}" ]; then
+    # Rename-then-delete: NFS keeps .nfs* lock files alive while a process has
+    # an open handle, which makes `rm -rf` leave behind partial intf/ dirs.
+    # case_runner.sh:50 then sees intf/ exists and skips re-extraction, silently
+    # breaking the from-scratch contract. Renaming the case dir is atomic and
+    # survives open NFS handles, so case_runner sees a clean slate immediately;
+    # the actual rm -rf runs in the background and tolerates lingering handles.
+    ts=$(date +%s%N)
+    for c in $cases; do
+        for d in "$WORK/csh_test/$c" "$WORK/python_test/$c"; do
+            if [ -d "$d" ]; then
+                stale="${d}.stale.$$.$ts"
+                if mv "$d" "$stale" 2>/dev/null; then
+                    (rm -rf "$stale" 2>/dev/null) &
+                    disown $! 2>/dev/null || true
+                else
+                    log "WIPE $c — FAILED to rename $d; aborting (won't run with stale outputs)"
+                    exit 1
+                fi
+            fi
+        done
+        rm -f "$WORK/results/$c.json"
+        log "WIPE $c (SWEEP_FORCE=1 — csh_test, python_test, results cleared for fresh run)"
+    done
+fi
 if [ -z "${SWEEP_FORCE:-}" ]; then
     new_cases=""
     for c in $cases; do
