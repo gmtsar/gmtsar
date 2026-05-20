@@ -178,8 +178,10 @@ def dem2topo_ra():
         fig = GMTSARFigure()
         fig.grdimage(grid="topo_ra.grd", cmap="topo_ra.cpt",
                      projection="X7i",
-                     frame=["xaf+lRange", 'yaf+l"Reversed Azimuth"', "WSen"])
-        fig.colorbar(cmap="topo_ra.cpt", frame="xaf y+lm")
+                     frame=["xaf+lRange", "yaf+lReversed Azimuth", "WSen"])
+        # frame must be a LIST of -B specs, not a space-separated string —
+        # PyGMT escapes interior spaces as \040 which breaks -B parsing.
+        fig.colorbar(cmap="topo_ra.cpt", frame=["xaf", "y+lm"])
         fig.save("topo_ra.pdf")
     else:
         # Fallback path: same shell commands as legacy.
