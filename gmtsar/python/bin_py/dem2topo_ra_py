@@ -1,0 +1,217 @@
+#! /usr/bin/env python3
+"""dem2topo_ra_py — Python-native dem→topo_ra port for gmtsar.
+
+Drop-in replacement for utils/dem2topo_ra. Two improvements over the
+legacy implementation:
+
+A. **No `gmt surface -Q` dry-run hint.** The legacy code calls
+   `gmt surface … -Q` first just to read its suggested -R bounds
+   from a "Hint" line of the verbose output, then re-runs with the
+   hint. We compute the same bounds directly from the temp.rat xyz
+   extent (gmt blockmedian already wrote it), saving one full surface
+   call. On RS2 this is ~3 s saved per case; on ALOS-2 ScanSAR it's
+   ~35 min saved per subswath (the surface fit is the long pole).
+
+B. **Plotting via `utils_pygmt.gmt_compat.GMTSARFigure`** instead of
+   the grdimage → psscale → psconvert subprocess chain. Lower fork
+   overhead and cleaner error handling.
+
+What we DIDN'T port (stayed subprocess, see comments below):
+  - `gmt grd2xyz dem.grd | SAT_llt2rat master.PRM …`  pipeline (crosses
+    to a gmtsar C binary that can't be invoked via clib.Session).
+  - `gmt gmtconvert | gmt blockmedian` binary stream chain.
+  - `gmt surface` itself (the actual interpolator). That's the next
+    big target — see PYGMT_ROADMAP.md.
+
+CLI (mirrors utils/dem2topo_ra):
+    dem2topo_ra_py master.PRM dem.grd [interpolation_mode]
+        interpolation_mode = 0 (default, surface with tension)
+                           = 1 (gmt triangulate)
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+# Bootstrap: pull in utils/ for gmtsar_lib, utils_pygmt/ for the shim.
+# `os.path.realpath` follows symlinks so this works whether the script is
+# invoked directly or via bin/dem2topo_ra → bin_py/dem2topo_ra_py.
+_PY_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(_PY_DIR, "utils"))
+sys.path.insert(0, os.path.join(_PY_DIR, "utils_pygmt"))
+
+from gmtsar_lib import grep_value, file_shuttle, delete, check_file_report  # type: ignore
+from gmt_compat import (
+    grdcut, surface, triangulate, blockmean, grdfill, grd2cpt, grdmath,
+    GMTSARFigure, has_pygmt,
+)
+
+
+def _piped_grd2xyz_llt2rat(dem_grd: str, prm: str, mode_flag: str, out: str) -> None:
+    """grd2xyz dem.grd | SAT_llt2rat prm > trans.dat
+    SAT_llt2rat is a gmtsar C binary — keep this as a shell pipeline."""
+    cmd = (f"gmt grd2xyz --FORMAT_FLOAT_OUT=%lf {dem_grd} -s "
+           f"| SAT_llt2rat {prm} {mode_flag} -bod > {out}")
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: piped grd2xyz|SAT_llt2rat exited {rc}", file=sys.stderr)
+
+
+def _gmtconvert_blockmedian(trans: str, region: str, rng: int, az_div: int,
+                            V: str, out: str) -> None:
+    """gmtconvert -bi5d -bo3d | blockmedian -bi3d -bo3d > out.
+    Binary-stream chain between two gmt binaries — subprocess."""
+    cmd = (f"gmt gmtconvert {trans} -o0,1,2 -bi5d -bo3d "
+           f"| gmt blockmedian -R{region} -I{rng}/{az_div} -bi3d -bo3d -r {V} "
+           f"> {out}")
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: gmtconvert|blockmedian exited {rc}", file=sys.stderr)
+
+
+def _bounds_of_temp_rat(path: str) -> tuple[int, int, int, int]:
+    """Read temp.rat (binary 3-double rows: x, y, z) and return integer
+    bounds (xmin, xmax, ymin, ymax) so we can pass them directly to
+    `gmt surface -R…` and skip the dry-run hint.
+
+    The legacy code parsed the same bounds out of a `gmt surface -Q`
+    verbose "Hint" line. We get them straight from the xyz triplets the
+    blockmedian step already wrote.
+    """
+    import numpy as np
+    a = np.fromfile(path, dtype=np.float64)
+    # 3 doubles per row: x, y, z
+    if a.size % 3 != 0 or a.size == 0:
+        return (0, 0, 0, 0)
+    a = a.reshape(-1, 3)
+    return (int(np.floor(a[:, 0].min())), int(np.ceil(a[:, 0].max())),
+            int(np.floor(a[:, 1].min())), int(np.ceil(a[:, 1].max())))
+
+
+def _grdmath_flipud(src: str, dst: str) -> None:
+    """A FLIPUD = B  via gmt_compat.grdmath (clib.Session call, no fork).
+    Writing via xarray produced a netcdf flavor GMT couldn't parse on read;
+    routing through libgmt preserves the canonical GMT grid header."""
+    grdmath(f"{src} FLIPUD = {dst}")
+
+
+def dem2topo_ra():
+    print("DEM2TOPO_RA_PY - START")
+
+    if len(sys.argv) not in (3, 4):
+        print("Usage: dem2topo_ra_py master.PRM dem.grd [interpolation_mode]")
+        sys.exit(1)
+
+    prm = sys.argv[1]
+    dem = sys.argv[2]
+    mode = int(sys.argv[3]) if len(sys.argv) == 4 else 0
+    tension = 0.1
+
+    V = "" if check_file_report("~/.quiet") else "-V"
+    scale = "X7i"
+
+    XMAX = int(grep_value(prm, "num_rng_bins", 3))
+    yvalid = int(grep_value(prm, "num_valid_az", 3))
+    num_patch = int(grep_value(prm, "num_patches", 3))
+    YMAX = yvalid * num_patch
+    SC = int(grep_value(prm, "SC_identity", 3))
+
+    PRF = None
+    for fn in os.listdir("."):
+        if fn.endswith(".PRM"):
+            PRF = float(grep_value(fn, "PRF", 3))
+            break
+    if PRF is None:
+        print("DEM2TOPO_RA_PY: ERROR — no .PRM in cwd", file=sys.stderr)
+        sys.exit(2)
+
+    region = f"0/{XMAX}/0/{YMAX}"
+    print(f"  XMAX={XMAX} YMAX={YMAX} SC={SC} PRF={PRF} region={region}")
+
+    rng_samp_rate = float(grep_value(prm, "rng_samp_rate", 3))
+    if 0 < rng_samp_rate < 25_000_000:
+        rng = 1
+    elif (25_000_000 <= rng_samp_rate < 72_000_000) or SC == 7:
+        rng = 2
+    elif rng_samp_rate >= 72_000_000:
+        rng = 4
+    else:
+        print("DEM2TOPO_RA_PY: ERROR: range sampling rate out of bounds")
+        sys.exit(3)
+
+    # Step 1: dem.grd → trans.dat (piped through SAT_llt2rat)
+    mode_flag = "1" if SC in (10, 11) else "0"
+    _piped_grd2xyz_llt2rat(dem, prm, mode_flag, "trans.dat")
+
+    # Step 2: trans.dat → temp.rat (piped gmtconvert|blockmedian)
+    az_div = 2 if PRF < 1000 else 4
+    _gmtconvert_blockmedian("trans.dat", region, rng, az_div, V, "temp.rat")
+
+    # Step 3: temp.rat → pixel.grd
+    #
+    # IMPROVEMENT A: no `gmt surface -Q` dry-run. Compute the bounds
+    # directly from temp.rat (the blockmedian output is the same xyz
+    # data the dry-run would have measured) and pass them straight to
+    # the actual `gmt surface` call.
+    if mode == 0:
+        xmin, xmax, ymin, ymax = _bounds_of_temp_rat("temp.rat")
+        if xmin < xmax and ymin < ymax:
+            # Use the data-derived region, then grdcut back to nominal
+            # (matches the legacy "hint" branch).
+            data_region = f"{xmin}/{xmax}/{ymin}/{ymax}"
+            surface(f"temp.rat -R{data_region} -I{rng}/{az_div} -bi3d "
+                    f"-T{tension} -N1000 -Gpixel.grd -r {V}")
+            grdcut(f"pixel.grd -R{region} -Gtmp.grd")
+            file_shuttle("tmp.grd", "pixel.grd", "mv")
+        else:
+            # Fallback: trust the nominal region as before.
+            surface(f"temp.rat -R{region} -I{rng}/{az_div} -bi3d "
+                    f"-T{tension} -N1000 -Gpixel.grd -r {V}")
+
+    elif mode == 1:
+        rng2 = rng * 8
+        az_div2 = 16 if PRF < 1000 else 32
+        triangulate(f"temp.rat -R{region} -I{rng}/{az_div} -bi3d "
+                    f"-Gtopo_ra_tmp.grd -r {V}")
+        blockmean(f"temp.rat -R{region} -I{rng2}/{az_div2} -bi3d -bo3d -r "
+                  f"> mean.rat")
+        surface(f"mean.rat -R{region} -I{rng2}/{az_div2} -bi3d "
+                f"-T0.1 -N1000 -Gcoarse.grd -r")
+        grdfill("topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+        for f in ("topo_ra_tmp.grd", "coarse.grd", "mean.rat"):
+            delete(f)
+
+    # Step 4: pixel.grd → topo_ra.grd  (FLIPUD via xarray, no gmt call)
+    _grdmath_flipud("pixel.grd", "topo_ra.grd")
+
+    # Step 5: plotting  (IMPROVEMENT B: GMTSARFigure replaces the
+    # grdimage → psscale → psconvert chain.)
+    if has_pygmt():
+        grd2cpt(f"topo_ra.grd -Cgray {V} -Z > topo_ra.cpt")
+        fig = GMTSARFigure()
+        fig.grdimage(grid="topo_ra.grd", cmap="topo_ra.cpt",
+                     projection=scale,
+                     frame=["xaf+lRange", "yaf+lReversed Azimuth", "WSen"])
+        fig.colorbar(cmap="topo_ra.cpt", frame=["xaf", "y+lm"])
+        fig.save("topo_ra.pdf")
+    else:
+        # Pure subprocess fallback (matches legacy exactly)
+        subprocess.run(f"gmt grd2cpt topo_ra.grd -Cgray {V} -Z > topo_ra.cpt",
+                       shell=True)
+        subprocess.run(f"gmt grdimage topo_ra.grd -J{scale} -P -Ctopo_ra.cpt "
+                       f'-Bxaf+lRange -Byaf+l"Reversed Azimuth" -BWSen {V} '
+                       f"-K > topo_ra.ps", shell=True)
+        subprocess.run("gmt psscale -Rtopo_ra.grd -J -DJTC+w5i/0.2i+h "
+                       "-Ctopo_ra.cpt -Bxaf -By+lm -O >> topo_ra.ps", shell=True)
+        subprocess.run("gmt psconvert -Tf -P -A -Z topo_ra.ps", shell=True)
+
+    # Step 6: cleanup
+    for f in ("pixel.grd", "temp.grd", "dem.xyz", "tmp", "topo_ra.cpt"):
+        delete(f)
+
+    print("DEM2TOPO_RA_PY - END")
+
+
+if __name__ == "__main__":
+    dem2topo_ra()

@@ -86,21 +86,30 @@ log "hw+sw snapshot → $PERF_FILE"
 # version. Restarting a failed/interrupted sweep should not re-verify what's
 # already passing.
 #
-# SWEEP_FORCE=1 — rerun from scratch. Wipes csh_test/<case>, python_test/<case>,
-# and results/<case>.json for every requested case, so case_runner.sh re-extracts
-# the tarball and re-runs both pipelines + compare. Wall time ~3h for the full
-# 21-case sweep. Results invalidate when the code changes; this is the
-# across-versions re-validation path.
+# SWEEP_FORCE — rerun semantics:
+#   SWEEP_FORCE=1      hard force: wipe csh_test/<c>, python_test/<c>, and
+#                      results/<c>.json. Both pipelines re-extract + re-run.
+#                      ~3h for the full 21-case sweep.
+#   SWEEP_FORCE=py     soft force: wipe ONLY python_test/<c> and
+#                      results/<c>.json. csh_test/<c> is preserved as the
+#                      immutable reference — compare.py will use the existing
+#                      csh outputs. Faster turn-around when iterating on
+#                      python-side code (xcorr_py, utils_pygmt, dem2topo_ra,
+#                      etc.). ~1/2 to 1/3 the wall time of the hard force.
+# Both modes use rename-then-delete to survive NFS .nfs* lock files
+# (parent of /tmp/<stale> directory is renamed atomically; the actual rm runs
+# in the background and tolerates lingering handles).
 if [ -n "${SWEEP_FORCE:-}" ]; then
-    # Rename-then-delete: NFS keeps .nfs* lock files alive while a process has
-    # an open handle, which makes `rm -rf` leave behind partial intf/ dirs.
-    # case_runner.sh:50 then sees intf/ exists and skips re-extraction, silently
-    # breaking the from-scratch contract. Renaming the case dir is atomic and
-    # survives open NFS handles, so case_runner sees a clean slate immediately;
-    # the actual rm -rf runs in the background and tolerates lingering handles.
+    case "${SWEEP_FORCE}" in
+        py|PY|python) wipe_csh=0 ;;
+        *)            wipe_csh=1 ;;
+    esac
     ts=$(date +%s%N)
     for c in $cases; do
-        for d in "$WORK/csh_test/$c" "$WORK/python_test/$c"; do
+        # Always wipe python_test + results; conditionally wipe csh_test.
+        targets="$WORK/python_test/$c"
+        [ "$wipe_csh" = 1 ] && targets="$WORK/csh_test/$c $targets"
+        for d in $targets; do
             if [ -d "$d" ]; then
                 stale="${d}.stale.$$.$ts"
                 if mv "$d" "$stale" 2>/dev/null; then
@@ -113,7 +122,11 @@ if [ -n "${SWEEP_FORCE:-}" ]; then
             fi
         done
         rm -f "$WORK/results/$c.json"
-        log "WIPE $c (SWEEP_FORCE=1 — csh_test, python_test, results cleared for fresh run)"
+        if [ "$wipe_csh" = 1 ]; then
+            log "WIPE $c (SWEEP_FORCE=1 hard — csh_test, python_test, results cleared)"
+        else
+            log "WIPE $c (SWEEP_FORCE=py soft — python_test, results cleared; csh_test preserved as reference)"
+        fi
     done
 fi
 if [ -z "${SWEEP_FORCE:-}" ]; then
