@@ -1,0 +1,370 @@
+#! /usr/bin/env python3
+"""SAT_llt2rat_py — Python port of the gmtsar C binary SAT_llt2rat.
+
+Maps a DEM's (lon, lat, h) triplets to (range_pixel, azimuth_pixel,
+height, lon, lat) using the satellite's orbital state from the LED
+file and radar parameters from the master PRM file.
+
+Algorithm (mirrors SAT_llt2rat.c):
+  for each xyz input point:
+    1. plh2xyz: (lat, lon, h) -> ECEF (xp, yp, zp)
+    2. goldop: golden-section search for time-of-closest-approach of
+       the satellite to (xp, yp, zp), against a pre-sampled orbit grid.
+    3. polyfit refinement (when -p 1): fit 2nd-order polynomial to
+       range(time) in a 1-s window around the gold-section minimum.
+    4. Convert (range, time) to pixel coordinates via PRM constants.
+    5. Optional Doppler correction (when fd1 != 0).
+    6. Write 5-double row: (range_pix, azi_pix, height, lon, lat).
+
+Decomposed into checkpoints C1..C8 (one section each, tested
+independently). See PYGMT_ROADMAP.md / bin_py/README.md for context.
+
+CLI:
+    SAT_llt2rat_py master.PRM precise [-bos|-bod]
+        precise: 0 (gold-only) or 1 (gold + polyfit refine)
+        -bos: single-precision 5-float binary stdout
+        -bod: double-precision 5-double binary stdout
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import numpy as np
+
+SOL = 299792458.0   # speed of light, m/s
+C_GOLD = 0.38196601125010515   # 2 - golden ratio
+
+
+# ---------------------------------------------------------- C1 read PRM/LED ---
+def read_prm(path: str) -> dict:
+    """Parse a gmtsar PRM file into a dict of string values."""
+    out: dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _prm_f(prm: dict, key: str, default: float = 0.0) -> float:
+    v = prm.get(key, "").split()
+    return float(v[0]) if v else default
+
+
+def _prm_i(prm: dict, key: str, default: int = 0) -> int:
+    return int(_prm_f(prm, key, default))
+
+
+def _prm_s(prm: dict, key: str, default: str = "") -> str:
+    v = prm.get(key, "").split()
+    return v[0] if v else default
+
+
+def read_led(path: str) -> tuple[dict, np.ndarray]:
+    """Parse a gmtsar LED orbit file (ASCII).
+
+    Returns:
+      meta:   {nd, iy, id, sec, dsec}
+      orbit:  (nd, 4) array: [t, px, py, pz] (s, m, m, m). Velocities
+              available but not returned; could add if needed.
+    """
+    with open(path) as f:
+        first = f.readline().split()
+        if len(first) < 5:
+            raise ValueError(f"{path}: header line malformed")
+        nd, iy, id_, sec, dsec = (int(first[0]), int(first[1]),
+                                  int(first[2]), float(first[3]),
+                                  float(first[4]))
+        rows = []
+        for line in f:
+            parts = line.split()
+            if len(parts) < 9:
+                continue
+            # iy id sec px py pz vx vy vz
+            rows.append([float(parts[2]),    # t (sec)
+                         float(parts[3]),    # px
+                         float(parts[4]),    # py
+                         float(parts[5]),    # pz
+                         float(parts[6]),    # vx
+                         float(parts[7]),    # vy
+                         float(parts[8])])   # vz
+    orbit = np.array(rows, dtype=np.float64)
+    return ({"nd": nd, "iy": iy, "id": id_, "sec": sec, "dsec": dsec},
+            orbit)
+
+
+# ---------------------------------------------------------- C2 plh2xyz ---
+def plh2xyz(lat: np.ndarray, lon: np.ndarray, h: np.ndarray,
+            ra: float, flattening: float) -> np.ndarray:
+    """Geodetic (lat, lon, height) to ECEF (x, y, z).
+
+    Matches plh2xyz.c in gmtsar:
+      e2 = 2*f - f*f
+      N = ra / sqrt(1 - e2*sin^2(lat))
+      x = (N + h) * cos(lat) * cos(lon)
+      y = (N + h) * cos(lat) * sin(lon)
+      z = ((1 - e2)*N + h) * sin(lat)
+
+    Accepts scalars or numpy arrays; broadcasts. lat/lon in DEGREES.
+    """
+    e2 = 2 * flattening - flattening * flattening
+    lat_r = np.deg2rad(lat)
+    lon_r = np.deg2rad(lon)
+    sin_lat = np.sin(lat_r)
+    cos_lat = np.cos(lat_r)
+    N = ra / np.sqrt(1.0 - e2 * sin_lat * sin_lat)
+    x = (N + h) * cos_lat * np.cos(lon_r)
+    y = (N + h) * cos_lat * np.sin(lon_r)
+    z = ((1.0 - e2) * N + h) * sin_lat
+    return np.stack([x, y, z], axis=-1)
+
+
+# ---------------------------------------------------------- C3 Hermite interp ---
+def hermite_orbit(times: np.ndarray, orbit: np.ndarray, t_query: np.ndarray
+                  ) -> np.ndarray:
+    """Cubic Hermite interpolation of orbit state at query times.
+
+    orbit shape: (N, 7) — t, px, py, pz, vx, vy, vz.
+    Uses scipy.interpolate.CubicHermiteSpline (knot, value, derivative).
+
+    Returns (M, 3) array of (px, py, pz) at each t_query.
+    """
+    from scipy.interpolate import CubicHermiteSpline
+    t_query = np.atleast_1d(t_query)
+    out = np.empty((t_query.size, 3))
+    for axis in range(3):
+        spl = CubicHermiteSpline(orbit[:, 0],
+                                 orbit[:, 1 + axis],
+                                 orbit[:, 4 + axis])
+        out[:, axis] = spl(t_query)
+    return out
+
+
+# ---------------------------------------------------------- C4 pre-sample ---
+def presample_orbit(orbit: np.ndarray, t1: float, t2: float,
+                    ts: float) -> np.ndarray:
+    """Sample the orbit at uniform `ts`-spaced times over [t1, t2].
+
+    Returns (nrec, 4): [t, px, py, pz] at each sample.
+    Used by goldop as the search index.
+    """
+    times = np.arange(t1, t2 + 0.5 * ts, ts)
+    pxyz = hermite_orbit(orbit[:, 0:7], orbit, times)
+    return np.column_stack([times, pxyz])
+
+
+# ---------------------------------------------------------- C5 goldop ---
+def _range_at(orb_pos: np.ndarray, i: int, xp: float, yp: float, zp: float
+              ) -> float:
+    """Range from orbit sample i to target (xp, yp, zp)."""
+    dx = xp - orb_pos[i, 1]
+    dy = yp - orb_pos[i, 2]
+    dz = zp - orb_pos[i, 3]
+    return np.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
+           stai: int = 0, endi: int | None = None,
+           tol: float = 1.0) -> tuple[float, float]:
+    """Golden-section search for time-of-closest-approach.
+
+    orb_pos: (nrec, 4) — [t, px, py, pz] pre-sampled orbit.
+    xp, yp, zp: target ECEF coords.
+    Returns (range, time_at_min) — minimum range and the orbit time at
+    which it occurs.
+    """
+    if endi is None:
+        endi = orb_pos.shape[0] - 1
+    a, b = stai, endi
+    # Standard golden-section search on integer-indexed orbit samples
+    while (b - a) > 2:
+        c = int(a + C_GOLD * (b - a))
+        d = int(a + (1 - C_GOLD) * (b - a))
+        if c == d:
+            d = c + 1
+        rc = _range_at(orb_pos, c, xp, yp, zp)
+        rd = _range_at(orb_pos, d, xp, yp, zp)
+        if rc < rd:
+            b = d
+        else:
+            a = c
+    # Final fine scan
+    best_i = a
+    best_r = _range_at(orb_pos, a, xp, yp, zp)
+    for i in range(a + 1, b + 1):
+        r = _range_at(orb_pos, i, xp, yp, zp)
+        if r < best_r:
+            best_r = r
+            best_i = i
+    return best_r, float(orb_pos[best_i, 0])
+
+
+# ---------------------------------------------------------- C6 polyfit refine ---
+def polyfit_refine(orbit: np.ndarray, tm: float, xp: float, yp: float,
+                   zp: float, ntt: int = 10) -> tuple[float, float]:
+    """Refine (range, time) of closest approach with a 2nd-order polynomial.
+
+    Samples range vs. time at ntt points around tm (window ~1 s),
+    fits parabola, returns the vertex (tm_refined, range_refined).
+    Mirrors the precise=1 path in SAT_llt2rat.c.
+    """
+    dt = 1.0 / ntt
+    times_offset = dt * (np.arange(ntt) - ntt / 2 + 0.5)
+    abs_times = tm + times_offset
+    p_orb = hermite_orbit(orbit[:, 0:7], orbit, abs_times)
+    rng = np.sqrt((xp - p_orb[:, 0]) ** 2
+                  + (yp - p_orb[:, 1]) ** 2
+                  + (zp - p_orb[:, 2]) ** 2)
+    # Fit r(t_offset) ≈ d0 + d1*t + d2*t^2.  Vertex at t = -d1/(2*d2).
+    coefs = np.polyfit(times_offset, rng, 2)   # returns [d2, d1, d0]
+    d2, d1, _d0 = coefs
+    if abs(d2) < 1e-30:
+        return float(rng.min()), tm
+    dtt = -d1 / (2.0 * d2)
+    tm_refined = tm + dtt
+    p_ref = hermite_orbit(orbit[:, 0:7], orbit, np.array([tm_refined]))[0]
+    rng_refined = float(np.sqrt((xp - p_ref[0]) ** 2
+                                + (yp - p_ref[1]) ** 2
+                                + (zp - p_ref[2]) ** 2))
+    return rng_refined, float(tm_refined)
+
+
+# ---------------------------------------------------------- C7 pixel coords ---
+def to_pixel_coords(rng0: float, tm: float, prm: dict,
+                    dr: float, t1: float) -> tuple[float, float]:
+    """Convert (range, time) to (range_pixel, azimuth_pixel) using PRM."""
+    range_pix = (rng0 - _prm_f(prm, "near_range")) / dr \
+        - (_prm_f(prm, "rshift") + _prm_f(prm, "sub_int_r")) \
+        + _prm_f(prm, "chirp_ext")
+    azi_pix = _prm_f(prm, "PRF") * (tm - t1) \
+        - (_prm_f(prm, "ashift") + _prm_f(prm, "sub_int_a"))
+    return range_pix, azi_pix
+
+
+def doppler_correct(range_pix: float, azi_pix: float, rng0: float,
+                    prm: dict, dr: float) -> tuple[float, float]:
+    """Optional Doppler correction (applied when fd1 != 0)."""
+    fd1 = _prm_f(prm, "fd1")
+    if fd1 == 0.0:
+        return range_pix, azi_pix
+    fdd1 = _prm_f(prm, "fdd1")
+    near_range = _prm_f(prm, "near_range")
+    num_rng_bins = _prm_i(prm, "num_rng_bins")
+    vel = _prm_f(prm, "vel")
+    lambda_ = _prm_f(prm, "lambda")
+    prf = _prm_f(prm, "PRF")
+    dopc = fd1 + fdd1 * (near_range + dr * num_rng_bins / 2.0)
+    rdd = vel * vel / rng0
+    daa = -0.5 * (lambda_ * dopc) / rdd
+    drr = 0.5 * rdd * daa * daa / dr
+    daa = prf * daa
+    return range_pix + drr, azi_pix + daa
+
+
+# ---------------------------------------------------------- C8 CLI + driver ---
+def main() -> int:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("prm")
+    p.add_argument("precise", type=int)
+    p.add_argument("-bos", action="store_true",
+                   help="single-precision 5-float binary stdout")
+    p.add_argument("-bod", action="store_true",
+                   help="double-precision 5-double binary stdout")
+    ns = p.parse_args()
+    otype = 1
+    if ns.bos:
+        otype = 2
+    elif ns.bod:
+        otype = 3
+
+    prm = read_prm(ns.prm)
+    led_path = _prm_s(prm, "led_file")
+    if not led_path:
+        # PRM may have "led_file = X.LED" without "= " — try fallback parse
+        led_path = prm.get("led_file", "").split()[0]
+    if not os.path.isabs(led_path):
+        led_path = os.path.join(os.path.dirname(ns.prm), led_path)
+    meta, orbit = read_led(led_path)
+
+    # Constants
+    fs = _prm_f(prm, "fs")
+    dr = 0.5 * SOL / fs
+    ra = _prm_f(prm, "ra")
+    rc = _prm_f(prm, "rc")
+    re_radius = _prm_f(prm, "RE")
+    flattening = (ra - rc) / ra if ra > 0 else 0.0
+
+    nrows = _prm_i(prm, "nrows")
+    num_valid_az = _prm_i(prm, "num_valid_az")
+    num_patches = _prm_i(prm, "num_patches")
+    prf = _prm_f(prm, "PRF")
+    clock_start = _prm_f(prm, "clock_start")
+
+    t1 = 86400.0 * clock_start + (nrows - num_valid_az) / (2.0 * prf)
+    t2 = t1 + num_patches * num_valid_az / prf
+    ts = 2.0 / prf if prf >= 600.0 else 1.0 / prf
+
+    # Pre-sample orbit at ts-spaced times. orb_pos[:, 0] is absolute time.
+    orb_pos = presample_orbit(orbit, t1, t2, ts)
+
+    # Bounds
+    r0 = -10.0
+    rf = _prm_i(prm, "num_rng_bins") + 10.0
+    a0 = -20.0
+    af = num_patches * num_valid_az + 20.0
+
+    out_rows = []
+    for line in sys.stdin:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            rln, rlt, rht = float(parts[0]), float(parts[1]), float(parts[2])
+        except ValueError:
+            continue
+        # NB: C input order is "lon lat h" (rln, rlt, rht)
+        xyz = plh2xyz(np.array([rlt]), np.array([rln]), np.array([rht]),
+                      ra, flattening)[0]
+        # Recompute height as r - RE (matches C convention)
+        h_local = np.sqrt(xyz[0] ** 2 + xyz[1] ** 2 + xyz[2] ** 2) - re_radius
+
+        rng0, tm = goldop(orb_pos, xyz[0], xyz[1], xyz[2])
+        if ns.precise == 1:
+            rng0, tm = polyfit_refine(orbit, tm, xyz[0], xyz[1], xyz[2])
+
+        range_pix, azi_pix = to_pixel_coords(rng0, tm, prm, dr, t1)
+        range_pix, azi_pix = doppler_correct(range_pix, azi_pix, rng0,
+                                             prm, dr)
+
+        # Envisat correction (SC_identity == 4)
+        if _prm_i(prm, "SC_identity") == 4:
+            range_pix += 8.4
+            azi_pix += 4.0
+
+        # Filter out points outside the image bounds (binary modes only)
+        if otype > 1 and (range_pix < r0 or range_pix > rf
+                          or azi_pix < a0 or azi_pix > af):
+            continue
+        # C convention: lon normalised to [-180, 180]
+        lon_out = rln if rln <= 180.0 else rln - 360.0
+        out_rows.append((range_pix, azi_pix, h_local, lon_out, rlt))
+
+    # Write output
+    if otype == 1:
+        for r in out_rows:
+            sys.stdout.write("%.9f %.9f %.9f %.9f %.9f \n" % r)
+    elif otype == 2:
+        arr = np.array(out_rows, dtype=np.float32)
+        sys.stdout.buffer.write(arr.tobytes())
+    elif otype == 3:
+        arr = np.array(out_rows, dtype=np.float64)
+        sys.stdout.buffer.write(arr.tobytes())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
