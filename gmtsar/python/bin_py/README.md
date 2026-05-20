@@ -1,4 +1,4 @@
-# port_c — Python ports of gmtsar C binaries
+# bin_py — Python ports of gmtsar C binaries
 
 The profiler showed `xcorr` consumes **48.9% of RS2_SLC_Hawaii wall time** —
 the single biggest target outside the GMT subprocess pool. PyGMT can't
