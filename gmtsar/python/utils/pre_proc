@@ -404,6 +404,13 @@ def pre_proc():
     elif SAT=='S1_TOPS':
         print('S1_TOPS not tested yet')
         preprocS1tops(master, aligned, skip_master, ESD_mode)
+    else:
+        # Fail fast on unknown SAT — silent fallthrough previously emitted no
+        # PRM/SLC and the recipe died downstream with "Can't open prmfile",
+        # hiding the true cause (e.g. ALOS4 missing this branch). Audit finding
+        # in AUDIT.md (#4).
+        raise SystemExit(f"PREPROC: ERROR — unknown SAT '{SAT}'. "
+                         "Add a dispatch branch to pre_proc.")
     print('PREPROC: FINISHED ... ...')
     
 
