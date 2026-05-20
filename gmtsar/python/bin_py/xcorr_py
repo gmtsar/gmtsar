@@ -14,7 +14,7 @@ Status:
   - Mask handling:       central-crop instead of full make_mask
   - Per-patch parallelism: NOT YET (Phase C target)
 
-See port_c/README.md for the full roadmap.
+See bin_py/README.md for the full roadmap.
 
 CLI (mirroring xcorr.c):
   xcorr_py master.PRM aligned.PRM [-nx N] [-ny N] [-xsearch X] [-ysearch Y]
@@ -27,6 +27,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+# Use scipy.fft when available — it accepts `workers=-1` for multi-threaded
+# batched FFTs, ~2× faster than np.fft on a 16-core box. Fall back to numpy
+# if scipy isn't installed.
+try:
+    from scipy.fft import fft2 as _fft2, ifft2 as _ifft2
+    _SCIPY_FFT_KW = {"workers": -1}
+except ImportError:
+    from numpy.fft import fft2 as _fft2, ifft2 as _ifft2
+    _SCIPY_FFT_KW = {}
 
 
 # ---------------------------------------------------------------- PRM I/O ---
@@ -159,6 +169,97 @@ def freq_xcorr_patch(patch_m: np.ndarray, patch_a: np.ndarray,
     return xoff, yoff, snr
 
 
+def freq_xcorr_batch(patches_m: np.ndarray, patches_a: np.ndarray,
+                     nx_corr: int, ny_corr: int,
+                     xsearch: int, ysearch: int,
+                     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized cross-correlation of N patch pairs in one shot.
+
+    Identical algorithm to freq_xcorr_patch (preprocess, FFT, multiply,
+    inverse FFT, peak find, parabolic sub-pixel), but operates on a
+    batched 3-D array (N, npy, npx) so numpy/scipy's FFT can amortise
+    setup across all patches and a multi-threaded FFT backend
+    (scipy.fft with workers=-1, or numpy linked against MKL) can use
+    all cores.
+
+    Returns three 1-D arrays of length N: xoff, yoff, snr.
+
+    Memory note: peak working set ≈ 2*N*npy*npx*8 bytes (two complex64
+    stacks). For RS2 (1000 patches × 512² × 8 B × 2 stacks ≈ 2 GB.
+    The caller can chunk if this is too much.
+    """
+    N, npy, npx = patches_m.shape
+    assert patches_a.shape == (N, npy, npx)
+
+    # 1. amplitude (per-patch, vectorized)
+    amp_m = np.abs(patches_m).astype(np.float32)
+    amp_a = np.abs(patches_a).astype(np.float32)
+    # 2. demean per-patch (axes 1,2)
+    amp_m -= amp_m.mean(axis=(1, 2), keepdims=True)
+    amp_a -= amp_a.mean(axis=(1, 2), keepdims=True)
+    # 3. edge mask on aligned (apply ONCE, broadcast across batch)
+    if ysearch > 0:
+        amp_a[:, :ysearch, :] = 0
+        amp_a[:, -ysearch:, :] = 0
+    if xsearch > 0:
+        amp_a[:, :, :xsearch] = 0
+        amp_a[:, :, -xsearch:] = 0
+    # 4. Batched FFT (axes -2, -1). scipy.fft.fft2 + workers=-1 is
+    # multi-threaded; numpy.fft.fft2 is single-threaded but vectorised.
+    F_m = _fft2(amp_m, axes=(-2, -1), **_SCIPY_FFT_KW)
+    F_a = _fft2(amp_a, axes=(-2, -1), **_SCIPY_FFT_KW)
+    # Checkerboard sign for fftshift, precomputed once, broadcast (1, npy, npx)
+    ii, jj = np.meshgrid(np.arange(npy), np.arange(npx), indexing="ij")
+    sign = ((-1.0) ** ((ii + jj) % 2)).astype(np.float32)[None, :, :]
+    F_xc = F_m * np.conj(F_a) * sign
+    corr_full = np.abs(_ifft2(F_xc, axes=(-2, -1), **_SCIPY_FFT_KW))
+    # Crop to central ny_corr × nx_corr per patch
+    y0 = (npy - ny_corr) // 2
+    x0 = (npx - nx_corr) // 2
+    corr = corr_full[:, y0:y0 + ny_corr, x0:x0 + nx_corr]
+
+    # 5. Per-patch peak via flat argmax, then unravel
+    flat = corr.reshape(N, ny_corr * nx_corr)
+    peak_idx = flat.argmax(axis=1)
+    peak_y = (peak_idx // nx_corr).astype(np.int32)
+    peak_x = (peak_idx %  nx_corr).astype(np.int32)
+    cmax = flat[np.arange(N), peak_idx]
+    cave = corr.mean(axis=(1, 2))
+
+    # 6. Integer offsets centered on patch midpoint
+    jpeak = peak_x.astype(np.float32) - (nx_corr / 2.0)
+    ipeak = peak_y.astype(np.float32) - (ny_corr / 2.0)
+
+    # 7. Sub-pixel parabolic refinement (vectorised, with edge-safe mask)
+    in_x = (peak_x > 0) & (peak_x < nx_corr - 1)
+    in_y = (peak_y > 0) & (peak_y < ny_corr - 1)
+    sub_x = np.zeros(N, dtype=np.float32)
+    sub_y = np.zeros(N, dtype=np.float32)
+    if in_x.any():
+        idx = np.where(in_x)[0]
+        a = corr[idx, peak_y[idx], peak_x[idx] - 1]
+        b = corr[idx, peak_y[idx], peak_x[idx]]
+        c = corr[idx, peak_y[idx], peak_x[idx] + 1]
+        denom = a - 2 * b + c
+        # safe divide: 0 where denom ≈ 0
+        mask = np.abs(denom) > 1e-12
+        sub_x[idx[mask]] = 0.5 * (a[mask] - c[mask]) / denom[mask]
+    if in_y.any():
+        idx = np.where(in_y)[0]
+        a = corr[idx, peak_y[idx] - 1, peak_x[idx]]
+        b = corr[idx, peak_y[idx],     peak_x[idx]]
+        c = corr[idx, peak_y[idx] + 1, peak_x[idx]]
+        denom = a - 2 * b + c
+        mask = np.abs(denom) > 1e-12
+        sub_y[idx[mask]] = 0.5 * (a[mask] - c[mask]) / denom[mask]
+
+    # 8. Output: C convention is xoff = -jpeak, yoff = -ipeak
+    xoff = -(jpeak + sub_x)
+    yoff = -(ipeak + sub_y)
+    snr = np.where(cave > 0, cmax / cave, 0.0).astype(np.float32)
+    return xoff, yoff, snr
+
+
 # ----------------------------------------------------------------- driver ---
 def run_xcorr(master_prm: str, aligned_prm: str,
               nx: int = 20, ny: int = 50,
@@ -215,9 +316,11 @@ def run_xcorr(master_prm: str, aligned_prm: str,
     x_offset = 0
     y_offset = 0
 
-    rows = []
-    # C loop order: outer j (1..nyl), inner i (2..nxl+1). Patch *centre* at
-    # (npx + i*x_inc, npy + j*y_inc); patch *origin* is centre - npx//2.
+    # First pass: enumerate every patch location and pre-stack the patch
+    # arrays so we can do ONE batched FFT over all of them.
+    locs = []
+    patches_m_list = []
+    patches_a_list = []
     for j in range(1, ny + 1):
         cy = npy + j * y_inc
         y0 = cy - npy // 2
@@ -228,20 +331,34 @@ def run_xcorr(master_prm: str, aligned_prm: str,
             x0 = cx - npx // 2
             if x0 < 0 or x0 + npx > m_nx:
                 continue
-            patch_m = m_slc[y0:y0 + npy, x0:x0 + npx]
-            # Aligned patch from same nominal location plus initial offset
             ax0 = x0 + x_offset
             ay0 = y0 + y_offset
-            if (ax0 < 0 or ay0 < 0 or
-                ax0 + npx > a_nx or ay0 + npy > a_ny):
+            if (ax0 < 0 or ay0 < 0
+                or ax0 + npx > a_nx or ay0 + npy > a_ny):
                 continue
-            patch_a = a_slc[ay0:ay0 + npy, ax0:ax0 + npx]
-            xoff, yoff, snr = freq_xcorr_patch(patch_m, patch_a,
-                                               nx_corr, ny_corr,
-                                               xsearch, ysearch)
-            xoff_total = xoff + x_offset
-            yoff_total = yoff + y_offset
-            rows.append((cx, xoff_total, cy, yoff_total, snr))
+            locs.append((cx, cy))
+            patches_m_list.append(m_slc[y0:y0 + npy, x0:x0 + npx])
+            patches_a_list.append(a_slc[ay0:ay0 + npy, ax0:ax0 + npx])
+
+    if not locs:
+        raise SystemExit("xcorr_py: no valid patch locations")
+
+    # Vectorised batched FFT path. Memory peak ~ 2 * N * npy * npx * 8 bytes
+    # (two complex64 stacks). For RS2 (N=1000, 512x512) that's ~2 GB; for
+    # heavier cases the caller can chunk by reducing nx/ny.
+    patches_m_arr = np.stack(patches_m_list)
+    patches_a_arr = np.stack(patches_a_list)
+    print(f"xcorr_py: vectorised batch size {len(locs)} "
+          f"({patches_m_arr.nbytes * 2 / 1e9:.2f} GB working set)")
+    xoffs, yoffs, snrs = freq_xcorr_batch(patches_m_arr, patches_a_arr,
+                                          nx_corr, ny_corr,
+                                          xsearch, ysearch)
+
+    rows = []
+    for k, (cx, cy) in enumerate(locs):
+        xoff_total = float(xoffs[k]) + x_offset
+        yoff_total = float(yoffs[k]) + y_offset
+        rows.append((cx, xoff_total, cy, yoff_total, float(snrs[k])))
 
     with open(outfile, "w") as f:
         for cx, xoff, cy, yoff, snr in rows:

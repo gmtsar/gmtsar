@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""test_xcorr — unit + integration tests for port_c/xcorr_py.
+"""test_xcorr — unit + integration tests for bin_py/xcorr_py.
 
 Run with:
-    cd gmtsar/python/port_c/tests
+    cd gmtsar/python/bin_py/tests
     python3 -m pytest test_xcorr.py -v
     # or, no pytest:
     python3 test_xcorr.py
@@ -49,6 +49,7 @@ _XCORR = _HERE.parent / "xcorr_py"
 _NS: dict = {}
 exec(compile(_XCORR.read_text(), str(_XCORR), "exec"), _NS)
 freq_xcorr_patch = _NS["freq_xcorr_patch"]
+freq_xcorr_batch = _NS["freq_xcorr_batch"]
 read_slc = _NS["read_slc"]
 read_prm = _NS["read_prm"]
 
@@ -152,6 +153,40 @@ class TestXcorrUnit(unittest.TestCase):
         # missing. The strict bound is "<10"; we observed ~5.
         self.assertLess(snr, 10.0,
                         msg=f"pure noise SNR should be <10; got {snr}")
+
+    # ----------------- batched (vectorised) path equivalence ----------------
+    def test_batch_matches_single_patch(self):
+        """freq_xcorr_batch on N patches must produce the same xoff/yoff/snr
+        (within float32 noise) as N separate freq_xcorr_patch calls.
+        This is the load-bearing guarantee for the vectorised path."""
+        # Build 6 shifted variants of a master patch
+        m_base = make_synthetic_patch(self.NPY, self.NPX, seed=21)
+        shifts = [(0, 0), (3, -5), (-7, 4), (10, 10), (-12, -8), (2, 2)]
+        patches_m = np.stack([m_base] * len(shifts))
+        patches_a = np.stack([shift_patch(m_base, dy, dx) for dy, dx in shifts])
+
+        # Single-patch reference
+        ref_xoff = np.empty(len(shifts), dtype=np.float32)
+        ref_yoff = np.empty(len(shifts), dtype=np.float32)
+        ref_snr  = np.empty(len(shifts), dtype=np.float32)
+        for k, (dy, dx) in enumerate(shifts):
+            xo, yo, sn = freq_xcorr_patch(patches_m[k], patches_a[k],
+                                          self.NX_CORR, self.NY_CORR,
+                                          self.XSEARCH, self.YSEARCH)
+            ref_xoff[k], ref_yoff[k], ref_snr[k] = xo, yo, sn
+
+        # Batched
+        bx, by, bs = freq_xcorr_batch(patches_m, patches_a,
+                                      self.NX_CORR, self.NY_CORR,
+                                      self.XSEARCH, self.YSEARCH)
+
+        # Float32 round-trip noise is ~1e-3; SNR can drift a bit more (~1%).
+        np.testing.assert_allclose(bx, ref_xoff, atol=1e-3, rtol=0,
+                                   err_msg="batched xoff diverges from single-patch")
+        np.testing.assert_allclose(by, ref_yoff, atol=1e-3, rtol=0,
+                                   err_msg="batched yoff diverges from single-patch")
+        np.testing.assert_allclose(bs, ref_snr, rtol=0.02, atol=0.1,
+                                   err_msg="batched snr diverges from single-patch")
 
     # ----------------- grid formula matches the C reference -----------------
     def test_grid_formula_matches_C_for_rs2(self):
