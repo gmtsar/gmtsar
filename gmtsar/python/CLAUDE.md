@@ -14,6 +14,8 @@ Fork of upstream `gmtsar/gmtsar` (C/csh InSAR processor). This fork extends it w
 
 **All dev work lives in `gmtsar/python/`.** Do not modify files outside this directory — everything else is upstream `gmtsar/gmtsar` source and should be left untouched so upstream merges stay clean.
 
+This rule applies to **every consilium-driven artifact** too: audit reports (`AUDIT*.md`), QA notes, release notes, dev rules, and any other fork-only output must be written inside `gmtsar/python/`, never at the repo root. When invoking `/audit`, `/release`, or similar slash commands, override the default destination so output lands at `gmtsar/python/AUDIT.md` (or wherever inside the python tree fits). The "fork = upstream/master + gmtsar/python/" invariant is enforced by `git diff upstream/master..HEAD -- ':!gmtsar/python'` returning empty.
+
 Layout under `gmtsar/python/`:
 - `utils/` — Python CLI tools (`p2p_processing`, `pre_proc`, `geocode`, `intf`, `filter`, …) and libraries (`gmtsar_lib.py`, `snaphu.py`)
 - `utils/tkGUI.gmtsar` — Tk GUI front-end
