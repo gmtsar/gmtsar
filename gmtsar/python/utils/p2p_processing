@@ -221,9 +221,12 @@ def p2p_processing(debug):
     
     ref, rep = switchMasterAligned(switch_master, master, aligned)
     
-    if stage <= 4 and skip_4 == 0:    
-        P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec, 
-                                    dec, filter, compute_phase_gradient, iono, iono_dsamp)
+    if stage <= 4 and skip_4 == 0:
+        P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
+                                    dec, filter, compute_phase_gradient, iono, iono_dsamp,
+                                    iono_skip_est=iono_skip_est,
+                                    iono_filt_rng=iono_filt_rng, iono_filt_azi=iono_filt_azi,
+                                    mask_water=mask_water, switch_land=switch_land)
     if debug==1:
         input('Press Enter to continue to Phase 5...')
         

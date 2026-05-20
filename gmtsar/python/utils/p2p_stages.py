@@ -16,6 +16,7 @@ getIntfSubDirName) used by multiple stages.
 
 Imported into the p2p_processing entry script via `from p2p_stages import *`.
 """
+import shutil
 import sys, os, re
 import subprocess, glob
 from gmtsar_lib import *
@@ -534,6 +535,7 @@ def _intf_and_filter(ref, rep, topo_phase, shift_topo, filter_cmd_callable):
 
 
 def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly):
     """One of the three nearly-identical iono blocks (intf_h, intf_l, intf_o).
     Stages SLCs from slc_dir, runs intf+filter, snaphu_interp if requested.
@@ -570,7 +572,9 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
 
 
 def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
-                                dec, filter, compute_phase_gradient, iono, iono_dsamp):
+                                dec, filter, compute_phase_gradient, iono, iono_dsamp,
+                                iono_skip_est=1, iono_filt_rng=200, iono_filt_azi=200,
+                                mask_water=0, switch_land=0):
     """Form and filter the interferogram. Main path produces a single
     intf/<sub>/phasefilt.grd; iono=1 additionally produces high/low/orig
     interferograms in iono_phase/intf_{h,l,o}/ and a final corrected
@@ -614,10 +618,13 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
     new_incy = int(azimuth_dec) * int(iono_dsamp)
 
     _iono_intf_block('intf_h', '../../SLC_H', ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=False)
     _iono_intf_block('intf_l', '../../SLC_L', ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=True)
     _iono_intf_block('intf_o', '../../SLC',   ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=True)
 
     os.chdir('iono_correction')
