@@ -84,14 +84,23 @@ def read_led(path: str) -> tuple[dict, np.ndarray]:
             parts = line.split()
             if len(parts) < 9:
                 continue
-            # iy id sec px py pz vx vy vz
-            rows.append([float(parts[2]),    # t (sec)
-                         float(parts[3]),    # px
-                         float(parts[4]),    # py
-                         float(parts[5]),    # pz
-                         float(parts[6]),    # vx
-                         float(parts[7]),    # vy
-                         float(parts[8])])   # vz
+            # LED record: iy id sec px py pz vx vy vz
+            # The `sec` field is "seconds since midnight of day `id`".
+            # Convert to absolute "seconds since start of year" so the
+            # orbit times share a coordinate frame with the driver's
+            # t1 = 86400 * clock_start (clock_start is day-of-year +
+            # fractional day). Matches C calorb_alos:
+            #   pt0 = 86400 * orb->id + orb->sec
+            row_id = int(parts[1])
+            row_sec_of_day = float(parts[2])
+            t_abs = 86400.0 * row_id + row_sec_of_day
+            rows.append([t_abs,                  # t (sec-of-year)
+                         float(parts[3]),        # px
+                         float(parts[4]),        # py
+                         float(parts[5]),        # pz
+                         float(parts[6]),        # vx
+                         float(parts[7]),        # vy
+                         float(parts[8])])       # vz
     orbit = np.array(rows, dtype=np.float64)
     return ({"nd": nd, "iy": iy, "id": id_, "sec": sec, "dsec": dsec},
             orbit)
@@ -146,13 +155,17 @@ def hermite_orbit(times: np.ndarray, orbit: np.ndarray, t_query: np.ndarray
 
 # ---------------------------------------------------------- C4 pre-sample ---
 def presample_orbit(orbit: np.ndarray, t1: float, t2: float,
-                    ts: float) -> np.ndarray:
-    """Sample the orbit at uniform `ts`-spaced times over [t1, t2].
+                    ts: float, npad: int = 8000) -> np.ndarray:
+    """Sample the orbit at uniform `ts`-spaced times over [t1-npad*ts,
+    t2+npad*ts]. The padding lets goldop find closest-approach points
+    outside the strict acquisition window (which can be 10+ s of
+    real-world time depending on viewing geometry). Mirrors C calorb_alos
+    which uses npad=8000 (~12s with default ts=2/PRF).
 
-    Returns (nrec, 4): [t, px, py, pz] at each sample.
-    Used by goldop as the search index.
+    Returns (nrec_total, 4): [t, px, py, pz].
     """
-    times = np.arange(t1, t2 + 0.5 * ts, ts)
+    pad = npad * ts
+    times = np.arange(t1 - pad, t2 + pad + 0.5 * ts, ts)
     pxyz = hermite_orbit(orbit[:, 0:7], orbit, times)
     return np.column_stack([times, pxyz])
 
@@ -242,10 +255,15 @@ def goldop_batch(orb_pos: np.ndarray, targets: np.ndarray
         d = np.where(eq, c + 1, d)
         rc = _r2_at(c)
         rd = _r2_at(d)
-        # rc < rd → bracket on left half [a, d]; else right half [c, b]
+        # Standard golden-section update:
+        #   if rc < rd  → minimum is in [a, d]; keep a, set b = d
+        #   else        → minimum is in [c, b]; keep b, set a = c
+        # The old code wrongly did a = c on the rc<rd branch, which
+        # threw away the actual min on the left side. Caught on the
+        # live RS2 run when goldop converged to +2.21s instead of -3.55s.
         left = rc < rd
         b = np.where(left, d, b)
-        a = np.where(left, c, a)
+        a = np.where(left, a, c)
 
     # Final fine scan over the remaining [a..b] window (max 3 samples each).
     # Build (N, 3) array of candidate squared ranges, take per-row argmin.
@@ -376,6 +394,8 @@ def main() -> int:
     prf = _prm_f(prm, "PRF")
     clock_start = _prm_f(prm, "clock_start")
 
+    # t1 / t2 in "seconds since start of year" — same convention as the
+    # orbit times after read_led's day-of-year fold-in. Matches C exactly.
     t1 = 86400.0 * clock_start + (nrows - num_valid_az) / (2.0 * prf)
     t2 = t1 + num_patches * num_valid_az / prf
     ts = 2.0 / prf if prf >= 600.0 else 1.0 / prf
