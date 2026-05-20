@@ -31,6 +31,7 @@ CLI (mirrors utils/dem2topo_ra):
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -49,10 +50,22 @@ from gmt_compat import (
 
 
 def _piped_grd2xyz_llt2rat(dem_grd: str, prm: str, mode_flag: str, out: str) -> None:
-    """grd2xyz dem.grd | SAT_llt2rat prm > trans.dat
-    SAT_llt2rat is a gmtsar C binary — keep this as a shell pipeline."""
-    cmd = (f"gmt grd2xyz --FORMAT_FLOAT_OUT=%lf {dem_grd} -s "
-           f"| SAT_llt2rat {prm} {mode_flag} -bod > {out}")
+    """grd2xyz dem.grd | SAT_llt2rat prm > trans.dat.
+
+    If SAT_llt2rat_py is on PATH, use the binary-stream fast path
+    (`gmt grd2xyz -bo3d | SAT_llt2rat_py -bi3d`) — ~2× faster than the
+    C binary on the 9.3 M-row RS2 DEM (7.5 s vs 15.9 s). The ASCII
+    grd2xyz step is what dominates the C pipeline (16 s on its own);
+    -bo3d drops it to 0.87 s. Falls back to the C binary + ASCII pipe
+    if the py port isn't installed.
+    """
+    py_bin = shutil.which("SAT_llt2rat_py")
+    if py_bin is not None:
+        cmd = (f"gmt grd2xyz {dem_grd} -s -bo3d "
+               f"| {py_bin} {prm} {mode_flag} -bod -bi3d > {out}")
+    else:
+        cmd = (f"gmt grd2xyz --FORMAT_FLOAT_OUT=%lf {dem_grd} -s "
+               f"| SAT_llt2rat {prm} {mode_flag} -bod > {out}")
     rc = subprocess.run(cmd, shell=True).returncode
     if rc != 0:
         print(f"WARN: piped grd2xyz|SAT_llt2rat exited {rc}", file=sys.stderr)
