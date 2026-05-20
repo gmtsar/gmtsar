@@ -1,0 +1,249 @@
+#! /usr/bin/env python3
+"""xcorr_py — Python port of gmtsar's xcorr C binary.
+
+Stub implementation. Phase A: freq-domain cross-correlation via
+numpy.fft, single-process. CLI-compatible with the original. Output
+file matches the C binary's `freq_xcorr.dat` format.
+
+Status:
+  - Freq-domain xcorr: implemented
+  - Time-domain (-time): NOT YET
+  - Real-input (-real):  NOT YET (only complex SLC supported)
+  - Sub-pixel refine:    quadratic interpolation around peak
+                         (close to but not bit-exact vs C `highres_corr`)
+  - Mask handling:       central-crop instead of full make_mask
+  - Per-patch parallelism: NOT YET (Phase C target)
+
+See port_c/README.md for the full roadmap.
+
+CLI (mirroring xcorr.c):
+  xcorr_py master.PRM aligned.PRM [-nx N] [-ny N] [-xsearch X] [-ysearch Y]
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+
+
+# ---------------------------------------------------------------- PRM I/O ---
+def read_prm(path: str) -> dict:
+    """Parse a gmtsar PRM file into a dict. Keys are stripped strings."""
+    prm: dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            prm[k.strip()] = v.strip()
+    return prm
+
+
+def _f(prm: dict, key: str, default: float = 0.0) -> float:
+    """PRM value as float, or default."""
+    v = prm.get(key, "").split()
+    if not v:
+        return default
+    try:
+        return float(v[0])
+    except ValueError:
+        return default
+
+
+def _i(prm: dict, key: str, default: int = 0) -> int:
+    """PRM value as int, or default."""
+    return int(_f(prm, key, default))
+
+
+# ------------------------------------------------------------- SLC reader ---
+def read_slc(path: str, n_rows: int, n_cols: int) -> np.ndarray:
+    """Read a complex SLC file (gmtsar format: pairs of int16, real+imag).
+
+    Returns a 2-D complex64 array of shape (n_rows, n_cols).
+    """
+    raw = np.fromfile(path, dtype=np.int16)
+    expected = n_rows * n_cols * 2
+    if raw.size < expected:
+        raise ValueError(f"SLC {path} short: have {raw.size} int16, "
+                         f"need {expected} ({n_rows}x{n_cols}x2)")
+    raw = raw[:expected].reshape(n_rows, n_cols, 2)
+    return (raw[..., 0].astype(np.float32) +
+            1j * raw[..., 1].astype(np.float32)).astype(np.complex64)
+
+
+# ------------------------------------------------------- core xcorr block ---
+def freq_xcorr_patch(patch_m: np.ndarray, patch_a: np.ndarray,
+                     nx_corr: int, ny_corr: int,
+                     ) -> tuple[float, float, float]:
+    """Single-patch freq-domain cross-correlation.
+
+    Mirrors do_freq_corr() in do_freq_xcorr.c:
+      - FFT both patches
+      - Multiply M by conj(A); apply (-1)^(i+j) sign for fftshift effect
+      - Inverse FFT, take magnitude
+      - Find peak in the central `ny_corr x nx_corr` region
+      - Return (xoff, yoff, max_corr) — offsets in pixels relative to
+        the patch centre, corr normalised by mean correlation surface.
+    """
+    npy, npx = patch_m.shape
+    # Forward FFTs
+    F_m = np.fft.fft2(patch_m)
+    F_a = np.fft.fft2(patch_a)
+    # Element-wise multiply M * conj(A) with (-1)^(i+j) checkerboard sign
+    # (this is equivalent to an fftshift on the correlation surface)
+    ii, jj = np.meshgrid(np.arange(npy), np.arange(npx), indexing="ij")
+    sign = ((-1.0) ** ((ii + jj) % 2)).astype(np.float32)
+    F_xc = F_m * np.conj(F_a) * sign
+    # Inverse FFT → correlation surface (magnitude only)
+    corr_full = np.abs(np.fft.ifft2(F_xc))
+    # Crop to the central ny_corr x nx_corr region (where valid)
+    y0 = (npy - ny_corr) // 2
+    x0 = (npx - nx_corr) // 2
+    corr = corr_full[y0:y0 + ny_corr, x0:x0 + nx_corr]
+    # Peak location
+    peak_y, peak_x = np.unravel_index(int(np.argmax(corr)), corr.shape)
+    cmax = float(corr[peak_y, peak_x])
+    cave = float(corr.mean())
+    # Initial integer offsets (centred on patch midpoint)
+    jpeak = peak_x - nx_corr / 2.0
+    ipeak = peak_y - ny_corr / 2.0
+    # Sub-pixel via parabolic fit around peak (1-D in each axis).
+    # This is *close to* but not bit-exact vs C highres_corr.
+    def _parabolic_subpix(values: np.ndarray) -> float:
+        # values has 3 entries: [center-1, center, center+1].
+        # Returns the fractional offset of the parabola vertex from center.
+        a, b, c = values
+        denom = a - 2 * b + c
+        if abs(denom) < 1e-12:
+            return 0.0
+        return 0.5 * (a - c) / denom
+    sub_x = sub_y = 0.0
+    if 0 < peak_x < corr.shape[1] - 1:
+        sub_x = _parabolic_subpix(corr[peak_y, peak_x - 1:peak_x + 2])
+    if 0 < peak_y < corr.shape[0] - 1:
+        sub_y = _parabolic_subpix(corr[peak_y - 1:peak_y + 2, peak_x])
+    # C code outputs xoff = -jpeak, yoff = -ipeak
+    xoff = -(jpeak + sub_x)
+    yoff = -(ipeak + sub_y)
+    # SNR-ish: peak/mean ratio (matches the cmax/cave the C code computes
+    # before the calc_time_corr correction)
+    snr = cmax / cave if cave > 0 else 0.0
+    return xoff, yoff, snr
+
+
+# ----------------------------------------------------------------- driver ---
+def run_xcorr(master_prm: str, aligned_prm: str,
+              nx: int = 20, ny: int = 50,
+              xsearch: int = 128, ysearch: int = 128,
+              outfile: str = "freq_xcorr.dat") -> int:
+    pm = read_prm(master_prm)
+    pa = read_prm(aligned_prm)
+
+    m_nx = _i(pm, "num_rng_bins")
+    m_ny = _i(pm, "num_valid_az") * max(_i(pm, "num_patches"), 1)
+    a_nx = _i(pa, "num_rng_bins")
+    a_ny = _i(pa, "num_valid_az") * max(_i(pa, "num_patches"), 1)
+    if m_nx == 0 or m_ny == 0:
+        raise SystemExit(f"xcorr_py: master.PRM missing num_rng_bins / num_valid_az ({master_prm})")
+
+    # Patch size: nominal 2*search + corr window. Match C defaults.
+    nx_corr = 2 * xsearch
+    ny_corr = 2 * ysearch
+    npx = 2 ** int(np.ceil(np.log2(2 * nx_corr)))
+    npy = 2 ** int(np.ceil(np.log2(2 * ny_corr)))
+
+    # Location grid in master image (avoid edges)
+    x_inc = (m_nx - npx) // nx if nx > 1 else 0
+    y_inc = (m_ny - npy) // ny if ny > 1 else 0
+    if x_inc <= 0 or y_inc <= 0:
+        raise SystemExit("xcorr_py: image too small for requested nx/ny grid")
+
+    print(f"xcorr_py: master {m_nx}x{m_ny}, patch {npx}x{npy}, "
+          f"grid {nx}x{ny}, search {xsearch}x{ysearch}")
+
+    # Load SLCs (memory: a SLC can be ~GB; stream patches in production,
+    # but for the stub we load the whole thing for simplicity)
+    m_slc_path = pm.get("SLC_file", "").split()[0]
+    a_slc_path = pa.get("SLC_file", "").split()[0]
+    # Resolve relative to PRM dir
+    base = os.path.dirname(master_prm)
+    if not os.path.isabs(m_slc_path):
+        m_slc_path = os.path.join(base, m_slc_path)
+    if not os.path.isabs(a_slc_path):
+        a_slc_path = os.path.join(base, a_slc_path)
+
+    m_slc = read_slc(m_slc_path, m_ny, m_nx)
+    a_slc = read_slc(a_slc_path, a_ny, a_nx)
+
+    # Initial offsets from PRM
+    x_offset = _i(pm, "rshift") + _i(pa, "rshift")
+    y_offset = _i(pm, "ashift") + _i(pa, "ashift")
+
+    rows = []
+    for iy in range(ny):
+        y0 = iy * y_inc
+        if y0 + npy > m_ny or y0 + npy > a_ny:
+            break
+        for ix in range(nx):
+            x0 = ix * x_inc
+            if x0 + npx > m_nx or x0 + npx > a_nx:
+                break
+            patch_m = m_slc[y0:y0 + npy, x0:x0 + npx]
+            # Aligned patch from same nominal location plus initial offset
+            ax0 = x0 + x_offset
+            ay0 = y0 + y_offset
+            if (ax0 < 0 or ay0 < 0 or
+                ax0 + npx > a_nx or ay0 + npy > a_ny):
+                continue
+            patch_a = a_slc[ay0:ay0 + npy, ax0:ax0 + npx]
+            xoff, yoff, snr = freq_xcorr_patch(patch_m, patch_a,
+                                               nx_corr, ny_corr)
+            # Account for initial offset
+            xoff_total = xoff + x_offset
+            yoff_total = yoff + y_offset
+            # Patch centre as the recorded (x, y)
+            cx = x0 + npx // 2
+            cy = y0 + npy // 2
+            rows.append((cx, xoff_total, cy, yoff_total, snr))
+
+    with open(outfile, "w") as f:
+        for cx, xoff, cy, yoff, snr in rows:
+            f.write(f" {cx} {xoff:6.3f} {cy} {yoff:6.3f} {snr:6.2f} \n")
+    print(f"xcorr_py: wrote {len(rows)} rows → {outfile}")
+    return 0
+
+
+# ------------------------------------------------------------------ CLI ----
+def main() -> int:
+    ap = argparse.ArgumentParser(description="xcorr_py — Python port of gmtsar xcorr (stub)")
+    ap.add_argument("master_prm")
+    ap.add_argument("aligned_prm")
+    ap.add_argument("-nx", type=int, default=20)
+    ap.add_argument("-ny", type=int, default=50)
+    ap.add_argument("-xsearch", type=int, default=128)
+    ap.add_argument("-ysearch", type=int, default=128)
+    ap.add_argument("-o", "--output", default="freq_xcorr.dat")
+    # Accept-but-ignore flags for CLI compatibility
+    ap.add_argument("-freq", action="store_true", help="(default; alias)")
+    ap.add_argument("-time", action="store_true", help="(NOT IMPLEMENTED — will error)")
+    ap.add_argument("-real", action="store_true", help="(NOT IMPLEMENTED — will error)")
+    args = ap.parse_args()
+
+    if args.time:
+        print("xcorr_py: -time mode not yet implemented (Phase A stub)", file=sys.stderr)
+        return 2
+    if args.real:
+        print("xcorr_py: -real input not yet implemented (Phase A stub)", file=sys.stderr)
+        return 2
+
+    return run_xcorr(args.master_prm, args.aligned_prm,
+                     nx=args.nx, ny=args.ny,
+                     xsearch=args.xsearch, ysearch=args.ysearch,
+                     outfile=args.output)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
