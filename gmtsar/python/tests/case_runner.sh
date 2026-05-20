@@ -44,6 +44,16 @@ fi
 # auto-discovered comparison set hid the missing files.
 export PATH=/home/staff/dliu/anaconda3/envs/gmtsar/bin:/home/staff/dliu/gmtsar/bin:$PATH
 
+# If GMTSAR_PROFILE=1 is set by the caller (or below by passing
+# CASE_RUNNER_PROFILE=1), emit per-case timing JSON. Profiler is a no-op
+# when GMTSAR_PROFILE isn't set, so this costs nothing in production.
+if [ -n "${GMTSAR_PROFILE:-}" ] || [ -n "${CASE_RUNNER_PROFILE:-}" ]; then
+    export GMTSAR_PROFILE=1
+    export GMTSAR_PROFILE_CASE="$case"
+    export GMTSAR_PROFILE_OUT="$(dirname "$pyDir")/../profile_${case}.json"
+    rm -f "$GMTSAR_PROFILE_OUT"  # always start fresh per case
+fi
+
 # Extract tarball into each tree if the tree's intf/ isn't there yet.
 # (Don't search the whole tree for .grd: bundled tarballs include topo/dem.grd,
 # which would falsely look like a finished run.)

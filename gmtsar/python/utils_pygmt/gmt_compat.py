@@ -67,8 +67,16 @@ def _clib_call(module: str, args: str) -> int:
     # Shell redirects don't survive clib.Session; route to subprocess.
     if re.search(r"\s>\s|\s>>\s|\s>\Z|\s>>\Z", args):
         return _subproc_fallback(module, args)
+    import time as _t
+    _t0 = _t.time()
     with Session() as ses:
         ses.call_module(module, args)
+    _dt = _t.time() - _t0
+    try:
+        from profiler import record as _prof_record  # type: ignore
+        _prof_record(f"gmt {module} {args}", _dt, backend="clib")
+    except ImportError:
+        pass
     return 0
 
 
@@ -76,7 +84,15 @@ def _subproc_fallback(module: str, args: str) -> int:
     """Last-resort: shell out exactly like the legacy code. Keeps the shim
     safe to import in environments without PyGMT (CI on a fresh box, etc.)."""
     cmd = f"gmt {module} {args}"
+    import time as _t
+    _t0 = _t.time()
     rc = subprocess.run(cmd, shell=True).returncode
+    _dt = _t.time() - _t0
+    try:
+        from profiler import record as _prof_record  # type: ignore
+        _prof_record(cmd, _dt, backend="subprocess")
+    except ImportError:
+        pass
     if rc == 127:
         raise RuntimeError(f"gmt not found on PATH; install gmt or pygmt: {cmd}")
     return rc

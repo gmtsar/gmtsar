@@ -151,10 +151,21 @@ def run(cmd):
     NOT raise — gmtsar binaries exit non-zero for benign reasons (warnings,
     missing-but-optional files), and the legacy csh pipeline tolerates that.
     Switching from os.system was about VISIBILITY of failures, not making
-    them fatal."""
+    them fatal.
+
+    If GMTSAR_PROFILE=1, records the wall time via profiler.record(...).
+    The profiler module is a no-op when disabled (zero overhead)."""
     print(" ")
     print(cmd)
+    import time as _t
+    _t0 = _t.time()
     rc = subprocess.run(cmd, shell=True).returncode
+    _dt = _t.time() - _t0
+    try:
+        from profiler import record as _prof_record  # type: ignore
+        _prof_record(cmd, _dt, backend="subprocess")
+    except ImportError:
+        pass
     if rc != 0:
         print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
 
