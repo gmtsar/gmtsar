@@ -118,12 +118,28 @@ class TestC4PresampleOrbit(unittest.TestCase):
                                   np.zeros_like(t),
                                   np.zeros_like(t)])
         ts = 0.5
-        op = presample_orbit(orbit, 0.0, 10.0, ts)
+        # npad=0 for the unpadded length-check; live driver uses npad=8000
+        # to handle out-of-window closest-approach points (see
+        # test_npad_padding_extends_window).
+        op = presample_orbit(orbit, 0.0, 10.0, ts, npad=0)
         self.assertGreaterEqual(op.shape[0], 21)
         self.assertEqual(op.shape[1], 4)
         # First and last time match
         self.assertAlmostEqual(op[0, 0], 0.0)
         self.assertAlmostEqual(op[-1, 0], 10.0)
+
+    def test_npad_padding_extends_window(self):
+        """Default npad=8000 extends sampling by ±8000*ts on each side."""
+        t = np.linspace(0, 100, 10)
+        orbit = np.column_stack([t, 50*t, np.zeros_like(t), np.zeros_like(t),
+                                  np.full_like(t, 50.0),
+                                  np.zeros_like(t),
+                                  np.zeros_like(t)])
+        ts = 0.01
+        op = presample_orbit(orbit, 50.0, 60.0, ts)   # default npad=8000
+        pad = 8000 * ts
+        self.assertAlmostEqual(op[0, 0], 50.0 - pad, places=6)
+        self.assertAlmostEqual(op[-1, 0], 60.0 + pad, places=6)
 
 
 # ---------- C5 goldop -------------------------------------------------------
