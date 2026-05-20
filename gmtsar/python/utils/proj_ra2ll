@@ -91,9 +91,5 @@ def proj_ra2ll():
     
     print("PROJ_RA2ll - END ... ...")
 
-def _main_func(description):
-    proj_ra2ll()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    proj_ra2ll()

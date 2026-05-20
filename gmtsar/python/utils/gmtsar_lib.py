@@ -13,6 +13,32 @@
 import sys, os, re, configparser
 import subprocess, glob
 
+
+def resolve_sharedir():
+    """Return the GMTSAR shared data directory ($GMTSAR/share/gmtsar).
+    First tries $GMTSAR env var; falls back to walking up from this file's
+    location looking for share/gmtsar. Raises SystemExit if not found."""
+    gmtsar = os.environ.get('GMTSAR')
+    if gmtsar:
+        candidate = os.path.join(gmtsar, 'share', 'gmtsar')
+        if os.path.isdir(candidate):
+            return candidate
+
+    # Walk up from this file's location (handles direct + symlinked installs).
+    cur = os.path.dirname(os.path.realpath(__file__))
+    for _ in range(5):
+        candidate = os.path.join(cur, 'share', 'gmtsar')
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    sys.exit("resolve_sharedir: could not locate share/gmtsar directory "
+             "(set $GMTSAR or install via install.sh --build)")
+
+
 def check_file_report(fn):
     # Check if a file exists.
     # If not, print error message.
@@ -51,16 +77,16 @@ def intFloatOrString(val):
         except ValueError:
             return ""
             
-def grep_value(fn, s, i): 
-    # grep_value performs similar functions to unix grep. 
+def grep_value(fn, s, i):
+    # grep_value performs similar functions to unix grep.
     # Given a file name - fn, and a character string - s, find the ith value.
     # The character should be unique in file fn.
-    #
+    val = ""
     with open(fn, 'r') as f:
         for line in f.readlines():
             if re.search(s, line):
                 print(line)
-                val = line.split()[i-1]     
+                val = line.split()[i-1]
     return intFloatOrString(val)
 
 def replace_strings(fn, s0, s1):
@@ -88,20 +114,27 @@ def append_new_line(fn,s0):
         f.write(s0)
 
 def file_shuttle(fn0, fn1, opt):
-    # copy/move fn0 and paste it to fn1.
+    """Copy / move / symlink fn0 to fn1. Shells out (still) to preserve
+    behavior on glob-bearing args, e.g. file_shuttle('*.PRM', 'dst/', 'cp').
+    Warns on non-zero exit but does not raise (consistent with run())."""
     if opt == "cp":
-        print("cp " + fn0 + " " + fn1)
-        os.system("cp " + fn0 + " " + fn1)
+        cmd = f"cp {fn0} {fn1}"
     elif opt == "mv":
-        print("mv " + fn0 + " " + fn1)
-        os.system("mv " + fn0 + " " + fn1)
+        cmd = f"mv {fn0} {fn1}"
     elif opt == "link":
-        print("ln -sf " + fn0 + " " + fn1)
-        os.system("ln -sf " + fn0 + " " + fn1)
+        cmd = f"ln -sf {fn0} {fn1}"
+    else:
+        raise ValueError(f"file_shuttle: unknown opt {opt!r}")
+    print(cmd)
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: file_shuttle exited {rc}: {cmd}", file=sys.stderr)
 
 def delete(fn):
-    # delete file named fn.
-    os.system("rm -rf "+fn)
+    """Remove a file or directory tree by name. Shells out to preserve glob
+    semantics: delete('amp*.grd') must still work. Silent on rm -rf failures
+    (matches prior behavior)."""
+    subprocess.run(f"rm -rf {fn}", shell=True)
     
 def assign_arg(arg, str):
     # arg is the list that contains arguments from a terminal input.
@@ -114,10 +147,16 @@ def assign_arg(arg, str):
        return 0
 
 def run(cmd):
-    # run and print the command specified in cmd.
+    """Run a shell command. Non-zero exit prints a WARN to stderr but does
+    NOT raise — gmtsar binaries exit non-zero for benign reasons (warnings,
+    missing-but-optional files), and the legacy csh pipeline tolerates that.
+    Switching from os.system was about VISIBILITY of failures, not making
+    them fatal."""
     print(" ")
     print(cmd)
-    os.system(cmd)
+    rc = subprocess.run(cmd, shell=True).returncode
+    if rc != 0:
+        print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
 
 def renameMasterAlignedForS1tops(master0, aligned0):
     print('Renaming master and aligned for SAT==S1_TOPS')

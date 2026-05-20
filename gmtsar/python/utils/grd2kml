@@ -52,9 +52,5 @@ def grd2kml():
     
     print("GRD2KML - END ... ...")
 
-def _main_func(description):
-    grd2kml()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    grd2kml()

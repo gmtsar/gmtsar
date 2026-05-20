@@ -1,0 +1,34 @@
+#! /usr/bin/env python3
+"""calc_look_vector — compute (east, north, up) LOS look-vector components.
+
+Python port of csh calc_look_vector.csh. Given a PRM file, a DEM, and a
+target unwrap_ll.grd defining the output grid, produces three GRDs with
+the unit LOS look-vector components at each grid cell.
+
+Usage:  calc_look_vector input_PRM dem.grd unwrap_ll.grd
+Output: east_look.grd, north_look.grd, up_look.grd
+"""
+import sys
+from gmtsar_lib import run
+
+
+def calc_look_vector():
+    if len(sys.argv) != 4:
+        sys.exit(
+            "Usage: calc_look_vector input_PRM dem.grd unwrap_ll.grd\n"
+            "  Make sure LED file exists, DEM larger than unwrap_ll.grd.\n"
+            "  Output: east_look.grd, north_look.grd, up_look.grd"
+        )
+    prm, dem, ll_file = sys.argv[1], sys.argv[2], sys.argv[3]
+
+    run(f"gmt grdsample {dem} -R{ll_file} -Gtmp_dem_00.grd")
+    run(f"gmt grd2xyz {dem} -s | SAT_look {prm} > tmp_look_00.lltn")
+    # Columns from SAT_look: lon lat ? east north up
+    run(f"awk '{{print $1,$2,$4}}' tmp_look_00.lltn | gmt xyz2grd -R{ll_file} -Geast_look.grd")
+    run(f"awk '{{print $1,$2,$5}}' tmp_look_00.lltn | gmt xyz2grd -R{ll_file} -Gnorth_look.grd")
+    run(f"awk '{{print $1,$2,$6}}' tmp_look_00.lltn | gmt xyz2grd -R{ll_file} -Gup_look.grd")
+    run("rm -f tmp_dem_00.grd tmp_look_00.lltn")
+
+
+if __name__ == "__main__":
+    calc_look_vector()

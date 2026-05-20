@@ -397,10 +397,6 @@ def pre_proc():
         preprocS1tops(master, aligned, skip_master, ESD_mode)
     print('PREPROC: FINISHED ... ...')
     
-def _main_func(description):
-    sys.path.append('/xx1/dliu/iga49539/orbits/')
+
+if __name__ == "__main__":
     pre_proc()
-
-if __name__ == '__main__':
-    _main_func(__doc__)
-

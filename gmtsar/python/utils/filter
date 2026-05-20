@@ -53,8 +53,9 @@ def filter():
     print(' ')
     print('FILTER: define filter and decimation variables ... ...')
     
-    #sharedir = 'gmtsar_sharedir.csh'
-    sharedir = '/usr/local/GMTSAR/share/gmtsar'
+    # Resolve sharedir dynamically (works for any install prefix — this fork
+    # installs to $REPO_ROOT/share/gmtsar, not /usr/local).
+    sharedir = subprocess.run(['gmtsar_sharedir.csh'], capture_output=True, text=True).stdout.strip()
     filter3  = sharedir + '/filters/fill.3x3'
     filter4  = sharedir + '/filters/xdir'
     filter5  = sharedir + '/filters/ydir'
@@ -268,9 +269,5 @@ def filter():
     
     print("FILTER - END ... ...")
 
-def _main_func(description):
-    filter()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    filter()

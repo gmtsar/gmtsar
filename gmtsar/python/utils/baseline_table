@@ -1,0 +1,143 @@
+#! /usr/bin/env python3
+"""baseline_table — compute baseline parameters for a master/aligned PRM pair.
+
+Python port of csh baseline_table.csh (D. Sandwell 1999, A. Hogrelius 2017).
+
+Calls the SAT_baseline C binary and parses its output. Emits a single
+space-separated line to stdout. Default output:
+    <ORB> <ST0> <YDAY> <Bpl> <Bperp> <xshift> <yshift>
+With the optional 3rd arg "GMT", emits the pstext-compatible variant:
+    <YDAY> <Bperp> 8 0. 0 5 <ORB>
+
+Where YDAY is days since the SAT-specific epoch:
+  SC_identity 1 (ERS-1), 2 (ERS-2), 4 (ENVI), 6 (ALOS-2)   → 1992-01-01
+  SC_identity 5 (ALOS-1), YR < 2013                         → 2006-01-01
+  SC_identity 5 (ALOS-1), YR ≥ 2013 (NISAR re-tagged)       → 2014-01-01
+  SC_identity 7, 8                                          → 2007-01-01
+  SC_identity 9 (CSK)                                       → 2008-01-01
+  SC_identity 10 (RS2)                                      → 2014-01-01
+  SC_identity 11+ (TSX/GF3)                                 → 2020-01-01
+
+Usage:  baseline_table master.PRM aligned.PRM [GMT]
+"""
+import datetime
+import os
+import re
+import sys
+
+
+def _grep_value(path, key):
+    """Mimic `grep <key> file | awk '{print $3}'` — return field 3 of the
+    first line containing <key>, or empty string."""
+    with open(path) as f:
+        for line in f:
+            if key in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[2]
+    return ""
+
+
+def _days_since(epoch_year, target_year, day_of_year, off_by_one):
+    """Compute integer days between (epoch_year-01-01) and (target_year-01-01)
+    + day_of_year. off_by_one=True subtracts 1 (matches legacy csh `-1` term
+    for SSC 1/2/4/5/6) — i.e. day_of_year is 1-based and the epoch counts
+    January 1 as day 0."""
+    delta = (datetime.date(target_year, 1, 1) - datetime.date(epoch_year, 1, 1)).days
+    extra = -1 if off_by_one else 0
+    return delta + day_of_year + extra
+
+
+def _orb_id(input_file, ssc, ers_slc_tag, year, has_gmt_arg):
+    """Mimic the legacy SAT-specific substring extraction for ORB."""
+    if ssc == 5:
+        if year < 2013:
+            return input_file[13:18]            # substr 14,5 → [13:18]
+        if not has_gmt_arg:
+            return input_file[:-4]              # substr 1,length-4 → strip 4 chars
+        return input_file[12:17]                # substr 13,5 → [12:17]
+    if ssc == 6 or ers_slc_tag == "SAR_IMS_1P":
+        return input_file[49:54]                # cut -c50-54
+    if ssc == 4:
+        return input_file[16:21]                # cut -c17-21
+    if ssc in (1, 2):
+        return input_file[:8]                   # cut -c1-8
+    # default: strip after first '.'
+    return input_file.split('.')[0]
+
+
+def baseline_table():
+    if len(sys.argv) < 3:
+        sys.exit(
+            "Usage: baseline_table master.PRM aligned.PRM [GMT]\n"
+            "  [GMT] creates a row for pstext\n"
+            "Output: sat_orb aligned_time aligned_days Bpl Bperp xshift yshift"
+        )
+    master_prm, aligned_prm = sys.argv[1], sys.argv[2]
+    has_gmt_arg = len(sys.argv) >= 4
+
+    # Envisat-as-ERS kludge: identified by filename prefix on the master arg
+    ers_slc_tag = master_prm[:10]
+
+    # Aligned-side parameters
+    st0 = _grep_value(aligned_prm, "SC_clock_start")
+    ssc = int(_grep_value(aligned_prm, "SC_identity") or "0")
+    aligned_input_file = _grep_value(aligned_prm, "input_file")
+
+    # Days-since-epoch math
+    t0_int = int(st0.split('.')[0])          # truncate to integer YYYYDDD
+    day = t0_int % 1000                       # day-of-year
+    year = t0_int // 1000                     # YYYY
+
+    if ssc in (1, 2):
+        yday = _days_since(1992, year, day, off_by_one=True)
+    elif ssc == 4:
+        yday = _days_since(1992, year, day, off_by_one=True)
+    elif ssc == 6:
+        yday = _days_since(1992, year, day, off_by_one=True)
+    elif ssc == 5:
+        epoch = 2006 if year < 2013 else 2014
+        yday = _days_since(epoch, year, day, off_by_one=True)
+    elif ssc in (7, 8):
+        yday = _days_since(2007, year, day, off_by_one=False)
+    elif ssc == 9:
+        yday = _days_since(2008, year, day, off_by_one=False)
+    elif ssc == 10:
+        yday = _days_since(2014, year, day, off_by_one=False)
+    else:
+        yday = _days_since(2020, year, day, off_by_one=False)
+
+    # Shell out to SAT_baseline; the legacy script writes to a 'temp' file
+    # and greps it. We can capture stdout directly.
+    import subprocess
+    result = subprocess.run(
+        ["SAT_baseline", master_prm, aligned_prm],
+        check=False, stdout=subprocess.PIPE
+    )
+    if result.returncode != 0:
+        print(f"WARN: SAT_baseline exited {result.returncode}", file=sys.stderr)
+    sat_out = result.stdout.decode('utf-8', errors='replace')
+
+    def _grep_field3(text, key):
+        for line in text.splitlines():
+            if key in line:
+                parts = line.split()
+                if len(parts) >= 3:
+                    return parts[2]
+        return ""
+
+    bpl = _grep_field3(sat_out, "B_parallel")
+    bpr = _grep_field3(sat_out, "B_perpendicular")
+    xs  = _grep_field3(sat_out, "xshift")
+    ys  = _grep_field3(sat_out, "yshift")
+
+    orb = _orb_id(aligned_input_file, ssc, ers_slc_tag, year, has_gmt_arg)
+
+    if not has_gmt_arg:
+        print(f"{orb} {st0} {yday} {bpl} {bpr} {xs} {ys}")
+    else:
+        print(f"{yday} {bpr} 8 0. 0 5 {orb}")
+
+
+if __name__ == "__main__":
+    baseline_table()

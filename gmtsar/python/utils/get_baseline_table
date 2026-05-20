@@ -1,0 +1,74 @@
+#! /usr/bin/env python3
+"""get_baseline_table — build baseline_table.dat and baseline.pdf.
+
+Python port of csh get_baseline_table.csh. Loops over a PRM list, calls
+baseline_table for each, and produces:
+  baseline_table.dat — one row per pair (master, aligned)
+  baseline.pdf       — temporal/baseline scatter plot
+
+Usage:  get_baseline_table prmlist master_prm
+"""
+import os
+import subprocess
+import sys
+from gmtsar_lib import run
+
+
+def get_baseline_table():
+    if len(sys.argv) != 3:
+        sys.exit(
+            "Usage: get_baseline_table prmlist master_prm\n"
+            "  product: baseline_table.dat (+ baseline.pdf)"
+        )
+    prmlist, master_prm = sys.argv[1], sys.argv[2]
+
+    if os.path.isfile("baseline_table.dat"):
+        os.remove("baseline_table.dat")
+
+    with open(prmlist) as f, open("baseline_table.dat", "w") as out:
+        for line in f:
+            prm = line.strip()
+            if not prm:
+                continue
+            result = subprocess.run(
+                ["baseline_table", master_prm, prm],
+                check=False, stdout=subprocess.PIPE
+            )
+            if result.returncode != 0:
+                print(f"WARN: baseline_table failed for {prm}", file=sys.stderr)
+            out.write(result.stdout.decode("utf-8", errors="replace"))
+
+    # Plot: year-vs-baseline scatter with PRM names as labels.
+    # Year axis: legacy script uses (day_of_year % 1000) / 365.25 + int(day/1000)
+    # which decodes the YYYYDDD form back to a fractional year. Column 5 is
+    # B_perpendicular, column 1 is the orbit/PRM tag.
+    run(
+        "awk '{printf(\"%.6f %.6f %s\\n\", "
+        "$2%1000.0/365.25+int($2/1000.0), $5, $1)}' "
+        "baseline_table.dat > tmp_text"
+    )
+    region_raw = subprocess.run(
+        ["gmt", "gmtinfo", "tmp_text", "-C"],
+        check=False, stdout=subprocess.PIPE
+    ).stdout.decode("utf-8").split()
+    if len(region_raw) >= 4:
+        x0, x1, y0, y1 = (float(region_raw[0]) - 0.5,
+                          float(region_raw[1]) + 0.5,
+                          float(region_raw[2]) - 50,
+                          float(region_raw[3]) + 50)
+        R = f"-R{x0}/{x1}/{y0}/{y1}"
+    else:
+        R = "-R0/1/0/1"
+
+    run(f"gmt pstext tmp_text -JX8.8i/6.8i {R} -D0.2/0.2 -X1.5i -Y1i "
+        f"-K -N -F+f8,Helvetica+j5 > baseline.ps")
+    run("awk '{print $1,$2}' < tmp_text > tmp_text2")
+    run(f"gmt psxy tmp_text2 -Sp0.2c -G0 -R -JX "
+        f"-Ba0.5:\"year\":/a50g00f25:\"baseline (m)\":WSen -O >> baseline.ps")
+    run("rm -f tmp_text tmp_text2")
+    run("gmt psconvert baseline.ps -Tf -A")
+    run("rm -f baseline.ps")
+
+
+if __name__ == "__main__":
+    get_baseline_table()

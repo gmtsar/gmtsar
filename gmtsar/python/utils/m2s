@@ -1,0 +1,50 @@
+#! /usr/bin/env python3
+"""m2s — convert a pixel size in meters to two GMT -I increments (degrees).
+
+Python port of csh m2s.csh. Reads a binary lon/lat/phase file with `gmt
+gmtinfo` to get the latitude range, then emits two increments suitable
+for blockmedian + surface stages of proj_ra2ll-style workflows.
+
+Usage:  m2s pix_meters lon_lat_phase_file
+Output: two whitespace-separated "DXs/DYs" increments on stdout.
+"""
+import math
+import subprocess
+import sys
+
+
+def _capture(cmd):
+    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                          check=False).stdout.decode("utf-8").strip()
+
+
+def m2s():
+    if len(sys.argv) != 3:
+        sys.exit(
+            "Usage: m2s pix_meters lon_lat_phase_binary\n"
+            "  pix_meters: pixel size in meters\n"
+            "  lon_lat_phase_binary: bi3f file (cols: lon, lat, phase)"
+        )
+    pix = float(sys.argv[1])
+    llp = sys.argv[2]
+
+    rng_str = _capture(f"gmt gmtinfo {llp} -bi3f -C")
+    rng = rng_str.split()
+    if len(rng) < 4:
+        sys.exit(f"m2s: gmtinfo output unexpected: {rng_str!r}")
+    mlat = (float(rng[2]) + float(rng[3])) / 2.0
+
+    # Convert pixel size in meters to seconds; quantize to ≥1 arc-sec/2.
+    base = pix / 111195.079734 * 3600 * 2
+    dy = max(1, round(base)) / 2.0
+    dx = max(1, round(base / math.cos(math.radians(mlat)))) / 2.0
+
+    inc1 = f"{dx}s/{dy}s"
+    dx10 = dx * 10
+    dy10 = dy * 10
+    inc2 = f"{dx10}s/{dy10}s"
+    print(f"{inc1} {inc2}")
+
+
+if __name__ == "__main__":
+    m2s()

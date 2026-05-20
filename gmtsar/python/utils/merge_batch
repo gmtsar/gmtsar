@@ -1,0 +1,105 @@
+#! /usr/bin/env python3
+"""merge_batch — batch merge_unwrap_geocode_tops over a stack of pairs.
+
+Python port of csh merge_batch.csh (X. Xu 2016). For each line of
+inputfile (a comma-separated 2- or 3-subswath spec), creates a per-pair
+working directory and calls `merge_unwrap_geocode_tops` (Python) on it.
+Shares trans.dat / landmask_ra.grd / raln.grd / ralt.grd across pairs
+by symlink.
+
+Usage:  merge_batch inputfile config_file [det_stitch]
+
+inputfile format:
+  IF1_Swath1_Path:master.PRM:repeat.PRM,IF1_Swath2_Path:master.PRM:repeat.PRM[,IF1_Swath3_Path:master.PRM:repeat.PRM]
+  IF2_Swath1_Path:master.PRM:repeat.PRM,IF2_Swath2_Path:master.PRM:repeat.PRM[,IF2_Swath3_Path:master.PRM:repeat.PRM]
+  ...
+The first line's master is treated as the super-master across the stack.
+"""
+import os
+import sys
+from gmtsar_lib import run, grep_value
+
+
+def merge_batch():
+    if len(sys.argv) not in (3, 4):
+        sys.exit(
+            "Usage: merge_batch inputfile config_file [det_stitch]\n"
+            "  Each input line: 2 or 3 SwathPath:master.PRM:repeat.PRM specs,\n"
+            "  comma-separated. First line's master = super-master."
+        )
+    input_file, config = sys.argv[1], sys.argv[2]
+    det_stitch = "1" if len(sys.argv) == 4 else ""
+
+    if not os.path.isfile("dem.grd"):
+        sys.exit("dem.grd is required ...")
+
+    # Build tmpm.filelist from first line (the super-master paths).
+    with open(input_file) as f:
+        all_lines = [ln.strip() for ln in f if ln.strip()]
+    if not all_lines:
+        sys.exit("merge_batch: empty inputfile")
+
+    line1 = all_lines[0]
+    with open("tmpm.filelist", "w") as f:
+        for entry in line1.split(","):
+            path, master_prm = entry.split(":")[:2]
+            f.write(f"../{path}{master_prm}\n")
+
+    now_dir = os.getcwd()
+
+    for line in all_lines:
+        entries = [e.strip() for e in line.split(",") if e.strip()]
+        # Per-pair working dir = parent of first swath path's parent.
+        first_path = entries[0].split(":")[0]
+        dir_name = os.path.basename(os.path.dirname(first_path))
+        os.makedirs(dir_name, exist_ok=True)
+        os.chdir(dir_name)
+
+        # Per-line swath entries, paired with the super-master swath PRMs.
+        with open("tmp.filelist", "w") as f:
+            for e in entries:
+                f.write(f"../{e}\n")
+
+        with open("../tmpm.filelist") as mfl, open("tmp.filelist") as cfl:
+            paired = list(zip(mfl, cfl))
+        os.remove("tmp.filelist")
+
+        # Build the merge filelist that merge_unwrap_geocode_tops expects.
+        with open("tmp.filelist", "w") as out:
+            for mm_line, cur_line in paired:
+                mm = mm_line.strip()
+                pth, f1, f2 = cur_line.strip().split(":")
+                run(f"cp {mm} ./supermaster.PRM")
+                rshift = grep_value(f"{pth}{f1}", "rshift", 3)
+                # Last-occurrence semantics in csh; grep_value returns last in our impl.
+                run(f"update_PRM supermaster.PRM rshift {rshift}")
+                fs1 = grep_value("supermaster.PRM", "first_sample", 3)
+                fs2 = grep_value(f"{pth}{f1}", "first_sample", 3)
+                try:
+                    if int(float(fs2)) > int(float(fs1)):
+                        run(f"update_PRM supermaster.PRM first_sample {fs2}")
+                except ValueError:
+                    pass
+                run(f"cp supermaster.PRM {pth}")
+                out.write(f"{pth}:supermaster.PRM:{f2}\n")
+
+        # Symlink shared geocoding artifacts from the parent if present.
+        for shared in ("trans.dat", "raln.grd", "ralt.grd", "landmask_ra.grd"):
+            if os.path.isfile(f"../{shared}"):
+                run(f"ln -sf ../{shared} .")
+        run("ln -sf ../dem.grd .")
+        run(f"ln -sf ../{config} .")
+
+        run(f"merge_unwrap_geocode_tops tmp.filelist {config} {det_stitch}".rstrip())
+
+        # Promote any newly-created shared artifacts back to the parent.
+        for shared in ("trans.dat", "landmask_ra.grd", "raln.grd", "ralt.grd"):
+            if not os.path.isfile(f"../{shared}") and os.path.isfile(shared):
+                run(f"mv {shared} ../")
+                run(f"ln -sf ../{shared} .")
+
+        os.chdir(now_dir)
+
+
+if __name__ == "__main__":
+    merge_batch()

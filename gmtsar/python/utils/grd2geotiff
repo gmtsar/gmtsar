@@ -1,0 +1,53 @@
+#! /usr/bin/env python3
+"""grd2geotiff — render a GRD as a GeoTIFF via PostScript + psconvert.
+
+Python port of csh grd2geotiff.csh.
+
+Usage:  grd2geotiff grd_file_stem cpt_file [-R<W>/<E>/<S>/<N>]
+
+Outputs: <stem>.tiff in the current directory.
+"""
+import os
+import subprocess
+import sys
+from gmtsar_lib import run
+
+
+def _capture(cmd):
+    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                          check=False).stdout.decode("utf-8").strip()
+
+
+def grd2geotiff():
+    if len(sys.argv) not in (3, 4):
+        sys.exit(
+            "Usage: grd2geotiff grd_file_stem cpt_file [-R<W>/<E>/<S>/<N>]\n"
+            "Example: grd2geotiff phase phase.cpt"
+        )
+    stem, cpt = sys.argv[1], sys.argv[2]
+    region = sys.argv[3] if len(sys.argv) == 4 else None
+
+    quiet = os.path.isfile(os.path.expanduser("~/.quiet"))
+    V = "" if quiet else "-V"
+    VS = "" if quiet else "-S -V"
+
+    DX = _capture(f"gmt grdinfo {stem}.grd -C | cut -f8")
+    DPI = int(round(1.0 / float(DX)))
+
+    run("gmt set COLOR_MODEL = hsv")
+    run("gmt set PAPER_MEDIA = tabloid")
+    run(f"gmt grdgradient {stem}.grd -Ggrad.grd {V} -Nt0.7 -A60")
+
+    if region:
+        run(f"gmt grdimage {stem}.grd -Igrad.grd -C{cpt} {region} -Jx1id "
+            f"-P -Y2i -X2i -Q {V} > {stem}.ps")
+    else:
+        run(f"gmt grdimage {stem}.grd -Igrad.grd -C{cpt} -Jx1id "
+            f"-P -Y2i -X2i -Q {V} > {stem}.ps")
+    print(f"Make {stem}.tiff")
+    run(f"gmt psconvert {stem}.ps -W+g+t\"{stem}\" -E{DPI} -P {VS}")
+    run(f"rm -f {stem}.ps grad.grd")
+
+
+if __name__ == "__main__":
+    grd2geotiff()

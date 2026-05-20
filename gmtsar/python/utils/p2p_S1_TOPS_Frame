@@ -10,9 +10,9 @@ from gmtsar_lib import *
 
 def Error_Message():
     print(' ')
-    print('Usage: p2p_S1_TOPS_Frame.csh Master.SAFE Master.EOF Aligned.SAFE Aligned.EOF config.s1a.txt polarization parallel')  
+    print('Usage: p2p_S1_TOPS_Frame Master.SAFE Master.EOF Aligned.SAFE Aligned.EOF config.s1a.txt polarization parallel')  
     print(' ')
-    print('Example: Example: p2p_S1_TOPS_Frame.csh S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt vv 1')
+    print('Example: Example: p2p_S1_TOPS_Frame S1A_IW_SLC__1SDV_20150607T014936_20150607T015003_006261_00832E_3626.SAFE S1A_OPER_AUX_POEORB_OPOD_20150615T155109_V20150525T225944_20150527T005944.EOF S1A_IW_SLC__1SSV_20150526T014935_20150526T015002_006086_007E23_679A.SAFE S1A_OPER_AUX_POEORB_OPOD_20150627T155155_V20150606T225944_20150608T005944.EOF config.s1a.txt vv 1')
     print(' Place the .SAFE file in the raw folder, DEM in the topo folder.')
     print(' During processing, F1, F2, F3 and merge folder will be generated.')
     print(' Final results will be placed in the merge folder, with phase.')
@@ -24,12 +24,30 @@ def Error_Message():
     print('   Step-Over Revealed by Sentinel-1A InSAR. IEEE Transactions on Geoscience and Remote Sensing.')
 
 def getFilenameWithPolXml(searchDir, searchStr1, pol, fileFormat):
-    fileList = os.listdir(searchDir+'/annotation')
+    """Return the stem (no extension) of the .xml in <searchDir>/annotation/
+    matching the given subswath/polarization. Returns None and exits with a
+    clear error if no match (e.g. tarball missing annotation files, or wrong
+    polarization specified for this SAFE)."""
+    selectedFile = None
+    annot_dir = searchDir + '/annotation'
+    if not os.path.isdir(annot_dir):
+        sys.exit(f"getFilenameWithPolXml: missing directory {annot_dir}")
+    fileList = os.listdir(annot_dir)
     for fileName in fileList:
+        # Skip macOS AppleDouble resource files (._filename) — these get
+        # bundled into tarballs when the source was on a Mac and would
+        # otherwise be picked up as if they were real XML files.
+        if fileName.startswith('._') or fileName.startswith('.'):
+            continue
         if (searchStr1 in fileName) and (pol in fileName) and (fileFormat in fileName):
             selectedFile = fileName[:-4]
             print(selectedFile)
-    return selectedFile   
+    if selectedFile is None:
+        sys.exit(f"getFilenameWithPolXml: no file matching {searchStr1!r}/"
+                 f"{pol!r}/{fileFormat!r} in {annot_dir} "
+                 f"(annotation dir has {len(fileList)} entries — likely an "
+                 f"incomplete tarball or wrong polarization arg)")
+    return selectedFile
 
 def linkFiles(subswathId, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList):
     rootDir = 'F'+str(subswathId+1)
@@ -37,14 +55,11 @@ def linkFiles(subswathId, masterSafe, masterEof, alignedSafe, alignedEof, fmList
     run('mkdir -p '+rootDir+'/raw')
     run('mkdir -p '+rootDir+'/topo')
     os.chdir(rootDir)
-    os.system('pwd')
     replace_strings
     print('P2P_S1_TOPS_FRAME: Linking files for Subswath '+str(subswathId))
     os.chdir('topo')
-    os.system('pwd')
     file_shuttle('../../topo/dem.grd', '.', 'link')
     os.chdir('../raw')
-    os.system('pwd')
     file_shuttle('../../topo/dem.grd', '.', 'link')
     file_shuttle('../../raw/'+masterSafe+'/annotation/'+fmList[subswathId]+'.xml', '.', 'link')
     file_shuttle('../../raw/'+masterSafe+'/measurement/'+fmList[subswathId]+'.tiff', '.', 'link')  
@@ -69,15 +84,45 @@ def processingF1F2F3(seq, fmList, fsList):
 def processOneSubswath(subswathId, fm, fs):
     folderName = 'F'+str(subswathId+1)
     print('Processing subswath '+ folderName)
+    # Copy + patch the parent config: per-subswath runs MUST skip snaphu and
+    # geocode (the merge stage handles them across all 3 subswaths). Was
+    # previously enforced by an unconditional override inside p2p_processing
+    # for SAT=S1_TOPS, but that override broke standalone single-subswath
+    # runs (e.g. Ridgecrest H_res) that legitimately want geocode to run.
+    # The override now lives here — narrowly scoped to the Frame context.
     file_shuttle('config.py', folderName+'/config.py', 'cp')
+    _override_thresholds(f'{folderName}/config.py',
+                         threshold_geocode='0',
+                         threshold_snaphu='0',
+                         iono_skip_est='1')
     os.chdir(folderName)
-    os.system('pwd')
     cmd = ['p2p_processing', 'S1_TOPS', fm, fs, 'config.py']
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     with open('output.log.txt', 'w') as f:
         f.write(result.stdout)
     os.chdir('..')
-    os.system('pwd')
+
+
+def _override_thresholds(cfg_path, **overrides):
+    """In-place rewrite of `<key> = <value>` lines in a Python-style config.
+    Mirrors the _rewrite_config pattern used by p2p_ALOS2_SCAN_Frame /
+    p2p_S1_TOPS_doublediff. Appends missing keys."""
+    with open(cfg_path) as f:
+        lines = f.readlines()
+    seen, out = set(), []
+    for line in lines:
+        s = line.lstrip()
+        replaced = False
+        for k, v in overrides.items():
+            if s.startswith(k + ' ') or s.startswith(k + '='):
+                out.append(f'{k} = {v}\n'); seen.add(k); replaced = True; break
+        if not replaced:
+            out.append(line)
+    for k, v in overrides.items():
+        if k not in seen:
+            out.append(f'{k} = {v}\n')
+    with open(cfg_path, 'w') as f:
+        f.writelines(out)
     
 def merge(skip_master, fmList, fsList):
     if skip_master!=2:
@@ -104,7 +149,11 @@ def merge(skip_master, fmList, fsList):
                 f.write(pth[i]+'/:'+prm1m[i]+':'+prm1s[i]+'\n')
                 
         sys.path.insert(0, os.getcwd())
-        from config import correct_iono, iono_filt_rng, iono_filt_azi, det_stitch
+        import config as _cfg
+        correct_iono = getattr(_cfg, 'correct_iono', 0)
+        # det_stitch is S1_TOPS-specific; missing in import_csh_config'd configs.
+        # Default to 0 (no stitching) — matches csh p2p_S1_TOPS_Frame.csh default.
+        det_stitch = getattr(_cfg, 'det_stitch', 0)
         mergeUnwrapGeocodeTops(correct_iono, det_stitch)
     else:
         print('P2P_S1_TOPS_FRAME: No radar product is produced as only master image is processed.')
@@ -121,7 +170,18 @@ def mergeUnwrapGeocodeTops(correct_iono, det_stitch):
         print('not available yet for correct_iono!=0')
     else:
         file_shuttle('../config.py', '.', 'cp')
-        run('merge_unwrap_geocode_tops.csh tmp.filelist config.py '+str(det_stitch))
+        run('merge_unwrap_geocode_tops tmp.filelist config.py '+str(det_stitch))
+        # Post-condition: merge MUST have produced phasefilt/corr at minimum.
+        # Without this, a silent failure here surfaces only when compare.py
+        # later notices the missing file — the COVE/Larsen bug found in the
+        # v1.12.0 audit (false 6/0 SUCCESS while merge/ had no phasefilt.grd).
+        # Mirrors the post-merge assertion pattern in p2p_ALOS2_SCAN_Frame.
+        missing = [f for f in ('phasefilt.grd', 'corr.grd')
+                   if not os.path.exists(f)]
+        if missing:
+            sys.exit(f"p2p_S1_TOPS_Frame.mergeUnwrapGeocodeTops: missing "
+                     f"{missing} in merge/ after merge_unwrap_geocode_tops. "
+                     f"tmp.filelist=\n{open('tmp.filelist').read()}")
 
 def p2pS1TopsFrame():
     print('P2P_S1_TOPS_FRAME - START')
@@ -169,9 +229,5 @@ def p2pS1TopsFrame():
     
     print('P2P_S1_TOPS_FRAME - END')
 
-def _main_func(description):
+if __name__ == "__main__":
     p2pS1TopsFrame()
-
-if __name__ == '__main__':
-    _main_func(__doc__)
-

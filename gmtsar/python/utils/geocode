@@ -97,7 +97,13 @@ def geocode():
     print('GEOCODE: line-of-sight displacement ... ...')
     
     if check_file_report('unwrap_mask.grd')==True:
-        wavel = grep_value('*.PRM','wavelength',3)
+        # csh equivalent: `grep wavelength *.PRM | awk 'NR == 1 {print $3}'`.
+        # Python needs an explicit glob — open('*.PRM') treats the literal
+        # filename and errors.
+        prm_files = sorted(glob.glob('*.PRM'))
+        if not prm_files:
+            raise FileNotFoundError("geocode: no *.PRM files in current dir for wavelength lookup")
+        wavel = grep_value(prm_files[0], 'wavelength', 3)
         cmd = 'gmt grdmath unwrap_mask.grd '+str(wavel)+' MUL -79.58 MUL = los.grd'
         run(cmd)
         run('gmt grdgradient los.grd -Nt.9 -A0. -Glos_grad.grd')
@@ -121,34 +127,42 @@ def geocode():
     print('GEOCODE: geocode ... ...')
     print('GEOCODE: project correlation, phase, unwrapped and amplitude back to lon lat coordinates ... ...')
     
+    # csh `$PWD:t` = basename of current dir; csh `$remarked` was an
+    # uninitialized csh var (empty string). In the Python port these were
+    # left as literal '$PWD:t' / '$remarked' inside single-quoted strings
+    # passed to bash via run() — bash sees them as undefined → empty. Cosmetic
+    # for grdedit -D (just metadata text in the grd header), but real bug for
+    # the $wavel case below (LOS computation). Replace all with Python-side
+    # interpolation.
     remarked = ''
+    pwd_basename = os.path.basename(os.getcwd())
     run('proj_ra2ll trans.dat corr.grd corr_ll.grd')
-    run('''gmt grdedit -D//"dimensionless"/1///"$PWD:t geocoded correlation"/"$remarked"  corr_ll.grd''')
+    run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} geocoded correlation"/"{remarked}"  corr_ll.grd')
 
     run('proj_ra2ll trans.dat phasefilt.grd   phasefilt_ll.grd')
-    run('''gmt grdedit -D//"radians"/1///"$PWD:t wrapped phase after filtering"/"$remarked"  phasefilt_ll.grd''')
+    run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after filtering"/"{remarked}"  phasefilt_ll.grd')
     run('proj_ra2ll trans.dat phase_mask.grd  phase_mask_ll.grd')
-    run('''gmt grdedit -D//"radians"/1///"$PWD:t wrapped phase after masking"/"$remarked"  phase_mask_ll.grd''')
+    run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after masking"/"{remarked}"  phase_mask_ll.grd')
     run('proj_ra2ll trans.dat display_amp.grd display_amp_ll.grd')
-    run('''gmt grdedit -D//"dimensionless"/1///"PWD:t amplitude"/"$remarked"  display_amp_ll.grd''')
-    
+    run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} amplitude"/"{remarked}"  display_amp_ll.grd')
+
     if check_file_report('xphase_mask.grd')==True:
         run('proj_ra2ll trans.dat xphase_mask.grd xphase_mask_ll.grd')
-        run('''gmt grdedit -D//"radians"/1///"$PWD:t xphase"/"$remarked"  xphase_mask_ll.grd''')
+        run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} xphase"/"{remarked}"  xphase_mask_ll.grd')
         run('proj_ra2ll trans.dat yphase_mask.grd yphase_mask_ll.grd')
-        run('''gmt grdedit -D//"radians"/1///"$PWD:t yphase"/"$remarked"  yphase_mask_ll.grd''')
-        
+        run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} yphase"/"{remarked}"  yphase_mask_ll.grd')
+
     if check_file_report('unwrap_mask.grd')==True:
         run('proj_ra2ll trans.dat unwrap_mask.grd unwrap_mask_ll.grd')
-        run('''gmt grdedit -D//"radians"/1///"PWD:t unwrapped, masked phase"/"$remarked"  unwrap_mask_ll.grd''')
+        run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped, masked phase"/"{remarked}"  unwrap_mask_ll.grd')
 
     if check_file_report('unwrap.grd')==True:
         run('proj_ra2ll trans.dat unwrap.grd unwrap_ll.grd')
-        run('''gmt grdedit -D//"radians"/1///"PWD:t unwrapped phase"/"$remarked"  unwrap_ll.grd''')
+        run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped phase"/"{remarked}"  unwrap_ll.grd')
 
     if check_file_report('phasefilt_mask.grd')==True:
         run('proj_ra2ll trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd')
-        run('''gmt grdedit -D//"phase in radians"/1///"PWD:t wrapped phase masked filtered"/"$remarked"   phasefilt_mask_ll.grd''')
+        run(f'gmt grdedit -D//"phase in radians"/1///"{pwd_basename} wrapped phase masked filtered"/"{remarked}"   phasefilt_mask_ll.grd')
 
     print(' ')
     print('GEOCODE: now image for google earth ... ...')
@@ -172,15 +186,17 @@ def geocode():
     if check_file_report('unwrap_mask_ll.grd')==True:
         # constant is negative to make LOS = -1 * range change
         # constant is (1000 mm) / (4 * pi)
-        run('gmt grdmath unwrap_mask_ll.grd $wavel MUL -79.58 MUL = los_ll.grd') 
-        run('''gmt grdedit -D//"mm"/1///"$PWD:t LOS displacement"/"equals negative range" los_ll.grd''') 
+        # Bug-fix: was 'gmt grdmath ... $wavel MUL -79.58 MUL ...' with $wavel
+        # as a literal bash-style var expansion. bash saw it as undefined →
+        # empty → gmt got malformed args. los_ll.grd was either missing or
+        # numerically wrong (never noticed because compare.py didn't check
+        # los_ll.grd until v1.12.1). The Python `wavel` is in scope from
+        # the unwrap_mask block above; interpolate it directly.
+        run(f'gmt grdmath unwrap_mask_ll.grd {wavel} MUL -79.58 MUL = los_ll.grd')
+        run(f'gmt grdedit -D//"mm"/1///"{pwd_basename} LOS displacement"/"equals negative range" los_ll.grd')
         run('grd2kml los_ll los.cpt')
 
     print("GEOCODE - END ... ...")
 
-def _main_func(description):
-    geocode()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    geocode()

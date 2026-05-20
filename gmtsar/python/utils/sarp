@@ -45,9 +45,5 @@ def sarp():
     delete('tmp_sarp')
     print('SARP: Finishing sarp ... ...')
 
-def _main_func(description):
-    sarp()
-
 if __name__ == "__main__":
-    _main_func(__doc__)
-
+    sarp()
