@@ -1,0 +1,152 @@
+#! /usr/bin/env python3
+"""blockmedian_py — Python replacement for `gmt blockmedian`.
+
+Drop-in CLI compatible with the subset gmtsar uses inside the
+gmtconvert|blockmedian pipeline of dem2topo_ra:
+
+    gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d \\
+      | gmt blockmedian -R<x>/<x>/<y>/<y> -I<dx>/<dy> -bi3d -bo3d -r > temp.rat
+
+This Python tool collapses the two-step pipe into one in-memory pass:
+read trans.dat (5 doubles per row, from SAT_llt2rat), keep columns 0..2
+(gmtconvert -o0,1,2 -bi5d -bo3d), bin into cells, take the median z
+per cell (gmt blockmedian -bi3d -bo3d -r), and stream the result as
+binary 3-double to stdout (or to a -G file).
+
+CLI:
+    blockmedian_py trans.dat -R<x>/<x>/<y>/<y> -I<dx>/<dy>
+                   [-i 5d 0,1,2] [-r] [-G out.rat] [-V]
+
+If `-i 5d 0,1,2` is given, the input is treated as 5-double rows and
+only columns 0,1,2 are kept. Default is 3-double input (xyz).
+The output is binary 3-double rows: (x_cell_center, y_cell_center, median_z).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import numpy as np
+
+
+def _parse_region(r: str) -> tuple[float, float, float, float]:
+    parts = r.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"blockmedian_py: -R{r} not in xmin/xmax/ymin/ymax form")
+    return tuple(float(p) for p in parts)  # type: ignore
+
+
+def _parse_spacing(s: str) -> tuple[float, float]:
+    parts = s.split("/")
+    if len(parts) == 1:
+        return float(parts[0]), float(parts[0])
+    return float(parts[0]), float(parts[1])
+
+
+def blockmedian_xyz(xyz: np.ndarray,
+                    region: tuple[float, float, float, float],
+                    spacing: tuple[float, float],
+                    pixel_reg: bool = True,
+                    ) -> np.ndarray:
+    """Bin xyz scatter to a regular grid, take median z per non-empty cell.
+
+    xyz:        (N, 3) array
+    region:     (xmin, xmax, ymin, ymax)
+    spacing:    (dx, dy)
+    pixel_reg:  True if cells are centred (-r); False for gridline registration.
+
+    Returns (M, 3) array of (x_centre, y_centre, median_z) rows for
+    every non-empty cell, exactly matching gmt blockmedian's output.
+    """
+    from scipy.stats import binned_statistic_2d
+    xmin, xmax, ymin, ymax = region
+    dx, dy = spacing
+
+    # Number of cells in each direction. Pixel reg: data fills cells from
+    # xmin to xmax exactly. Gridline reg: cells span between gridline
+    # nodes, so there's one fewer cell than nodes.
+    if pixel_reg:
+        nx = int(round((xmax - xmin) / dx))
+        ny = int(round((ymax - ymin) / dy))
+    else:
+        nx = int(round((xmax - xmin) / dx))
+        ny = int(round((ymax - ymin) / dy))
+
+    bin_x = xmin + dx * np.arange(nx + 1)
+    bin_y = ymin + dy * np.arange(ny + 1)
+
+    # Filter rows whose (x, y) lies inside the region (binned_statistic
+    # complains otherwise).
+    m = ((xyz[:, 0] >= xmin) & (xyz[:, 0] <= xmax) &
+         (xyz[:, 1] >= ymin) & (xyz[:, 1] <= ymax))
+    if not m.any():
+        return np.zeros((0, 3), dtype=np.float64)
+    xv, yv, zv = xyz[m, 0], xyz[m, 1], xyz[m, 2]
+
+    # binned_statistic_2d returns NaN for empty cells. Take median in
+    # each cell with values.
+    stat, _, _, _ = binned_statistic_2d(
+        xv, yv, zv, statistic="median", bins=[bin_x, bin_y])
+
+    # Cell centres
+    xc = (bin_x[:-1] + bin_x[1:]) / 2.0
+    yc = (bin_y[:-1] + bin_y[1:]) / 2.0
+    XC, YC = np.meshgrid(xc, yc, indexing="ij")
+
+    # Only emit rows for non-empty cells (gmt blockmedian does the same).
+    valid = ~np.isnan(stat)
+    out = np.column_stack([XC[valid], YC[valid], stat[valid]])
+    return out.astype(np.float64)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("infile")
+    p.add_argument("-R", required=True)
+    p.add_argument("-I", required=True)
+    p.add_argument("-G", default="", help="output file path (default: stdout)")
+    p.add_argument("-bi3d", action="store_true",
+                   help="binary input, 3 doubles per row (xyz)")
+    p.add_argument("-bi5d", action="store_true",
+                   help="binary input, 5 doubles per row (e.g. from SAT_llt2rat)")
+    p.add_argument("-bo3d", action="store_true",
+                   help="binary output, 3 doubles per row (default true)")
+    p.add_argument("-r", action="store_true", help="pixel registration")
+    p.add_argument("-V", action="store_true", help="verbose (ignored)")
+    p.add_argument("-i", default="", help="input column spec (e.g. 0,1,2)")
+    ns = p.parse_args()
+
+    region = _parse_region(getattr(ns, "R"))
+    spacing = _parse_spacing(getattr(ns, "I"))
+
+    # Read input
+    if ns.bi5d:
+        a = np.fromfile(ns.infile, dtype=np.float64)
+        if a.size == 0 or a.size % 5 != 0:
+            print(f"blockmedian_py: {ns.infile} not a multiple of 5 doubles",
+                  file=sys.stderr)
+            return 2
+        xyz = a.reshape(-1, 5)[:, :3]
+    elif ns.bi3d:
+        a = np.fromfile(ns.infile, dtype=np.float64)
+        if a.size == 0 or a.size % 3 != 0:
+            print(f"blockmedian_py: {ns.infile} not a multiple of 3 doubles",
+                  file=sys.stderr)
+            return 2
+        xyz = a.reshape(-1, 3)
+    else:
+        xyz = np.loadtxt(ns.infile, ndmin=2)[:, :3]
+
+    out = blockmedian_xyz(xyz, region, spacing, pixel_reg=ns.r)
+
+    if ns.G:
+        out.tofile(ns.G)
+    else:
+        # Write to stdout as binary
+        sys.stdout.buffer.write(out.tobytes())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
