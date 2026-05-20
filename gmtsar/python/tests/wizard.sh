@@ -34,7 +34,7 @@ while read -r f; do
         bad "$f"
         sed 's/^/         /' /tmp/wizard.err
     fi
-done < <(find utils tests -type f \( -name '*.py' -o -name 'fitoffset.py' \) ! -path '*/work/*' ! -path '*/reference/*')
+done < <(find utils utils_pygmt tests -type f \( -name '*.py' -o -name 'fitoffset.py' \) ! -path '*/work/*' ! -path '*/reference/*' 2>/dev/null)
 # Plus extension-less Python utilities (every executable under utils/ that starts with python3)
 while read -r f; do
     n=$((n+1))
@@ -60,9 +60,32 @@ while read -r f; do
         bad "$f"
         echo "$out" | head -3 | sed 's/^/         /'
     fi
-done < <(find utils -maxdepth 1 -type f \( -name '*.py' -o ! -name '*.csh' \) \
+done < <(find utils utils_pygmt -maxdepth 1 -type f \( -name '*.py' -o ! -name '*.csh' \) 2>/dev/null \
          | xargs -I{} sh -c 'head -1 "{}" 2>/dev/null | grep -q python && echo "{}"')
 ok "$n python utilities compile without SyntaxError"
+
+# 2b. utils_pygmt — verify the compat shim imports cleanly (catches the
+# kind of bug where someone added a new function to gmt_compat but forgot
+# to re-export it from __init__.py).
+if [ -d utils_pygmt ]; then
+    out=$(python3 -c "
+import sys; sys.path.insert(0, 'utils_pygmt')
+import gmt_compat
+required = ['has_pygmt','surface','grdcut','grdsample','grdimage','makecpt',
+            'grdtrack','blockmedian','blockmean','grdfilter','grd2xyz',
+            'xyz2grd','grdinfo','grdgradient','grdfill','grdlandmask',
+            'triangulate','grd2cpt','gmtinfo','grdedit','grdpaste','trend2d',
+            'grdmath','GMTSARFigure']
+missing = [r for r in required if not hasattr(gmt_compat, r)]
+if missing: print('MISSING:', missing); sys.exit(1)
+print(f'utils_pygmt has_pygmt={gmt_compat.has_pygmt()}; {len(required)} symbols exported')
+" 2>&1)
+    if echo "$out" | grep -q 'MISSING'; then
+        bad "$out"
+    else
+        ok "$out"
+    fi
+fi
 
 # --- 3. Bash syntax check ---------------------------------------------------
 hdr "[3/5] Bash + csh syntax"
