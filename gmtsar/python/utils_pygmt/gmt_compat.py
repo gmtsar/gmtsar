@@ -29,6 +29,7 @@ See PYGMT_ROADMAP.md (phase tables) for which sites are migrated.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from typing import Optional
@@ -55,8 +56,16 @@ def _clib_call(module: str, args: str) -> int:
     Args go as a single CLI-style string, same as the binary expects.
     Returns 0 on success; raises GMTCLibError on failure (PyGMT default).
     Used for modules without a Python wrapper (grdmath, grdedit, etc.).
+
+    NOTE: clib.Session does NOT honor shell redirects (`>`, `>>`).
+    Calls whose args end in `> file` are silently re-routed to subprocess
+    because the redirect target file would otherwise never be written.
+    Same for any unbalanced quoting we can't safely parse.
     """
     if not _HAS_PYGMT:
+        return _subproc_fallback(module, args)
+    # Shell redirects don't survive clib.Session; route to subprocess.
+    if re.search(r"\s>\s|\s>>\s|\s>\Z|\s>>\Z", args):
         return _subproc_fallback(module, args)
     with Session() as ses:
         ses.call_module(module, args)
@@ -161,25 +170,15 @@ def trend2d(args: str) -> int:
 #   2. clib.Session fall-back for anything else, with the RPN string verbatim.
 
 def grdmath(args: str) -> int:
-    """`gmt grdmath <args>` — stack calculator. Tries an xarray fast-path
-    for a handful of common 1- and 2-operand operations; otherwise routes
-    through clib.Session. The xarray path is bit-identical for the
-    operations covered (numpy float64 ↔ GMT float64) and is what we'd
-    eventually want everywhere.
-
-    Examples covered by the xarray fast-path:
-        grdmath A.grd FLIPUD = B.grd
-        grdmath A.grd B.grd MUL = C.grd
-        grdmath A.grd 0.5 MUL = B.grd
-        grdmath A.grd B.grd ADD = C.grd
-        grdmath A.grd B.grd SUB = C.grd
-        grdmath A.grd B.grd DIV = C.grd
+    """`gmt grdmath <args>` — stack calculator. Always routes through
+    `clib.Session.call_module` to preserve full RPN expressiveness AND
+    GMT-native netcdf format. The xarray fast-path in `_try_xarray_grdmath`
+    is bit-identical numerically but writes netcdf in an xarray-flavour
+    that lacks the GMT grid header conventions — downstream GMT modules
+    then fail with "grid files not of same size". Keep clib.Session as
+    the default; revisit the fast-path once we have a writer that emits
+    GMT-compatible netcdf.
     """
-    tokens = args.split()
-    # Quick recognition of `<grid> <UNARY-OP> = <out>` and
-    # `<a> <b> <BINARY-OP> = <out>` forms only.
-    if _try_xarray_grdmath(tokens):
-        return 0
     return _clib_call("grdmath", args)
 
 
