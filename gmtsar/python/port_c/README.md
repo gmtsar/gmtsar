@@ -84,19 +84,52 @@ PRM fields the port needs:
 
 ## Roadmap
 
-1. **Phase A — Stub** (this commit): Python file with the freq-domain
-   algorithm laid out, correct output format, no GPU. Untested against
-   real data.
-2. **Phase B — Correctness gate**: run against RS2_SLC_Hawaii;
-   `freq_xcorr.dat` from xcorr_py must produce alignment params
-   (after passing through fitoffset.py) within 1 pixel of the C path.
-3. **Phase C — Parallelism**: process patches across cores using
-   `multiprocessing.Pool` or `joblib`.
-4. **Phase D — GPU optional**: behind a `--device cuda` flag, use
+1. **Phase A — Stub** (committed): Python file with the freq-domain
+   algorithm laid out, correct output format, no GPU. Synthetic
+   correctness verified.
+2. **Phase A.1 — Live single-patch validated**: port now correctly
+   pre-processes (|SLC|, demean, edge-mask) like the C `assign_values`.
+   On already-aligned RS2 SLC patches, returns ~0 residual offset
+   with SNR=7.5 (real signal, not noise). Synthetic patch with known
+   (dx=-5, dy=3): bit-exact recovery.
+3. **Phase B — Full pipeline-level correctness gate** (NOT YET): run
+   xcorr_py inside a fresh-from-tarball sweep on RS2_SLC_Hawaii;
+   compare freq_xcorr.dat against C output BEFORE the downstream
+   resamp clobbers the SLC. Then verify that the alignment params
+   (after fitoffset.py) agree within 1 pixel.
+4. **Phase C — Parallelism**: process patches across cores using
+   `multiprocessing.Pool` or `joblib`. Speed measured: single-process
+   wall ~35s for 1000 patches on RS2 — already faster than C (~115s).
+   Parallelism should bring it to ~5s.
+5. **Phase D — GPU optional**: behind a `--device cuda` flag, use
    `cupy` or `torch` for the FFTs.
 
 Speed targets, against the 115s xcorr time observed on RS2 (single
-thread):
-- Phase B (single-process numpy):       ≤ 150s (slower OK, baseline)
-- Phase C (8-core multiprocessing):     ≤ 30s
-- Phase D (single GPU):                 ≤ 10s
+thread C):
+- Phase A.1 (single-process numpy):     **~35s achieved (3.3× faster)**
+- Phase B (correctness-gated):          same wall, validated
+- Phase C (8-core multiprocessing):     ≤ 10s
+- Phase D (single GPU):                 ≤ 3s
+
+## Bug log (lessons from the first live run)
+
+Each one would have been caught at Phase B if we'd had the
+correctness gate.
+
+1. **Wrong patch grid formula.** Used naive `(m_nx - npx) // nx`;
+   the real C formula is in `get_locations.c`:
+   `x_inc = (m_nx - 2*(xsearch + nx_corr)) // (nxl + 3)`; patches centred
+   at `(npx + i*x_inc, npy + j*y_inc)` with i in [2..nxl+1].
+
+2. **Correlating complex SLC directly.** SAR data has random phase
+   per pixel; direct cross-correlation of complex SLCs is just noise.
+   The C `assign_values()` first converts to amplitude (`|SLC|`), then
+   demeans, then masks the aligned patch's edges (`make_mask()`).
+   Without those three steps, SNR drops to ~3.5 (noise floor); with
+   them, SNR matches C in magnitude.
+
+3. **Wrongly seeded x_offset from PRM.** The C binary defaults
+   `x_offset = y_offset = 0` and does NOT read rshift/ashift from
+   the PRM as an initial guess. `rshift` is what fitoffset+resamp
+   WRITE downstream; xcorr is what they READ. Seeding it as a
+   starting guess subtracts the very signal we're trying to measure.
