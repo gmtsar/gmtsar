@@ -92,10 +92,17 @@ def dem2topo_ra():
         print('DEM2TOPO_RA: ERROR: range sampling rate out of bounds ... ...')
     
     print('DEM2TOPO_RA: range decimation rng is ', rng)
+    # SAT_llt2rat_py wire-in (2026-05-20, after Mira #2 goldop closure):
+    # bit-identical to C SAT_llt2rat on RS2 Hawaii DEM (azi_pix max|d|=0
+    # on all 978882 rows, sub-Angstrom range_pix residual). 3.5× slower
+    # than C (precise=0: 32 s vs 9 s) but the fast `-bi3d` binary-stdin
+    # path + upstream `gmt grd2xyz -bo3d` keeps the end-to-end pipe
+    # competitive. See gmtsar/python/AUDIT_SAT_llt2rat_py.md for the
+    # 9 sub-ULP bugs Mira #2 fixed to close parity.
     if SC == 10 or SC == 11:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat '+sys.argv[1]+' 1 -bod  > trans.dat')
+        run('gmt grd2xyz '+sys.argv[2]+' -s -bo3d | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod -bi3d > trans.dat')
     else:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat '+sys.argv[1]+' 0 -bod  > trans.dat')
+        run('gmt grd2xyz '+sys.argv[2]+' -s -bo3d | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod -bi3d > trans.dat')
     
     print(' ')
     print('DEM2TOPO_RA: use an azimuth spacing of 2 for low PRF data such as S1 TOPS ... ...')

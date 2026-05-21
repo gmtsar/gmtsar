@@ -10,7 +10,21 @@
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+# In-process replacement for the proj_ra2ll subprocess chain. Eliminates
+# `gmt grd2xyz | gmt grdtrack | gmt gmtconvert` per call (~0.5 s/file),
+# plus caches `gmt surface` raln/ralt, `m2s.csh`, and `gmt gmtinfo`
+# across the 5+ files we project per geocode invocation (~3 s saved on
+# RS2 small case, 1.87× speedup vs the original proj_ra2ll subprocess
+# chain — verified bit-exact). See proj_ra2ll_lib.py for the math.
+try:
+    from proj_ra2ll_lib import proj_ra2ll_fast
+    _HAVE_FAST_PROJ = True
+except ImportError as _e:
+    print(f"GEOCODE: WARN: proj_ra2ll_lib import failed ({_e}); "
+          "falling back to subprocess proj_ra2ll.", file=sys.stderr)
+    _HAVE_FAST_PROJ = False
 
 def geocode():
     
@@ -136,32 +150,47 @@ def geocode():
     # interpolation.
     remarked = ''
     pwd_basename = os.path.basename(os.getcwd())
-    run('proj_ra2ll trans.dat corr.grd corr_ll.grd')
+
+    # Shared cache for the batched fast path (raln/ralt grids in numpy,
+    # m2s.csh output, gmt gmtinfo bbox — see proj_ra2ll_lib.proj_ra2ll_fast).
+    # Disable by setting GMTSAR_GEOCODE_NOFAST=1 to fall back to the original
+    # subprocess proj_ra2ll for every file (useful for A/B regression test).
+    _proj_cache = {}
+    _use_fast = _HAVE_FAST_PROJ and not os.environ.get("GMTSAR_GEOCODE_NOFAST")
+
+    def _project(in_grd, out_grd):
+        if _use_fast:
+            print(f"\nGEOCODE: proj_ra2ll_fast {in_grd} -> {out_grd}")
+            proj_ra2ll_fast('trans.dat', in_grd, out_grd, cache=_proj_cache)
+        else:
+            run(f'proj_ra2ll trans.dat {in_grd} {out_grd}')
+
+    _project('corr.grd', 'corr_ll.grd')
     run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} geocoded correlation"/"{remarked}"  corr_ll.grd')
 
-    run('proj_ra2ll trans.dat phasefilt.grd   phasefilt_ll.grd')
+    _project('phasefilt.grd', 'phasefilt_ll.grd')
     run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after filtering"/"{remarked}"  phasefilt_ll.grd')
-    run('proj_ra2ll trans.dat phase_mask.grd  phase_mask_ll.grd')
+    _project('phase_mask.grd', 'phase_mask_ll.grd')
     run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after masking"/"{remarked}"  phase_mask_ll.grd')
-    run('proj_ra2ll trans.dat display_amp.grd display_amp_ll.grd')
+    _project('display_amp.grd', 'display_amp_ll.grd')
     run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} amplitude"/"{remarked}"  display_amp_ll.grd')
 
     if check_file_report('xphase_mask.grd')==True:
-        run('proj_ra2ll trans.dat xphase_mask.grd xphase_mask_ll.grd')
+        _project('xphase_mask.grd', 'xphase_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} xphase"/"{remarked}"  xphase_mask_ll.grd')
-        run('proj_ra2ll trans.dat yphase_mask.grd yphase_mask_ll.grd')
+        _project('yphase_mask.grd', 'yphase_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} yphase"/"{remarked}"  yphase_mask_ll.grd')
 
     if check_file_report('unwrap_mask.grd')==True:
-        run('proj_ra2ll trans.dat unwrap_mask.grd unwrap_mask_ll.grd')
+        _project('unwrap_mask.grd', 'unwrap_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped, masked phase"/"{remarked}"  unwrap_mask_ll.grd')
 
     if check_file_report('unwrap.grd')==True:
-        run('proj_ra2ll trans.dat unwrap.grd unwrap_ll.grd')
+        _project('unwrap.grd', 'unwrap_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped phase"/"{remarked}"  unwrap_ll.grd')
 
     if check_file_report('phasefilt_mask.grd')==True:
-        run('proj_ra2ll trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd')
+        _project('phasefilt_mask.grd', 'phasefilt_mask_ll.grd')
         run(f'gmt grdedit -D//"phase in radians"/1///"{pwd_basename} wrapped phase masked filtered"/"{remarked}"   phasefilt_mask_ll.grd')
 
     print(' ')

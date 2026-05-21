@@ -12,14 +12,32 @@ import numpy as np
 
 _HERE = Path(__file__).resolve().parent
 _MOD = _HERE.parent / "SAT_llt2rat_py"
-_NS: dict = {"__file__": str(_MOD), "__name__": "sat_llt2rat_module"}
-exec(compile(_MOD.read_text(), str(_MOD), "exec"), _NS)
+# Load via importlib so the module is registered in sys.modules — Numba's
+# JIT functions need to be able to find the module they live in by name
+# when re-entered. Without sys.modules registration, `from numba import njit`
+# in the SAT module fails to resolve `@njit(...)` decorations at exec-time
+# under unittest's loader (subtle interpreter-state interaction).
+# We register under "sat_llt2rat_py_mod" (NOT "__main__") so the test
+# process does not collide with a direct script invocation. With
+# cache=False on the JIT kernels there are no on-disk artefacts to worry
+# about across contexts.
+import importlib.util as _ilu
+import importlib.machinery as _ilm
+_spec = _ilu.spec_from_loader(
+    "sat_llt2rat_py_mod",
+    _ilm.SourceFileLoader("sat_llt2rat_py_mod", str(_MOD)),
+)
+_NS_MOD = _ilu.module_from_spec(_spec)
+sys.modules["sat_llt2rat_py_mod"] = _NS_MOD
+_spec.loader.exec_module(_NS_MOD)
+_NS: dict = _NS_MOD.__dict__
 read_prm = _NS["read_prm"]
 read_led = _NS["read_led"]
 plh2xyz = _NS["plh2xyz"]
 hermite_orbit = _NS["hermite_orbit"]
 presample_orbit = _NS["presample_orbit"]
 goldop = _NS["goldop"]
+goldop_batch = _NS["goldop_batch"]
 polyfit_refine = _NS["polyfit_refine"]
 to_pixel_coords = _NS["to_pixel_coords"]
 
@@ -122,15 +140,22 @@ class TestC4PresampleOrbit(unittest.TestCase):
         # to handle out-of-window closest-approach points (see
         # test_npad_padding_extends_window).
         op = presample_orbit(orbit, 0.0, 10.0, ts, npad=0)
-        self.assertGreaterEqual(op.shape[0], 21)
+        # C-faithful: nrec = int((t2-t1)/ts) = int(10/0.5) = 20 (not 21).
+        self.assertEqual(op.shape[0], 20)
         self.assertEqual(op.shape[1], 4)
-        # First and last time match
+        # First time matches.
         self.assertAlmostEqual(op[0, 0], 0.0)
-        self.assertAlmostEqual(op[-1, 0], 10.0)
+        # Last sample at t = (nrec-1)*ts = 19*0.5 = 9.5.
+        self.assertAlmostEqual(op[-1, 0], 9.5)
 
     def test_npad_padding_extends_window(self):
-        """Default npad=8000 extends sampling by ±8000*ts on each side."""
-        t = np.linspace(0, 100, 10)
+        """Default npad=8000 extends sampling by ±8000*ts on each side.
+
+        Orbit must span the padded interval [t1-pad, t2+pad].
+        """
+        # Sample range [50,60] with pad = 8000*0.01 = 80 → need orbit on
+        # at least [-30, 140].
+        t = np.linspace(-30.0, 140.0, 20)
         orbit = np.column_stack([t, 50*t, np.zeros_like(t), np.zeros_like(t),
                                   np.full_like(t, 50.0),
                                   np.zeros_like(t),
@@ -139,14 +164,20 @@ class TestC4PresampleOrbit(unittest.TestCase):
         op = presample_orbit(orbit, 50.0, 60.0, ts)   # default npad=8000
         pad = 8000 * ts
         self.assertAlmostEqual(op[0, 0], 50.0 - pad, places=6)
-        self.assertAlmostEqual(op[-1, 0], 60.0 + pad, places=6)
+        # Last sample at t1-pad + (n-1)*ts where n = int((t2-t1)/ts) + 2*npad
+        # = 1000 + 16000 = 17000 → last = (50-80) + 16999*0.01 = -30 + 169.99 = 139.99
+        self.assertAlmostEqual(op[-1, 0], 50.0 - pad + (16999) * ts, places=4)
 
 
 # ---------- C5 goldop -------------------------------------------------------
 class TestC5Goldop(unittest.TestCase):
     def test_recovers_closest_approach_synthetic(self):
         """Straight-line orbit; place target at known closest-approach point;
-        goldop should land near that point."""
+        goldop should land near that point.
+
+        Tolerance is TOL=2 grid samples (C-faithful). Grid spacing 0.1 →
+        tm within ±0.2 s, range within ±1 m.
+        """
         # Orbit: straight line along +x at y=1000, z=0, from t=0..20
         ts = np.arange(0, 20.01, 0.1)
         n = ts.size
@@ -154,8 +185,62 @@ class TestC5Goldop(unittest.TestCase):
         # Target at (500, 0, 0). Closest approach is at t=10 (orbit at x=500),
         # range = 1000.
         rng, tm = goldop(op, 500.0, 0.0, 0.0)
-        self.assertAlmostEqual(tm, 10.0, delta=0.1)
+        # C goldop uses integer TOL=2 → ±2 grid samples → tm within ±0.2 s.
+        self.assertAlmostEqual(tm, 10.0, delta=0.2)
         self.assertAlmostEqual(rng, 1000.0, delta=1.0)
+
+
+# ---------- C5b goldop_batch (vectorized) -----------------------------------
+class TestC5GoldopBatch(unittest.TestCase):
+    """Pattern-4 defense: branch-dependent vectorized algorithm needs a
+    scalar-vs-vec equivalence test on the same inputs.
+    """
+
+    def _make_orbit(self, n=200):
+        """Linear orbit straight along +x, y=1000 constant, z=0."""
+        ts = np.arange(0, n, 1.0) * 0.1
+        op = np.column_stack([ts, 50.0 * ts, np.full(n, 1000.0), np.zeros(n)])
+        return op
+
+    def test_scalar_vec_bit_identical_single(self):
+        """1 target: goldop scalar == goldop_batch vec, bit-exact (rng, tm)."""
+        op = self._make_orbit()
+        targets = np.array([[500.0, 0.0, 0.0]])
+        r_s, t_s = goldop(op, 500.0, 0.0, 0.0,
+                          stai=0, endi=op.shape[0]-1)
+        r_v, t_v = goldop_batch(op, targets)
+        self.assertEqual(float(r_v[0]), r_s)
+        self.assertEqual(float(t_v[0]), t_s)
+
+    def test_scalar_vec_bit_identical_many(self):
+        """30 random targets: each scalar == vec, bit-exact."""
+        rng = np.random.default_rng(42)
+        op = self._make_orbit(n=500)
+        targets = rng.uniform(low=[100.0, -500.0, -500.0],
+                              high=[2400.0, 500.0, 500.0],
+                              size=(30, 3))
+        r_v, t_v = goldop_batch(op, targets)
+        for i in range(targets.shape[0]):
+            r_s, t_s = goldop(op, float(targets[i, 0]),
+                              float(targets[i, 1]),
+                              float(targets[i, 2]),
+                              stai=0, endi=op.shape[0]-1)
+            self.assertEqual(float(r_v[i]), r_s,
+                             msg=f"rng mismatch at target {i}")
+            self.assertEqual(float(t_v[i]), t_s,
+                             msg=f"tm mismatch at target {i}")
+
+    def test_chunk_boundary(self):
+        """chunk smaller than N: results unchanged across the boundary."""
+        rng = np.random.default_rng(7)
+        op = self._make_orbit(n=300)
+        targets = rng.uniform(low=[100.0, -500.0, -500.0],
+                              high=[1400.0, 500.0, 500.0],
+                              size=(50, 3))
+        r_big, t_big = goldop_batch(op, targets, chunk=200_000)
+        r_small, t_small = goldop_batch(op, targets, chunk=7)
+        np.testing.assert_array_equal(r_big, r_small)
+        np.testing.assert_array_equal(t_big, t_small)
 
 
 # ---------- C6 polyfit refine -----------------------------------------------
@@ -204,6 +289,150 @@ class TestC7PixelCoords(unittest.TestCase):
         self.assertAlmostEqual(rp, 19.5)
         # 1500*(100.5 - 100) - (5+0.25) = 750 - 5.25 = 744.75
         self.assertAlmostEqual(ap, 744.75)
+
+
+# ---------- C-parity end-to-end (the Mira-rule guardrail) -------------------
+class TestNumbaParity(unittest.TestCase):
+    """Numba JIT kernels must be bit-identical to their pure-numpy
+    reference paths. Per Mira's discipline: every fast path gets its own
+    test — the C-parity oracle alone won't catch a regression that affects
+    BOTH paths equally.
+    """
+
+    def setUp(self):
+        # Use the live module attribute (not the cached `_NS` dict captured
+        # at import time). _HAS_NUMBA = True only when numba imported cleanly
+        # AND env SAT_LLT2RAT_PY_NUMBA != "0".
+        has_numba = getattr(_NS_MOD, "_HAS_NUMBA", False)
+        if not has_numba:
+            self.skipTest("numba not installed / SAT_LLT2RAT_PY_NUMBA=0")
+
+    def test_hermite_c_1d_jit_vs_numpy(self):
+        """General-path Hermite: Numba == numpy on a realistic orbit grid."""
+        rng = np.random.default_rng(42)
+        n = 30
+        x = np.arange(n, dtype=np.float64) * 4.0   # uniform 4-s knots
+        y = rng.normal(size=n) * 1e6
+        z = rng.normal(size=n) * 1e3
+        xp = rng.uniform(x[3], x[-4], size=200)
+        ref = _NS["hermite_c_1d"](x, y, z, xp, nval=6)
+        jit = _NS["hermite_c_1d_numba"](x, y, z, xp, nval=6)
+        np.testing.assert_array_equal(jit, ref,
+            err_msg="hermite_c_1d_numba diverged from pure-numpy hermite_c_1d")
+
+    def test_hermite_c_1d_uniform_jit_vs_numpy(self):
+        """Uniform-path Hermite (Horner): Numba == numpy."""
+        rng = np.random.default_rng(7)
+        n = 50
+        x0 = 100.0
+        dsec = 0.5
+        y = rng.normal(size=n) * 1e6
+        z = rng.normal(size=n) * 1e3
+        xp = rng.uniform(x0 + 3 * dsec, x0 + (n - 4) * dsec, size=300)
+        ref = _NS["hermite_c_1d_uniform"](x0, dsec, y, z, xp, nval=6)
+        jit = _NS["hermite_c_1d_uniform_numba"](x0, dsec, y, z, xp, nval=6)
+        np.testing.assert_array_equal(jit, ref,
+            err_msg="hermite_c_1d_uniform_numba diverged from pure-numpy")
+
+    def test_goldop_jit_vs_scalar(self):
+        """Numba goldop_batch == scalar goldop on per-target basis (bit-exact)."""
+        rng = np.random.default_rng(99)
+        # Build a smooth synthetic orbit (parabola); plenty of nrec for a real search
+        nrec = 500
+        op_t = np.linspace(0.0, 100.0, nrec)
+        px = 7000e3 + 100.0 * op_t
+        py = 50.0 * (op_t - 50.0) ** 2
+        pz = 1e3 * np.cos(op_t / 5.0)
+        orb_pos = np.column_stack([op_t, px, py, pz])
+        # Random targets near the orbit
+        N = 25
+        tx = px[5: 5 + N] + rng.normal(scale=1e3, size=N)
+        ty = py[5: 5 + N] + rng.normal(scale=1e3, size=N)
+        tz = pz[5: 5 + N] + rng.normal(scale=1e3, size=N)
+        targets = np.column_stack([tx, ty, tz])
+        rng_b, tm_b = _NS["goldop_batch"](orb_pos, targets)
+        for k in range(N):
+            r_s, t_s = _NS["goldop"](orb_pos, float(tx[k]), float(ty[k]),
+                                     float(tz[k]))
+            self.assertEqual(rng_b[k], r_s,
+                f"target {k}: batch rng {rng_b[k]} != scalar {r_s}")
+            self.assertEqual(tm_b[k], t_s,
+                f"target {k}: batch tm {tm_b[k]} != scalar {t_s}")
+
+
+class TestEndToEndCParity(unittest.TestCase):
+    """End-to-end byte-level parity vs C `SAT_llt2rat`. Per the bin_py
+    discipline, every port must have a test running C on the canonical
+    real-data input and asserting roundoff-equal output. Without this
+    test we'd silently regress goldop/Hermite/plh2xyz arithmetic.
+    """
+
+    C_BIN = "/home/staff/dliu/gmtsar/bin/SAT_llt2rat"
+    PRM = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
+               "RS2_SLC_Hawaii/topo/master.PRM")
+    LED = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
+               "RS2_SLC_Hawaii/topo/RS220110515.LED")
+    DEM = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
+               "RS2_SLC_Hawaii/topo/dem.grd")
+
+    @classmethod
+    def setUpClass(cls):
+        if not Path(cls.C_BIN).exists():
+            raise unittest.SkipTest(
+                f"C SAT_llt2rat binary not present at {cls.C_BIN}")
+        for f in (cls.PRM, cls.LED, cls.DEM):
+            if not f.exists():
+                raise unittest.SkipTest(f"input not present: {f}")
+        # gmt grd2xyz needed
+        import shutil
+        if shutil.which("gmt") is None:
+            raise unittest.SkipTest("gmt not on PATH (needed to make DEM xyz)")
+
+    def test_precise0_bit_identical(self):
+        """Full RS2 DEM, precise=0 (-bod): row-by-row diff vs C oracle.
+
+        Expects azi_pix, lon, lat bit-identical (max|d|=0). range_pix
+        and height tolerate ~1e-10 px / ~2e-9 m residual roundoff from
+        order-of-summation differences between scalar C and vectorised
+        numpy that don't affect goldop's branch decisions.
+        """
+        import shutil, subprocess, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            xyz = Path(d) / "dem.xyz"
+            c_out = Path(d) / "c.dat"
+            py_out = Path(d) / "py.dat"
+
+            # 1. grd2xyz → ASCII (full precision)
+            with open(xyz, "w") as fout:
+                subprocess.check_call(
+                    ["gmt", "grd2xyz", "--FORMAT_FLOAT_OUT=%.17g",
+                     str(self.DEM), "-s"], stdout=fout)
+            # 2. Run C and Py on the same input bytes
+            with open(xyz, "rb") as fin, open(c_out, "wb") as fout:
+                subprocess.check_call(
+                    [self.C_BIN, str(self.PRM), "0", "-bod"],
+                    stdin=fin, stdout=fout,
+                    cwd=str(self.PRM.parent))
+            py_bin = str(_MOD)
+            with open(xyz, "rb") as fin, open(py_out, "wb") as fout:
+                subprocess.check_call(
+                    [sys.executable, py_bin, str(self.PRM), "0", "-bod"],
+                    stdin=fin, stdout=fout,
+                    cwd=str(self.PRM.parent))
+            c = np.fromfile(c_out, dtype=np.float64).reshape(-1, 5)
+            p = np.fromfile(py_out, dtype=np.float64).reshape(-1, 5)
+            self.assertEqual(c.shape, p.shape, "row count must match exactly")
+            # azi_pix, lon, lat must be bit-identical
+            for j, name in [(1, "azi_pix"), (3, "lon"), (4, "lat")]:
+                np.testing.assert_array_equal(
+                    p[:, j], c[:, j],
+                    err_msg=f"column {name} not bit-identical")
+            # range_pix tolerates sub-mm residual (sub-ULP order-of-ops diff)
+            self.assertLess(np.max(np.abs(p[:, 0] - c[:, 0])), 1e-7,
+                            "range_pix exceeds 1e-7 px residual tolerance")
+            # height tolerates ~2e-9 m residual (|xyz| sqrt-summation order)
+            self.assertLess(np.max(np.abs(p[:, 2] - c[:, 2])), 1e-6,
+                            "height exceeds 1e-6 m residual tolerance")
 
 
 if __name__ == "__main__":

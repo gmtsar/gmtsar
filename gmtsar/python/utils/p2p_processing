@@ -12,6 +12,7 @@ import sys, os, re
 import subprocess, glob
 from gmtsar_lib import *
 from p2p_stages import *
+from phase_profile import phase, dump_profile
 
 
 def p2p_processing(debug):
@@ -187,56 +188,66 @@ def p2p_processing(debug):
 
 
     if stage == 1 and skip_1 == 0:
-        P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix)
+        with phase("P2P1_preprocess"):
+            P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix)
     if debug==1:
         input('Press Enter to continue to Phase 2...')
 
     if (stage <=2 and skip_2 ==0):
-        print('P2P 2: start from focus and align SLC images') 
-        run('mkdir -p SLC')
-    
-        if (iono == 1):
-            print('P2P 2: creating SLC_L and SLC_H for iono==1')
-            run('mkdir -p SLC_L SLC_H')
-        if (SAT == 'S1_TOPS'):
-            master, aligned = renameMasterAlignedForS1tops(master, aligned)
-        if SAT in ('NSR_A', 'NSR_B'):
-            master, aligned = renameMasterAlignedForNSR(master, aligned, SAT)
-        print(f'master, aligned after rename for {SAT}:', master, aligned)
-        P2P2Clean(SAT, master, aligned, skip_master, iono)
-        os.chdir('SLC')
-        P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
-        # NSR_A/B skips region_cut per legacy csh; everything else honors it.
-        if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
-            P2P2RegionCut(master, aligned, skip_master, iono, region_cut)
-        os.chdir('..')
-        print('P2P 2: ALIGN.CSH - END')
+        with phase("P2P2_focus_align"):
+            print('P2P 2: start from focus and align SLC images')
+            run('mkdir -p SLC')
+
+            if (iono == 1):
+                print('P2P 2: creating SLC_L and SLC_H for iono==1')
+                run('mkdir -p SLC_L SLC_H')
+            if (SAT == 'S1_TOPS'):
+                master, aligned = renameMasterAlignedForS1tops(master, aligned)
+            if SAT in ('NSR_A', 'NSR_B'):
+                master, aligned = renameMasterAlignedForNSR(master, aligned, SAT)
+            print(f'master, aligned after rename for {SAT}:', master, aligned)
+            P2P2Clean(SAT, master, aligned, skip_master, iono)
+            os.chdir('SLC')
+            P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
+            # NSR_A/B skips region_cut per legacy csh; everything else honors it.
+            if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
+                P2P2RegionCut(master, aligned, skip_master, iono, region_cut)
+            os.chdir('..')
+            print('P2P 2: ALIGN.CSH - END')
     if debug==1:
         input('Press Enter to continue to Phase 3...')
 
     if stage <=3 and skip_3 == 0:
-        P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo)
+        with phase("P2P3_make_topo"):
+            P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo)
     if debug==1:
         input('Press Enter to continue to Phase 4...')
-    
+
     ref, rep = switchMasterAligned(switch_master, master, aligned)
-    
+
     if stage <= 4 and skip_4 == 0:
-        P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
-                                    dec, filter, compute_phase_gradient, iono, iono_dsamp,
-                                    iono_skip_est=iono_skip_est,
-                                    iono_filt_rng=iono_filt_rng, iono_filt_azi=iono_filt_azi,
-                                    mask_water=mask_water, switch_land=switch_land)
+        with phase("P2P4_intf_filter"):
+            P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
+                                        dec, filter, compute_phase_gradient, iono, iono_dsamp,
+                                        iono_skip_est=iono_skip_est,
+                                        iono_filt_rng=iono_filt_rng, iono_filt_azi=iono_filt_azi,
+                                        mask_water=mask_water, switch_land=switch_land)
     if debug==1:
         input('Press Enter to continue to Phase 5...')
-        
+
     if stage <=5 and skip_5 == 0:
-        P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
+        with phase("P2P5_unwrap"):
+            P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
     if debug==1:
         input('Press Enter to continue to Phase 6...')
-    
+
     if stage <=6 and skip_6 == 0:
-        P2P6Geocode(ref, rep, threshold_geocode, topo_phase)
+        with phase("P2P6_geocode"):
+            P2P6Geocode(ref, rep, threshold_geocode, topo_phase)
+
+    # Write per-case phase profile JSON (py side). atexit hook also handles
+    # crashed runs. case name is derived from cwd basename.
+    dump_profile("phase_profile_py.json", case=os.path.basename(os.getcwd()))
     print('P2P 7: p2p_processing FINISHED')
 
 if __name__ == "__main__":

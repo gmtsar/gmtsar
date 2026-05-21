@@ -1,399 +1,481 @@
 #! /usr/bin/env python3
-"""xcorr_py — Python port of gmtsar's xcorr C binary.
+"""xcorr_py — Python port of gmtsar `xcorr` (freq-mode only).
 
-Stub implementation. Phase A: freq-domain cross-correlation via
-numpy.fft, single-process. CLI-compatible with the original. Output
-file matches the C binary's `freq_xcorr.dat` format.
+Line-by-line port of the C source under gmtsar/gmtsar/:
 
-Status:
-  - Freq-domain xcorr: implemented
-  - Time-domain (-time): NOT YET
-  - Real-input (-real):  NOT YET (only complex SLC supported)
-  - Sub-pixel refine:    quadratic interpolation around peak
-                         (close to but not bit-exact vs C `highres_corr`)
-  - Mask handling:       central-crop instead of full make_mask
-  - Per-patch parallelism: NOT YET (Phase C target)
+  parse_xcorr_input.c   → set_defaults + parse_command_line
+  xcorr.c               → assign_values + do_correlation + make_mask
+  get_locations.c       → get_locations
+  read_xcorr_data.c     → read_complex_short2
+  do_freq_xcorr.c       → fft_multiply + do_freq_corr
+  do_time_int_xcorr.c   → calc_time_corr  (called by freq mode too)
+  highres_corr.c        → do_highres_corr (sub-pixel via 16× FFT zero-pad)
+  print_results.c       → print_results
+  fft_interpolate_routines.c → fft_interpolate_1d + _2d
 
-See bin_py/README.md for the full roadmap.
+The prior stub did complex correlation, no masking, wrong patch sizing
+(npx = nx_corr + 2·xsearch — the C uses npx = 4·xsearch when -xsearch is
+given), wrong grid (x_inc formula didn't match get_locations.c), and
+swapped output columns (wrote `r a dr da SNR` instead of `r dr a da SNR`).
+That stub passed its self-consistency unit tests but produced
+freq_xcorr.dat rows hundreds of pixels off C — which is why this port
+exists.
 
-CLI (mirroring xcorr.c):
-  xcorr_py master.PRM aligned.PRM [-nx N] [-ny N] [-xsearch X] [-ysearch Y]
+Per memory rule `feedback-binpy-c-parity-tests`: every bin_py port must
+be tested for float-roundoff-equal output to the corresponding C binary
+on the same input, NOT internal self-consistency.
+
+CLI mirrors `xcorr`:
+    xcorr_py master.PRM aligned.PRM [-time | -freq] [-nx N] [-ny N]
+      [-xsearch S] [-ysearch S] [-noshift] [-nointerp]
+      [-interp F] [-range_interp R] [-norange]
+Defaults: -freq, -nx 16, -ny 32, -xsearch 64, -ysearch 64,
+          ri=2, interp_factor=16.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
-from pathlib import Path
+import time
+from dataclasses import dataclass, field
 
 import numpy as np
 
-# Use scipy.fft when available — it accepts `workers=-1` for multi-threaded
-# batched FFTs, ~2× faster than np.fft on a 16-core box. Fall back to numpy
-# if scipy isn't installed.
 try:
-    from scipy.fft import fft2 as _fft2, ifft2 as _ifft2
-    _SCIPY_FFT_KW = {"workers": -1}
-except ImportError:
-    from numpy.fft import fft2 as _fft2, ifft2 as _ifft2
-    _SCIPY_FFT_KW = {}
+    from scipy.fft import fft2 as _fft2, ifft2 as _ifft2, fft as _fft1, ifft as _ifft1
+    # _W = number of threads for scipy.fft. -1 = all cores (production
+    # default). Set XCORR_PY_WORKERS=1 to force single-thread (apples-to-
+    # apples vs C single-thread xcorr). Any positive int is accepted.
+    _W = int(os.environ.get("XCORR_PY_WORKERS", "-1"))
+except Exception:  # pragma: no cover
+    _fft2 = np.fft.fft2; _ifft2 = np.fft.ifft2
+    _fft1 = np.fft.fft;  _ifft1 = np.fft.ifft
+    _W = None
 
 
-# ---------------------------------------------------------------- PRM I/O ---
-def read_prm(path: str) -> dict:
-    """Parse a gmtsar PRM file into a dict. Keys are stripped strings."""
-    prm: dict[str, str] = {}
+# ---------------------------------------------------------------- PRM ---
+def _read_prm(path: str) -> dict:
+    out: dict[str, str] = {}
     with open(path) as f:
         for line in f:
-            if "=" not in line:
-                continue
+            if "=" not in line: continue
             k, _, v = line.partition("=")
-            prm[k.strip()] = v.strip()
-    return prm
+            out[k.strip()] = v.strip()
+    return out
+
+def _i(prm: dict, k: str, default: int = 0) -> int:
+    v = prm.get(k, "").split()
+    return int(float(v[0])) if v else default
+
+def _f(prm: dict, k: str, default: float = 0.0) -> float:
+    v = prm.get(k, "").split()
+    return float(v[0]) if v else default
+
+def _s(prm: dict, k: str, default: str = "") -> str:
+    v = prm.get(k, "").split()
+    return v[0] if v else default
 
 
-def _f(prm: dict, key: str, default: float = 0.0) -> float:
-    """PRM value as float, or default."""
-    v = prm.get(key, "").split()
-    if not v:
-        return default
-    try:
-        return float(v[0])
-    except ValueError:
-        return default
+# ------------------------------------------------------------- struct ---
+@dataclass
+class XCorr:
+    # input geometry
+    m_nx: int = 0; m_ny: int = 0
+    s_nx: int = 0; s_ny: int = 0
+    x_offset: int = 0       # rshift from aligned PRM
+    y_offset: int = 0       # ashift from aligned PRM
+    astretcha: float = 0.0
+    # grid layout
+    nxl: int = 16; nyl: int = 32
+    # search / window sizes (mirror C exactly)
+    xsearch: int = 64; ysearch: int = 64
+    nx_corr: int = 128; ny_corr: int = 128
+    npx: int = 256; npy: int = 256
+    nxc: int = 128; nyc: int = 128
+    # mode flags
+    corr_flag: int = 2          # 2 = freq (only mode implemented)
+    interp_flag: int = 1
+    interp_factor: int = 16
+    ri: int = 2                 # range-interpolation factor
+    n2x: int = 8; n2y: int = 8  # highres-corr matrix size (power of 2)
+    offset_flag: int = 0
+    # data
+    data1_path: str = ""; data2_path: str = ""
+    mm1: np.ndarray | None = None
+    mm2: np.ndarray | None = None
+    # computed
+    x_inc: int = 0; y_inc: int = 0
+    loc: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int64))
 
 
-def _i(prm: dict, key: str, default: int = 0) -> int:
-    """PRM value as int, or default."""
-    return int(_f(prm, key, default))
+# ------------------------------------------------------------ defaults ---
+def set_defaults(xc: XCorr) -> None:
+    """Mirror parse_xcorr_input.c:set_defaults exactly (corr_flag=2 branch)."""
+    xc.nxl = 16; xc.nyl = 32
+    xc.x_offset = 0; xc.y_offset = 0
+    xc.nx_corr = 128; xc.ny_corr = 128
+    xc.xsearch = 64;  xc.ysearch = 64
+    xc.n2x = 8; xc.n2y = 8
+    xc.npx = xc.nx_corr + 2 * xc.xsearch
+    xc.npy = xc.ny_corr + 2 * xc.ysearch
+    xc.nxc = 2 * xc.xsearch
+    xc.nyc = 2 * xc.ysearch
+    xc.astretcha = 0.0
+    xc.interp_flag = 1
+    xc.interp_factor = 16
+    xc.ri = 2
+
+def apply_xsearch(xc: XCorr, xsearch: int) -> None:
+    """Mirror the -xsearch branch of parse_command_line."""
+    if xsearch <= 0 or (xsearch - 1) & xsearch:
+        raise ValueError(f"xsearch needs to be power of 2: {xsearch}")
+    xc.xsearch = xsearch
+    xc.nx_corr = 2 * xsearch
+    xc.npx = xc.nx_corr + 2 * xsearch        # = 4·xsearch
+    xc.nxc = 2 * xsearch
+
+def apply_ysearch(xc: XCorr, ysearch: int) -> None:
+    if ysearch <= 0 or (ysearch - 1) & ysearch:
+        raise ValueError(f"ysearch needs to be power of 2: {ysearch}")
+    xc.ysearch = ysearch
+    xc.ny_corr = 2 * ysearch
+    xc.npy = xc.ny_corr + 2 * ysearch
+    xc.nyc = 2 * ysearch
 
 
-# ------------------------------------------------------------- SLC reader ---
-def read_slc(path: str, n_rows: int, n_cols: int) -> np.ndarray:
-    """Read a complex SLC file (gmtsar format: pairs of int16, real+imag).
+# ------------------------------------------------------------- handle PRM ---
+def handle_prm(xc: XCorr, m_path: str, a_path: str) -> None:
+    """Mirror parse_xcorr_input.c:handle_prm (PRM branch)."""
+    pm = _read_prm(m_path); pa = _read_prm(a_path)
 
-    Returns a 2-D complex64 array of shape (n_rows, n_cols).
+    xc.data1_path = _s(pm, "SLC_file")
+    if xc.data1_path and not os.path.isabs(xc.data1_path):
+        xc.data1_path = os.path.join(os.path.dirname(m_path) or ".",
+                                     xc.data1_path)
+    xc.m_nx = _i(pm, "num_rng_bins")
+    xc.m_ny = _i(pm, "num_patches") * _i(pm, "num_valid_az")
+
+    xc.data2_path = _s(pa, "SLC_file")
+    if xc.data2_path and not os.path.isabs(xc.data2_path):
+        xc.data2_path = os.path.join(os.path.dirname(a_path) or ".",
+                                     xc.data2_path)
+    xc.s_nx = _i(pa, "num_rng_bins")
+    xc.s_ny = _i(pa, "num_patches") * _i(pa, "num_valid_az")
+    xc.x_offset = _i(pa, "rshift")
+    xc.y_offset = _i(pa, "ashift")
+
+    prf0 = _f(pm, "PRF"); prf1 = _f(pa, "PRF")
+    xc.astretcha = (prf1 - prf0) / prf0 if prf0 > 0 else 0.0
+
+    if xc.offset_flag == 1:
+        xc.x_offset = xc.y_offset = 0
+        print(" setting ashift and rshift to zero", file=sys.stderr)
+
+    # Memmap SLCs (int16 real + int16 imag interleaved, row-major).
+    sz_m = os.path.getsize(xc.data1_path) // (xc.m_nx * 4)
+    sz_a = os.path.getsize(xc.data2_path) // (xc.s_nx * 4)
+    xc.mm1 = np.memmap(xc.data1_path, dtype=np.int16, mode="r",
+                       shape=(sz_m, xc.m_nx, 2))
+    xc.mm2 = np.memmap(xc.data2_path, dtype=np.int16, mode="r",
+                       shape=(sz_a, xc.s_nx, 2))
+
+    print(f" {xc.m_nx} {xc.m_ny} {xc.s_nx} {xc.s_ny} "
+          f"{xc.x_offset} {xc.y_offset} {xc.astretcha:f}", file=sys.stderr)
+
+
+# ------------------------------------------------------ get_locations ---
+def get_locations(xc: XCorr) -> None:
+    """Mirror get_locations.c exactly.
+
+    x_inc = (m_nx - 2·(xsearch + nx_corr)) / (nxl + 3)
+    y_inc = (m_ny - 2·(ysearch + ny_corr)) / (nyl + 1)
+    For j in [1, nyl], i in [2, nxl+1]:
+        loc.x = npx + i·x_inc
+        loc.y = npy + j·y_inc
+    (i starts at 2 because C drops the first range column.)
     """
-    raw = np.fromfile(path, dtype=np.int16)
-    expected = n_rows * n_cols * 2
-    if raw.size < expected:
-        raise ValueError(f"SLC {path} short: have {raw.size} int16, "
-                         f"need {expected} ({n_rows}x{n_cols}x2)")
-    raw = raw[:expected].reshape(n_rows, n_cols, 2)
-    return (raw[..., 0].astype(np.float32) +
-            1j * raw[..., 1].astype(np.float32)).astype(np.complex64)
-
-
-# ------------------------------------------------------- core xcorr block ---
-def freq_xcorr_patch(patch_m: np.ndarray, patch_a: np.ndarray,
-                     nx_corr: int, ny_corr: int,
-                     xsearch: int, ysearch: int,
-                     ) -> tuple[float, float, float]:
-    """Single-patch freq-domain cross-correlation.
-
-    Mirrors do_freq_corr() + assign_values() in xcorr.c:
-      1. Convert complex SLC → real amplitude (|SLC|). Phase has no useful
-         signal for image-to-image alignment; amplitude has real
-         scene-structure correlation.
-      2. Demean both amplitude patches (subtract per-patch mean) — removes
-         the DC spike from the FFT and lets the real correlation peak
-         emerge.
-      3. Apply edge mask to the aligned patch — zero out a border equal
-         to (xsearch, ysearch) on each side. Suppresses wrap-around
-         contamination in the circular FFT correlation.
-      4. FFT-multiply M * conj(A) with (-1)^(i+j) checkerboard sign
-         (fftshift trick), inverse FFT → correlation magnitude.
-      5. Crop to the central nx_corr × ny_corr search window.
-      6. Peak find + parabolic sub-pixel refinement.
-
-    Without steps 1-3, direct complex-SLC correlation is pure noise
-    (random SAR phase masks the real shift signal). This was the bug
-    in the Phase A first attempt against live data.
-    """
-    npy, npx = patch_m.shape
-
-    # 1. Complex → amplitude, float32 for FFT speed.
-    amp_m = np.abs(patch_m).astype(np.float32)
-    amp_a = np.abs(patch_a).astype(np.float32)
-    # 2. Demean (per patch).
-    amp_m -= amp_m.mean()
-    amp_a -= amp_a.mean()
-    # 3. Mask the aligned patch's edges (matches make_mask() in xcorr.c).
-    if ysearch > 0:
-        amp_a[:ysearch, :] = 0
-        amp_a[-ysearch:, :] = 0
-    if xsearch > 0:
-        amp_a[:, :xsearch] = 0
-        amp_a[:, -xsearch:] = 0
-
-    # 4. FFT-multiply with checkerboard sign for the fftshift effect.
-    F_m = np.fft.fft2(amp_m)
-    F_a = np.fft.fft2(amp_a)
-    ii, jj = np.meshgrid(np.arange(npy), np.arange(npx), indexing="ij")
-    sign = ((-1.0) ** ((ii + jj) % 2)).astype(np.float32)
-    F_xc = F_m * np.conj(F_a) * sign
-    # Inverse FFT → correlation surface (magnitude only)
-    corr_full = np.abs(np.fft.ifft2(F_xc))
-    # Crop to the central ny_corr x nx_corr region (where valid)
-    y0 = (npy - ny_corr) // 2
-    x0 = (npx - nx_corr) // 2
-    corr = corr_full[y0:y0 + ny_corr, x0:x0 + nx_corr]
-    # Peak location
-    peak_y, peak_x = np.unravel_index(int(np.argmax(corr)), corr.shape)
-    cmax = float(corr[peak_y, peak_x])
-    cave = float(corr.mean())
-    # Initial integer offsets (centred on patch midpoint)
-    jpeak = peak_x - nx_corr / 2.0
-    ipeak = peak_y - ny_corr / 2.0
-    # Sub-pixel via parabolic fit around peak (1-D in each axis).
-    # This is *close to* but not bit-exact vs C highres_corr.
-    def _parabolic_subpix(values: np.ndarray) -> float:
-        # values has 3 entries: [center-1, center, center+1].
-        # Returns the fractional offset of the parabola vertex from center.
-        a, b, c = values
-        denom = a - 2 * b + c
-        if abs(denom) < 1e-12:
-            return 0.0
-        return 0.5 * (a - c) / denom
-    sub_x = sub_y = 0.0
-    if 0 < peak_x < corr.shape[1] - 1:
-        sub_x = _parabolic_subpix(corr[peak_y, peak_x - 1:peak_x + 2])
-    if 0 < peak_y < corr.shape[0] - 1:
-        sub_y = _parabolic_subpix(corr[peak_y - 1:peak_y + 2, peak_x])
-    # C code outputs xoff = -jpeak, yoff = -ipeak
-    xoff = -(jpeak + sub_x)
-    yoff = -(ipeak + sub_y)
-    # SNR-ish: peak/mean ratio (matches the cmax/cave the C code computes
-    # before the calc_time_corr correction)
-    snr = cmax / cave if cave > 0 else 0.0
-    return xoff, yoff, snr
-
-
-def freq_xcorr_batch(patches_m: np.ndarray, patches_a: np.ndarray,
-                     nx_corr: int, ny_corr: int,
-                     xsearch: int, ysearch: int,
-                     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Vectorized cross-correlation of N patch pairs in one shot.
-
-    Identical algorithm to freq_xcorr_patch (preprocess, FFT, multiply,
-    inverse FFT, peak find, parabolic sub-pixel), but operates on a
-    batched 3-D array (N, npy, npx) so numpy/scipy's FFT can amortise
-    setup across all patches and a multi-threaded FFT backend
-    (scipy.fft with workers=-1, or numpy linked against MKL) can use
-    all cores.
-
-    Returns three 1-D arrays of length N: xoff, yoff, snr.
-
-    Memory note: peak working set ≈ 2*N*npy*npx*8 bytes (two complex64
-    stacks). For RS2 (1000 patches × 512² × 8 B × 2 stacks ≈ 2 GB.
-    The caller can chunk if this is too much.
-    """
-    N, npy, npx = patches_m.shape
-    assert patches_a.shape == (N, npy, npx)
-
-    # 1. amplitude (per-patch, vectorized)
-    amp_m = np.abs(patches_m).astype(np.float32)
-    amp_a = np.abs(patches_a).astype(np.float32)
-    # 2. demean per-patch (axes 1,2)
-    amp_m -= amp_m.mean(axis=(1, 2), keepdims=True)
-    amp_a -= amp_a.mean(axis=(1, 2), keepdims=True)
-    # 3. edge mask on aligned (apply ONCE, broadcast across batch)
-    if ysearch > 0:
-        amp_a[:, :ysearch, :] = 0
-        amp_a[:, -ysearch:, :] = 0
-    if xsearch > 0:
-        amp_a[:, :, :xsearch] = 0
-        amp_a[:, :, -xsearch:] = 0
-    # 4. Batched FFT (axes -2, -1). scipy.fft.fft2 + workers=-1 is
-    # multi-threaded; numpy.fft.fft2 is single-threaded but vectorised.
-    F_m = _fft2(amp_m, axes=(-2, -1), **_SCIPY_FFT_KW)
-    F_a = _fft2(amp_a, axes=(-2, -1), **_SCIPY_FFT_KW)
-    # Checkerboard sign for fftshift, precomputed once, broadcast (1, npy, npx)
-    ii, jj = np.meshgrid(np.arange(npy), np.arange(npx), indexing="ij")
-    sign = ((-1.0) ** ((ii + jj) % 2)).astype(np.float32)[None, :, :]
-    F_xc = F_m * np.conj(F_a) * sign
-    corr_full = np.abs(_ifft2(F_xc, axes=(-2, -1), **_SCIPY_FFT_KW))
-    # Crop to central ny_corr × nx_corr per patch
-    y0 = (npy - ny_corr) // 2
-    x0 = (npx - nx_corr) // 2
-    corr = corr_full[:, y0:y0 + ny_corr, x0:x0 + nx_corr]
-
-    # 5. Per-patch peak via flat argmax, then unravel
-    flat = corr.reshape(N, ny_corr * nx_corr)
-    peak_idx = flat.argmax(axis=1)
-    peak_y = (peak_idx // nx_corr).astype(np.int32)
-    peak_x = (peak_idx %  nx_corr).astype(np.int32)
-    cmax = flat[np.arange(N), peak_idx]
-    cave = corr.mean(axis=(1, 2))
-
-    # 6. Integer offsets centered on patch midpoint
-    jpeak = peak_x.astype(np.float32) - (nx_corr / 2.0)
-    ipeak = peak_y.astype(np.float32) - (ny_corr / 2.0)
-
-    # 7. Sub-pixel parabolic refinement (vectorised, with edge-safe mask)
-    in_x = (peak_x > 0) & (peak_x < nx_corr - 1)
-    in_y = (peak_y > 0) & (peak_y < ny_corr - 1)
-    sub_x = np.zeros(N, dtype=np.float32)
-    sub_y = np.zeros(N, dtype=np.float32)
-    if in_x.any():
-        idx = np.where(in_x)[0]
-        a = corr[idx, peak_y[idx], peak_x[idx] - 1]
-        b = corr[idx, peak_y[idx], peak_x[idx]]
-        c = corr[idx, peak_y[idx], peak_x[idx] + 1]
-        denom = a - 2 * b + c
-        # safe divide: 0 where denom ≈ 0
-        mask = np.abs(denom) > 1e-12
-        sub_x[idx[mask]] = 0.5 * (a[mask] - c[mask]) / denom[mask]
-    if in_y.any():
-        idx = np.where(in_y)[0]
-        a = corr[idx, peak_y[idx] - 1, peak_x[idx]]
-        b = corr[idx, peak_y[idx],     peak_x[idx]]
-        c = corr[idx, peak_y[idx] + 1, peak_x[idx]]
-        denom = a - 2 * b + c
-        mask = np.abs(denom) > 1e-12
-        sub_y[idx[mask]] = 0.5 * (a[mask] - c[mask]) / denom[mask]
-
-    # 8. Output: C convention is xoff = -jpeak, yoff = -ipeak
-    xoff = -(jpeak + sub_x)
-    yoff = -(ipeak + sub_y)
-    snr = np.where(cave > 0, cmax / cave, 0.0).astype(np.float32)
-    return xoff, yoff, snr
-
-
-# ----------------------------------------------------------------- driver ---
-def run_xcorr(master_prm: str, aligned_prm: str,
-              nx: int = 20, ny: int = 50,
-              xsearch: int = 128, ysearch: int = 128,
-              outfile: str = "freq_xcorr.dat") -> int:
-    pm = read_prm(master_prm)
-    pa = read_prm(aligned_prm)
-
-    m_nx = _i(pm, "num_rng_bins")
-    m_ny = _i(pm, "num_valid_az") * max(_i(pm, "num_patches"), 1)
-    a_nx = _i(pa, "num_rng_bins")
-    a_ny = _i(pa, "num_valid_az") * max(_i(pa, "num_patches"), 1)
-    if m_nx == 0 or m_ny == 0:
-        raise SystemExit(f"xcorr_py: master.PRM missing num_rng_bins / num_valid_az ({master_prm})")
-
-    # Patch + correlation sizes — must match C parse_xcorr_input.c:
-    # -xsearch X overrides: xsearch=X, nx_corr=2*X, npx=nx_corr+2*xsearch=4X.
-    nx_corr = 2 * xsearch
-    ny_corr = 2 * ysearch
-    npx = nx_corr + 2 * xsearch     # = 4 * xsearch
-    npy = ny_corr + 2 * ysearch
-
-    # Location grid — match C get_locations.c exactly so (x,y) align.
-    # x = npx + i*x_inc for i in [2..nxl+1];   y = npy + j*y_inc for j in [1..nyl]
-    x_inc = (m_nx - 2 * (xsearch + nx_corr)) // (nx + 3)
-    y_inc = (m_ny - 2 * (ysearch + ny_corr)) // (ny + 1)
-    if x_inc <= 0 or y_inc <= 0:
-        raise SystemExit(f"xcorr_py: image too small "
-                         f"(m={m_nx}x{m_ny}, patch {npx}x{npy}, search {xsearch}x{ysearch})")
-
-    print(f"xcorr_py: master {m_nx}x{m_ny}, patch {npx}x{npy}, "
-          f"grid {nx}x{ny}, search {xsearch}x{ysearch}, "
-          f"x_inc={x_inc} y_inc={y_inc}")
-
-    # Load SLCs (memory: a SLC can be ~GB; stream patches in production,
-    # but for the stub we load the whole thing for simplicity)
-    m_slc_path = pm.get("SLC_file", "").split()[0]
-    a_slc_path = pa.get("SLC_file", "").split()[0]
-    # Resolve relative to PRM dir
-    base = os.path.dirname(master_prm)
-    if not os.path.isabs(m_slc_path):
-        m_slc_path = os.path.join(base, m_slc_path)
-    if not os.path.isabs(a_slc_path):
-        a_slc_path = os.path.join(base, a_slc_path)
-
-    m_slc = read_slc(m_slc_path, m_ny, m_nx)
-    a_slc = read_slc(a_slc_path, a_ny, a_nx)
-
-    # Initial offsets — the C code defaults x_offset/y_offset to 0 and does
-    # NOT read rshift/ashift from the PRM. xcorr's purpose is to MEASURE
-    # the offset; consumers (fitoffset, resamp) will write rshift/ashift
-    # into the PRM downstream. If a future caller needs to seed an initial
-    # guess (e.g. for very large offsets), add a CLI flag.
-    x_offset = 0
-    y_offset = 0
-
-    # First pass: enumerate every patch location and pre-stack the patch
-    # arrays so we can do ONE batched FFT over all of them.
+    xc.x_inc = (xc.m_nx - 2 * (xc.xsearch + xc.nx_corr)) // (xc.nxl + 3)
+    xc.y_inc = (xc.m_ny - 2 * (xc.ysearch + xc.ny_corr)) // (xc.nyl + 1)
     locs = []
-    patches_m_list = []
-    patches_a_list = []
-    for j in range(1, ny + 1):
-        cy = npy + j * y_inc
-        y0 = cy - npy // 2
-        if y0 < 0 or y0 + npy > m_ny:
+    for j in range(1, xc.nyl + 1):
+        for i in range(2, xc.nxl + 2):
+            locs.append((xc.npx + i * xc.x_inc, xc.npy + j * xc.y_inc))
+    xc.loc = np.array(locs, dtype=np.int64)
+    print(f" locations  n {len(locs)} nx {xc.m_nx} nyl {xc.nyl} "
+          f"nxl {xc.nxl} x_inc {xc.x_inc} y_inc {xc.y_inc}",
+          file=sys.stderr)
+
+
+# ------------------------------------------------- range interpolate ---
+def _range_interpolate_rows(c: np.ndarray, ri: int) -> np.ndarray:
+    """Mirror xcorr.c:do_range_interpolate applied per row.
+
+    Per the C code: forward FFT (length nx) → zero-pad to ri·nx using
+    fft_arrange_interpolate (low half at [0:nx/2], high half at
+    [(2·ri−1)·nx/2 : ((2·ri−1)·nx/2)+nx/2]) → inverse FFT (length ri·nx)
+    → multiply by ri. Then keep the central nx samples
+    (g[..., nx/2 : 3·nx/2])."""
+    if ri <= 1:
+        return c
+    nx = c.shape[-1]
+    M = ri * nx
+    half = nx // 2
+    F = _fft1(c, n=nx, axis=-1, workers=_W) if _W else _fft1(c, n=nx, axis=-1)
+    G = np.zeros(c.shape[:-1] + (M,), dtype=c.dtype)
+    G[..., :half] = F[..., :half]
+    G[..., (2 * ri - 1) * half : (2 * ri - 1) * half + half] = F[..., half:nx]
+    g = _ifft1(G, n=M, axis=-1, workers=_W) if _W else _ifft1(G, n=M, axis=-1)
+    g = (ri * g).astype(c.dtype)
+    return g[..., half : half + nx]
+
+
+# ----------------------------------------------------------- mask ---
+def make_mask(xc: XCorr) -> np.ndarray:
+    """Mirror xcorr.c:make_mask — 1 in the central nx_corr×ny_corr block,
+    0 in the (xsearch, ysearch)-wide border."""
+    m = np.zeros((xc.npy, xc.npx), dtype=np.float32)
+    m[xc.ysearch : xc.npy - xc.ysearch,
+      xc.xsearch : xc.npx - xc.xsearch] = 1.0
+    return m
+
+
+# ---------------------------------------- assign_values + freq corr ---
+def _process_location(xc: XCorr, x: int, y: int, mask: np.ndarray,
+                      d1_row: np.ndarray, d2_row: np.ndarray
+                      ) -> tuple[float, float, float, float, float]:
+    """Mirror assign_values + do_freq_corr + calc_time_corr + highres_corr
+    for one location. Returns (xoff, yoff, xfrac, yfrac, corr)."""
+    npx, npy = xc.npx, xc.npy
+    nxc, nyc = xc.nxc, xc.nyc
+
+    mx = x - npx // 2
+    sx = x + xc.x_offset - npx // 2
+
+    # Extract npy × npx complex patches.
+    p1 = d1_row[:, mx:mx + npx, :].astype(np.float32)
+    p2 = d2_row[:, sx:sx + npx, :].astype(np.float32)
+    c1 = (p1[..., 0] + 1j * p1[..., 1]).astype(np.complex64)
+    c2 = (p2[..., 0] + 1j * p2[..., 1]).astype(np.complex64)
+
+    if xc.ri > 1:
+        c1 = _range_interpolate_rows(c1, xc.ri)
+        c2 = _range_interpolate_rows(c2, xc.ri)
+
+    # to amplitude + demean (C does this on float, with double-precision mean)
+    a1 = np.abs(c1).astype(np.float32)
+    a2 = np.abs(c2).astype(np.float32)
+    a1 = a1 - np.float32(a1.mean(dtype=np.float64))
+    a2 = a2 - np.float32(a2.mean(dtype=np.float64))
+
+    # Mask aligned only (C: c2[i].r *= mask[i])
+    a2_masked = a2 * mask
+
+    # Integer-truncated versions for calc_time_corr (matches xc->i1, xc->i2)
+    i1 = a1.astype(np.int32)
+    i2 = a2_masked.astype(np.int32)
+
+    # fft_multiply: FFT2(a1) · conj(FFT2(a2_masked)) · (-1)^(i+j)
+    F1 = _fft2(a1.astype(np.complex64), workers=_W) if _W else _fft2(a1.astype(np.complex64))
+    F2 = _fft2(a2_masked.astype(np.complex64), workers=_W) if _W else _fft2(a2_masked.astype(np.complex64))
+    sign = (((np.arange(npy)[:, None] + np.arange(npx)[None, :]) & 1)
+            .astype(np.float32) * -2 + 1)
+    prod = sign * (F1 * np.conj(F2))
+    c3 = _ifft2(prod, workers=_W) if _W else _ifft2(prod)
+
+    # Build correlation surface: corr[i, j] = |c3[i + ny_corr/2, j + nx_corr/2]|
+    half_yc = xc.ny_corr // 2
+    half_xc = xc.nx_corr // 2
+    corr = np.abs(c3[half_yc:half_yc + nyc,
+                     half_xc:half_xc + nxc]).astype(np.float64)
+
+    flat = int(corr.argmax())
+    ip, jp = divmod(flat, nxc)
+    cmax = float(corr[ip, jp])
+    ipeak = ip - nyc / 2.0
+    jpeak = jp - nxc / 2.0
+
+    # calc_time_corr at (ioff=int(ipeak), joff=int(jpeak))
+    ioff = int(ipeak); joff = int(jpeak)
+    A = i1[xc.ysearch + ioff : xc.ysearch + ioff + xc.ny_corr,
+           xc.xsearch + joff : xc.xsearch + joff + xc.nx_corr].astype(np.int64)
+    B = i2[xc.ysearch : xc.ysearch + xc.ny_corr,
+           xc.xsearch : xc.xsearch + xc.nx_corr].astype(np.int64)
+    num = int((A * B).sum())
+    den1 = int((A * A).sum())
+    den2 = int((B * B).sum())
+    den_sq = den1 * den2
+    max_corr = 100.0 * abs(num) / (den_sq ** 0.5) if den_sq > 0 else 0.0
+
+    # rescale correlation surface (only matters for highres_corr below)
+    if cmax > 0:
+        corr_scaled = (max_corr / cmax) * corr
+    else:
+        corr_scaled = corr
+
+    xoff = float(-jpeak)
+    yoff = float(-ipeak)
+
+    if xc.interp_flag == 1:
+        xfrac, yfrac = _do_highres_corr(xc, corr_scaled, xoff, yoff)
+    else:
+        xfrac = yfrac = 0.0
+
+    return xoff, yoff, xfrac, yfrac, max_corr
+
+
+def _do_highres_corr(xc: XCorr, corr_scaled: np.ndarray,
+                     xoff: float, yoff: float) -> tuple[float, float]:
+    """Mirror highres_corr.c:do_highres_corr — 16× FFT zero-pad over an
+    n2x×n2y region centered on the integer peak. Returns (xfrac, yfrac)."""
+    ifc = xc.interp_factor
+    nx = xc.n2x; ny = xc.n2y
+    nx2 = ifc * nx; ny2 = ifc * ny
+
+    jc = (xc.nxc // 2) - nx // 2 - int(xoff)
+    ic = (xc.nyc // 2) - ny // 2 - int(yoff)
+
+    md = np.zeros((ny, nx), dtype=np.complex64)
+    for i in range(ny):
+        kr = ic + i
+        if kr < 0 or kr >= xc.nyc:
             continue
-        for i in range(2, nx + 2):
-            cx = npx + i * x_inc
-            x0 = cx - npx // 2
-            if x0 < 0 or x0 + npx > m_nx:
+        for j in range(nx):
+            kc = jc + j
+            if kc < 0 or kc >= xc.nxc:
                 continue
-            ax0 = x0 + x_offset
-            ay0 = y0 + y_offset
-            if (ax0 < 0 or ay0 < 0
-                or ax0 + npx > a_nx or ay0 + npy > a_ny):
+            md[i, j] = np.complex64(corr_scaled[kr, kc] ** 0.25)
+
+    cd_exp = _fft_interpolate_2d(md, ny2, nx2, ifc)
+
+    # find peak; C uses cd_exp[i*nx2 + j].r (real part), and replicates
+    # the (probably-buggy) `ny2/2` for the column subtraction.
+    real = cd_exp.real
+    flat = int(real.argmax())
+    ip, jp = divmod(flat, nx2)
+    ipeak = ip - ny2 // 2
+    jpeak = jp - ny2 // 2       # C uses ny2/2 — replicate exactly
+
+    return float(jpeak / ifc), float(ipeak / ifc)
+
+
+# ----------------------------------------------- fft_interpolate_2d ---
+def _fft_arrange_interpolate(F: np.ndarray, M: int, ifactor: int) -> np.ndarray:
+    N = F.shape[-1]; N2 = N // 2
+    out = np.zeros(F.shape[:-1] + (M,), dtype=F.dtype)
+    out[..., :N2] = F[..., :N2]
+    out[..., (2 * ifactor - 1) * N2 : (2 * ifactor - 1) * N2 + N2] = F[..., N2:N]
+    return out
+
+
+def _fft_interpolate_1d(c: np.ndarray, ifactor: int) -> np.ndarray:
+    N = c.shape[-1]; M = ifactor * N
+    F = _fft1(c, n=N, axis=-1, workers=_W) if _W else _fft1(c, n=N, axis=-1)
+    G = _fft_arrange_interpolate(F, M, ifactor)
+    g = _ifft1(G, n=M, axis=-1, workers=_W) if _W else _ifft1(G, n=M, axis=-1)
+    return (ifactor * g).astype(c.dtype)
+
+
+def _fft_interpolate_2d(md: np.ndarray, ny2: int, nx2: int,
+                        ifactor: int) -> np.ndarray:
+    N1, M1 = md.shape
+    tmp1 = _fft_interpolate_1d(md, ifactor)              # rows → (N1, nx2)
+    # transpose + interp + transpose back
+    tmp1_T = tmp1.T                                       # (nx2, N1)
+    tmp2 = _fft_interpolate_1d(tmp1_T, ifactor)          # (nx2, ny2)
+    return tmp2.T                                         # (ny2, nx2)
+
+
+# ----------------------------------------------------- do_correlation ---
+def do_correlation(xc: XCorr, out_path: str) -> None:
+    """Mirror xcorr.c:do_correlation. Outer y loop reads npy lines of
+    each SLC once, inner x loop processes nxl patches in that band."""
+    mask = make_mask(xc)
+    with open(out_path, "w") as f:
+        iloc = 0
+        for j_y in range(xc.nyl):
+            y = int(xc.loc[iloc, 1])
+            iy_m = y - xc.npy // 2
+            ishft = int(y * xc.astretcha)
+            iy_a = y + xc.y_offset + ishft - xc.npy // 2
+
+            ok = (0 <= iy_m and iy_m + xc.npy <= xc.mm1.shape[0]
+                  and 0 <= iy_a and iy_a + xc.npy <= xc.mm2.shape[0])
+            if not ok:
+                iloc += xc.nxl
                 continue
-            locs.append((cx, cy))
-            patches_m_list.append(m_slc[y0:y0 + npy, x0:x0 + npx])
-            patches_a_list.append(a_slc[ay0:ay0 + npy, ax0:ax0 + npx])
 
-    if not locs:
-        raise SystemExit("xcorr_py: no valid patch locations")
+            d1_row = xc.mm1[iy_m:iy_m + xc.npy]
+            d2_row = xc.mm2[iy_a:iy_a + xc.npy]
 
-    # Vectorised batched FFT path. Memory peak ~ 2 * N * npy * npx * 8 bytes
-    # (two complex64 stacks). For RS2 (N=1000, 512x512) that's ~2 GB; for
-    # heavier cases the caller can chunk by reducing nx/ny.
-    patches_m_arr = np.stack(patches_m_list)
-    patches_a_arr = np.stack(patches_a_list)
-    print(f"xcorr_py: vectorised batch size {len(locs)} "
-          f"({patches_m_arr.nbytes * 2 / 1e9:.2f} GB working set)")
-    xoffs, yoffs, snrs = freq_xcorr_batch(patches_m_arr, patches_a_arr,
-                                          nx_corr, ny_corr,
-                                          xsearch, ysearch)
-
-    rows = []
-    for k, (cx, cy) in enumerate(locs):
-        xoff_total = float(xoffs[k]) + x_offset
-        yoff_total = float(yoffs[k]) + y_offset
-        rows.append((cx, xoff_total, cy, yoff_total, float(snrs[k])))
-
-    with open(outfile, "w") as f:
-        for cx, xoff, cy, yoff, snr in rows:
-            f.write(f" {cx} {xoff:6.3f} {cy} {yoff:6.3f} {snr:6.2f} \n")
-    print(f"xcorr_py: wrote {len(rows)} rows → {outfile}")
-    return 0
+            for i_x in range(xc.nxl):
+                x = int(xc.loc[iloc, 0])
+                xoff, yoff, xfrac, yfrac, corr = _process_location(
+                    xc, x, y, mask, d1_row, d2_row)
+                # print_results: xoff_out = xoff/ri − xfrac/ri + x_offset
+                #                yoff_out = yoff − yfrac + y_offset + ishft
+                xoff_out = (xoff / xc.ri) - (xfrac / xc.ri) + xc.x_offset
+                yoff_out = yoff - yfrac + xc.y_offset + ishft
+                f.write(f" {x} {xoff_out:6.3f} {y} {yoff_out:6.3f} "
+                        f"{corr:6.2f} \n")
+                iloc += 1
 
 
-# ------------------------------------------------------------------ CLI ----
+# ---------------------------------------------------------------- CLI ---
 def main() -> int:
-    ap = argparse.ArgumentParser(description="xcorr_py — Python port of gmtsar xcorr (stub)")
-    ap.add_argument("master_prm")
-    ap.add_argument("aligned_prm")
-    ap.add_argument("-nx", type=int, default=20)
-    ap.add_argument("-ny", type=int, default=50)
-    ap.add_argument("-xsearch", type=int, default=128)
-    ap.add_argument("-ysearch", type=int, default=128)
-    ap.add_argument("-o", "--output", default="freq_xcorr.dat")
-    # Accept-but-ignore flags for CLI compatibility
-    ap.add_argument("-freq", action="store_true", help="(default; alias)")
-    ap.add_argument("-time", action="store_true", help="(NOT IMPLEMENTED — will error)")
-    ap.add_argument("-real", action="store_true", help="(NOT IMPLEMENTED — will error)")
-    args = ap.parse_args()
+    p = argparse.ArgumentParser(add_help=False,
+                                description=__doc__.splitlines()[0])
+    p.add_argument("master_prm")
+    p.add_argument("aligned_prm")
+    p.add_argument("-time", action="store_true",
+                   help="time-domain correlation (NOT IMPLEMENTED)")
+    p.add_argument("-time4", action="store_true",
+                   help="time-domain correlation, Gatelli variant (NOT IMPLEMENTED)")
+    p.add_argument("-freq", action="store_true", help="frequency-domain (default)")
+    p.add_argument("-real", action="store_true",
+                   help="read real floats instead of complex shorts (NOT IMPLEMENTED)")
+    p.add_argument("-noshift", action="store_true",
+                   help="ignore rshift/ashift in PRM")
+    p.add_argument("-nointerp", action="store_true",
+                   help="disable sub-pixel highres_corr step")
+    p.add_argument("-nx", type=int, default=None)
+    p.add_argument("-ny", type=int, default=None)
+    p.add_argument("-xsearch", type=int, default=None)
+    p.add_argument("-ysearch", type=int, default=None)
+    p.add_argument("-interp", type=int, default=None)
+    p.add_argument("-range_interp", type=int, default=None)
+    p.add_argument("-norange", action="store_true")
+    p.add_argument("-v", action="store_true")
+    p.add_argument("-out", default="freq_xcorr.dat")
+    ns = p.parse_args()
 
-    if args.time:
-        print("xcorr_py: -time mode not yet implemented (Phase A stub)", file=sys.stderr)
-        return 2
-    if args.real:
-        print("xcorr_py: -real input not yet implemented (Phase A stub)", file=sys.stderr)
-        return 2
+    if ns.time or ns.time4:
+        print("xcorr_py: -time/-time4 not implemented (freq only)",
+              file=sys.stderr); return 2
+    if ns.real:
+        print("xcorr_py: -real not implemented (complex SLC only)",
+              file=sys.stderr); return 2
 
-    return run_xcorr(args.master_prm, args.aligned_prm,
-                     nx=args.nx, ny=args.ny,
-                     xsearch=args.xsearch, ysearch=args.ysearch,
-                     outfile=args.output)
+    xc = XCorr()
+    xc.corr_flag = 2
+    if ns.noshift: xc.offset_flag = 1
+    set_defaults(xc)
+    if ns.nx is not None: xc.nxl = ns.nx
+    if ns.ny is not None: xc.nyl = ns.ny
+    if ns.xsearch is not None: apply_xsearch(xc, ns.xsearch)
+    if ns.ysearch is not None: apply_ysearch(xc, ns.ysearch)
+    if ns.interp is not None: xc.interp_factor = ns.interp
+    if ns.range_interp is not None: xc.ri = ns.range_interp
+    if ns.norange: xc.ri = 1
+    if ns.nointerp: xc.interp_flag = 0
+
+    handle_prm(xc, ns.master_prm, ns.aligned_prm)
+    get_locations(xc)
+
+    t0 = time.time()
+    do_correlation(xc, ns.out)
+    print(f" elapsed time: {time.time()-t0:.6f}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

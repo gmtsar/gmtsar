@@ -33,8 +33,38 @@ import sys
 
 import numpy as np
 
-SOL = 299792458.0   # speed of light, m/s
-C_GOLD = 0.38196601125010515   # 2 - golden ratio
+# ---------------------------------------------------------- Numba (optional) ---
+# Numba is an OPTIONAL accelerator. Setting SAT_LLT2RAT_PY_NUMBA=0 disables it
+# even when numba is installed. Default is "on if installed". All JIT kernels
+# are line-by-line ports of the pure-numpy reference paths above; they mirror
+# C evaluation order (Mira #2 bugs #3..#9) and use fastmath=False, single-thread,
+# no prange. If numba is missing OR disabled, all callers fall through to the
+# pure-numpy paths and parity is unchanged.
+_NUMBA_ENV = os.environ.get("SAT_LLT2RAT_PY_NUMBA", "1")
+if _NUMBA_ENV == "0":
+    _HAS_NUMBA = False
+    njit = None
+else:
+    try:
+        from numba import njit                                  # type: ignore
+        _HAS_NUMBA = True
+    except ImportError:                                         # pragma: no cover
+        _HAS_NUMBA = False
+        njit = None
+
+
+SOL = 299792456.0   # speed of light, m/s — MATCHES C `#define SOL` in
+                    # gmtsar.h (NOT the true physical 299792458). 2 m/s off,
+                    # but bit-faithful parity with C requires this exact value.
+                    # Affects dr = 0.5*SOL/fs → ~2e-5 px range_pix systematic offset.
+# C uses TRUNCATED golden-ratio constants (R + C = 0.99996601, NOT 1.0):
+#   #define R 0.61803399
+#   #define C 0.382
+# These two values get baked into goldop (search step sizes) and main()
+# (midi computation), so for bit-perfect parity we use the SAME truncated
+# values, NOT the mathematically correct (1 - C_GOLD) etc.
+R_GOLD_C = 0.61803399          # C #define R
+C_GOLD = 0.382                  # C #define C
 
 
 # ---------------------------------------------------------- C1 read PRM/LED ---
@@ -111,51 +141,404 @@ def plh2xyz(lat: np.ndarray, lon: np.ndarray, h: np.ndarray,
             ra: float, flattening: float) -> np.ndarray:
     """Geodetic (lat, lon, height) to ECEF (x, y, z).
 
-    Matches plh2xyz.c in gmtsar:
-      e2 = 2*f - f*f
-      N = ra / sqrt(1 - e2*sin^2(lat))
-      x = (N + h) * cos(lat) * cos(lon)
-      y = (N + h) * cos(lat) * sin(lon)
-      z = ((1 - e2)*N + h) * sin(lat)
+    Bit-faithful port of gmtsar plxyz.c plh2xyz() — mirrors the C
+    operation order EXACTLY (the algebraic equivalents differ by 1 ULP):
+
+        flatfn = (2 - FL) * FL
+        funsq  = (1 - FL) * (1 - FL)   # NOT (1 - e2); they differ by 1 ULP
+        g1 = A / sqrt(1 - flatfn * sin_lat^2)     # N
+        g2 = g1 * funsq + h                       # N*(1-FL)^2 + h  (order matters)
+        g1 = g1 + h                               # N + h
+        xyz[0] = g1 * cos(lat)
+        xyz[1] = xyz[0] * sin(lon)                # = (g1*cos_lat) * sin_lon
+        xyz[0] = xyz[0] * cos(lon)                # = (g1*cos_lat) * cos_lon
+        xyz[2] = g2 * sin_lat
 
     Accepts scalars or numpy arrays; broadcasts. lat/lon in DEGREES.
+
+    The previous Python form `(1 - e2)*N + h` differs from C
+    `g1*funsq + h` by ~1e-9 m due to (1-FL)*(1-FL) vs 1 - 2*FL + FL*FL
+    differing by 1 ULP. This propagated to ~1.5e-8 m in xp, which fed
+    back through goldop's dist² compare at the rng-vs-tm minimum and
+    flipped 20-376 (depending on Hermite path) edge-case branches.
     """
-    e2 = 2 * flattening - flattening * flattening
-    lat_r = np.deg2rad(lat)
-    lon_r = np.deg2rad(lon)
+    # GMTSAR uses TRUNCATED pi: `#define pi 3.14159265358979` (llt2xyz.h
+    # line 63) — 14 digits, NOT math.pi's 15 digits. That gives
+    # `deg_to_rad = 2*pi/360 = 0.017453292519943278` vs numpy's
+    # 0.017453292519943295. The 1-ULP diff propagates to ~5e-9 rad at
+    # mid-latitudes → ~1.5e-8 m in xyz → flipped goldop branches on
+    # 20+ edge-case targets near the rng-vs-tm minimum.
+    _PI_GMTSAR = 3.14159265358979
+    _DEG_TO_RAD = 2.0 * _PI_GMTSAR / 360.0
+
+    flatfn = (2.0 - flattening) * flattening
+    funsq = (1.0 - flattening) * (1.0 - flattening)
+    lat_r = lat * _DEG_TO_RAD
+    lon_r = lon * _DEG_TO_RAD
     sin_lat = np.sin(lat_r)
     cos_lat = np.cos(lat_r)
-    N = ra / np.sqrt(1.0 - e2 * sin_lat * sin_lat)
-    x = (N + h) * cos_lat * np.cos(lon_r)
-    y = (N + h) * cos_lat * np.sin(lon_r)
-    z = ((1.0 - e2) * N + h) * sin_lat
+    g1 = ra / np.sqrt(1.0 - flatfn * sin_lat * sin_lat)
+    g2 = g1 * funsq + h
+    g1 = g1 + h
+    x = g1 * cos_lat
+    y = x * np.sin(lon_r)
+    x = x * np.cos(lon_r)
+    z = g2 * sin_lat
     return np.stack([x, y, z], axis=-1)
 
 
 # ---------------------------------------------------------- C3 Hermite interp ---
+# Hermite basis cache: for uniform-grid orbit (always true in gmtsar),
+# the basis polynomials hj_i(u) and the scalars S_i depend only on
+# (nval, i). Precompute them once.
+_HERM_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+def _hermite_basis(nval: int) -> tuple[np.ndarray, np.ndarray]:
+    """Returns (HJ_COEFS, S_VALS):
+      HJ_COEFS[i, k] = coefficient of u^k in hj_i(u) (i in 0..nval-1)
+      S_VALS[i]       = sum_{j!=i} 1/(i-j)
+    """
+    cached = _HERM_CACHE.get(nval)
+    if cached is not None:
+        return cached
+    n = nval - 1
+    HJ = np.zeros((nval, nval), dtype=np.float64)   # row i = polynomial of degree n
+    S_VALS = np.zeros(nval, dtype=np.float64)
+    for i in range(nval):
+        # poly(u) = prod_{j != i} (u - j) / (i - j)
+        # Build numerator polynomial from roots [j for j != i]
+        roots = [j for j in range(nval) if j != i]
+        # numpy poly takes roots → leading coefficient first, descending
+        num_poly_desc = np.poly(roots)  # length nval
+        # Convert to ascending [c0 + c1*u + c2*u^2 ...]
+        num_poly_asc = num_poly_desc[::-1]
+        denom = 1.0
+        for j in roots:
+            denom *= (i - j)
+        HJ[i, :] = num_poly_asc / denom
+        S_VALS[i] = sum(1.0 / (i - j) for j in roots)
+    _HERM_CACHE[nval] = (HJ, S_VALS)
+    return HJ, S_VALS
+
+
+def hermite_c_1d_uniform(x0: float, dsec: float, y: np.ndarray, z: np.ndarray,
+                         xp: np.ndarray, nval: int = 6) -> np.ndarray:
+    """Optimised hermite_c_1d for uniform-grid x: x[k] = x0 + k * dsec.
+
+    For uniform grids, the Lagrange basis hj_i(u) and S_i = sum 1/(i-j)
+    are constant polynomials in u = (xp - x[i0])/dsec. Pre-evaluating
+    them avoids the 36 numpy ops per query in the general version.
+
+    On the 97.8 M-query polyfit_refine path this drops hermite from
+    ~100 s to ~3 s.
+    """
+    xp = np.atleast_1d(np.asarray(xp, dtype=np.float64))
+    nmax = y.size
+    n = nval - 1
+
+    # i = first index s.t. x[i] >= xp  → for uniform: i = ceil((xp - x0)/dsec)
+    raw = (xp - x0) / dsec
+    i = np.ceil(raw).astype(np.int64)
+    # bounds check
+    if (raw < 0).any() or (raw > nmax - 1).any():
+        raise ValueError(
+            f"hermite_c_1d_uniform: xp out of range "
+            f"({xp.min()} .. {xp.max()} vs {x0} .. {x0 + (nmax-1)*dsec})")
+    i0 = i - (n + 1) // 2
+    np.clip(i0, 0, nmax - n - 1, out=i0)
+
+    u = (xp - (x0 + i0 * dsec)) / dsec  # = raw - i0; (M,)
+
+    HJ, S_VALS = _hermite_basis(nval)
+    # Evaluate each hj_i(u) for all queries.  Polyval (Horner) on ascending coefs.
+    # hj_eval[i, m] = hj_i(u[m])
+    M = xp.size
+    hj_eval = np.empty((nval, M), dtype=np.float64)
+    for i_idx in range(nval):
+        v = np.zeros_like(u)
+        # Horner ascending: c0 + u*(c1 + u*(c2 + ...))
+        for k in range(nval - 1, -1, -1):
+            v = v * u + HJ[i_idx, k]
+        hj_eval[i_idx] = v
+    hj_sq = hj_eval * hj_eval  # (nval, M)
+
+    # Gather y[i0+i], z[i0+i]
+    idx = i0[None, :] + np.arange(nval)[:, None]    # (nval, M)
+    y_loc = y[idx]
+    z_loc = z[idx]
+    # f0_i = 1 - 2*(u - i)*S_i; f1_i = (u - i)*dsec
+    i_arr = np.arange(nval, dtype=np.float64)[:, None]
+    u_minus_i = u[None, :] - i_arr                  # (nval, M)
+    f0 = 1.0 - 2.0 * u_minus_i * S_VALS[:, None]   # (nval, M)
+    f1 = u_minus_i * dsec                           # (nval, M)
+    yp = ((y_loc * f0 + z_loc * f1) * hj_sq).sum(axis=0)
+    return yp
+
+
+# ---------- Numba JIT kernel for hermite_c_1d_uniform (Horner fast path) ----
+# Mirrors the pure-numpy hermite_c_1d_uniform above op-for-op:
+#   - same Horner reduction order over coefs (descending k)
+#   - same per-query u, idx, f0, f1, hj_sq layout
+#   - sum over i (in the inner loop here) accumulates in the SAME order
+#     as numpy's (y_loc*f0 + z_loc*f1)*hj_sq sum-over-axis=0:
+#       for i in 0..nval-1: yp += (y[i0+i]*f0_i + z[i0+i]*f1_i) * hj_sq_i
+#     numpy `(... ).sum(axis=0)` also reduces in ascending-i order at this
+#     small N (nval=6, BLAS doesn't kick in), so the order matches.
+# Used by polyfit_refine_batch (via hermite_orbit) where the AUDIT documents
+# a known 1e-6 m residual vs C — that residual is from Horner basis vs C's
+# direct Lagrange, NOT from numpy-vs-numba differences. This kernel preserves
+# the numpy result bit-for-bit so the precise=1 azi_pix max|d|=2.4e-6 doesn't
+# get worse.
+if _HAS_NUMBA:
+    @njit(cache=False, fastmath=False)
+    def _hermite_c_1d_uniform_jit(x0, dsec, y, z, xp, nval,
+                                  HJ, S_VALS, yp_out):
+        nmax = y.shape[0]
+        n = nval - 1
+        clip_max = nmax - n - 1
+        M = xp.shape[0]
+        for m in range(M):
+            xpm = xp[m]
+            raw = (xpm - x0) / dsec
+            # i = ceil(raw)
+            i = int(np.ceil(raw))
+            i0 = i - (n + 1) // 2
+            if i0 < 0:
+                i0 = 0
+            elif i0 > clip_max:
+                i0 = clip_max
+            u = raw - i0   # (xpm - (x0 + i0*dsec))/dsec, algebraically identical
+            yp = 0.0
+            for i_idx in range(nval):
+                # Horner ascending (Mira's basis): v = 0; for k = nval-1..0: v = v*u + HJ[i_idx,k]
+                v = 0.0
+                for k in range(nval - 1, -1, -1):
+                    v = v * u + HJ[i_idx, k]
+                hj_sq = v * v
+                u_minus_i = u - float(i_idx)
+                f0 = 1.0 - 2.0 * u_minus_i * S_VALS[i_idx]
+                f1 = u_minus_i * dsec
+                yp = yp + (y[i0 + i_idx] * f0 + z[i0 + i_idx] * f1) * hj_sq
+            yp_out[m] = yp
+
+
+def hermite_c_1d_uniform_numba(x0: float, dsec: float, y: np.ndarray,
+                               z: np.ndarray, xp: np.ndarray,
+                               nval: int = 6) -> np.ndarray:
+    """Numba-accelerated wrapper around _hermite_c_1d_uniform_jit.
+
+    Falls back to pure-numpy hermite_c_1d_uniform when numba is unavailable.
+    """
+    if not _HAS_NUMBA:
+        return hermite_c_1d_uniform(x0, dsec, y, z, xp, nval)
+    xp = np.ascontiguousarray(np.atleast_1d(xp), dtype=np.float64)
+    y = np.ascontiguousarray(y, dtype=np.float64)
+    z = np.ascontiguousarray(z, dtype=np.float64)
+    nmax = y.size
+    # bounds check (match pure-numpy behaviour)
+    raw_min = (xp.min() - x0) / dsec
+    raw_max = (xp.max() - x0) / dsec
+    if raw_min < 0 or raw_max > nmax - 1:
+        raise ValueError(
+            f"hermite_c_1d_uniform: xp out of range "
+            f"({xp.min()} .. {xp.max()} vs {x0} .. {x0 + (nmax-1)*dsec})")
+    HJ, S_VALS = _hermite_basis(nval)
+    out = np.empty(xp.shape[0], dtype=np.float64)
+    _hermite_c_1d_uniform_jit(float(x0), float(dsec), y, z, xp, int(nval),
+                              HJ, S_VALS, out)
+    return out
+
+
+def hermite_c_1d(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+                 xp: np.ndarray, nval: int = 6) -> np.ndarray:
+    """Vectorized bit-faithful port of gmtsar's hermite_c.c.
+
+    Hermite interpolation by a polynomial using `nval` of `nmax` given
+    data points (function values + derivatives). Mirrors the C exactly:
+
+        for i in 0..n (n = nval-1):
+            sj = sum over j != i of 1/(x[i+i0] - x[j+i0])
+            hj = prod over j != i of (xp - x[j+i0])/(x[i+i0] - x[j+i0])
+            f0 = 1 - 2*(xp - x[i+i0])*sj
+            f1 = xp - x[i+i0]
+            yp += (y[i+i0]*f0 + z[i+i0]*f1) * hj * hj
+
+    Args:
+        x:    (nmax,) knot positions. Need NOT be uniform (general impl).
+        y:    (nmax,) function values
+        z:    (nmax,) derivatives
+        xp:   (M,) query positions
+        nval: number of points used per query (default 6)
+
+    Returns: (M,) interpolated values
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float64)
+    xp = np.atleast_1d(np.asarray(xp, dtype=np.float64))
+    nmax = x.size
+    n = nval - 1
+    if (xp < x[0]).any() or (xp > x[nmax - 1]).any():
+        raise ValueError(
+            "hermite_c: interpolation point outside data constraints "
+            f"({xp.min()} .. {xp.max()} vs {x[0]} .. {x[nmax-1]})")
+    # C: find first i with x[i] >= xp. searchsorted side='left' gives that.
+    i = np.searchsorted(x, xp, side="left")
+    # i0 = i - (n+1)/2  (integer division in C, same here)
+    i0 = i - (n + 1) // 2
+    # C: clip i0 to [0, nmax - n - 1]
+    np.clip(i0, 0, nmax - n - 1, out=i0)
+
+    # Gather (M, nval) sub-arrays.  idx[m, ii] = i0[m] + ii
+    idx = i0[:, None] + np.arange(n + 1)[None, :]   # (M, nval)
+    x_loc = x[idx]                                  # (M, nval)
+    y_loc = y[idx]
+    z_loc = z[idx]
+
+    yp = np.zeros_like(xp, dtype=np.float64)
+    for ii in range(n + 1):
+        xi = x_loc[:, ii]                  # (M,) — x[i+i0]
+        # Build hj and sj over j in 0..n, j != ii. Done explicitly to
+        # match the C loop semantics (no clever tricks for non-uniform x).
+        hj = np.ones_like(xp)
+        sj = np.zeros_like(xp)
+        for jj in range(n + 1):
+            if jj == ii:
+                continue
+            xj = x_loc[:, jj]
+            # C order: hj = hj * (xp - x[j+i0]) / (x[i+i0] - x[j+i0])
+            # left-to-right: ((hj * (xp - x_j)) / (xi - x_j))
+            # NOT hj *= (xp-xj)/(xi-xj) which is `hj * ((xp-xj)/(xi-xj))` — 1 ULP off.
+            hj = (hj * (xp - xj)) / (xi - xj)
+            sj += 1.0 / (xi - xj)
+        f0 = 1.0 - 2.0 * (xp - xi) * sj
+        f1 = xp - xi
+        # C: yp = yp + (y * f0 + z * f1) * hj * hj — left-associative,
+        # so the trailing `* hj * hj` is `(... * hj) * hj`, NOT `* (hj*hj)`.
+        # The 1-ULP roundoff difference matters for goldop branch parity.
+        yp = yp + (y_loc[:, ii] * f0 + z_loc[:, ii] * f1) * hj * hj
+    return yp
+
+
+# ---------- Numba JIT kernel for hermite_c_1d (general, non-Horner) -----------
+# Line-by-line mirror of the pure-numpy hermite_c_1d above, which itself
+# line-by-line mirrors C hermite_c.c (file:gmtsar/hermite_c.c). Inner loops
+# preserve C's left-associative arithmetic:
+#   hj = (hj * (xp - x[j+i0])) / (x[i+i0] - x[j+i0])   (Mira bug #5)
+#   yp = yp + (y*f0 + z*f1) * hj * hj                  (left-assoc * hj * hj)
+# Single-thread, fastmath=False, plain `range`. nval is treated as runtime int
+# so the same compiled body handles nval=6 (the only one gmtsar uses) without
+# specialisation.
+if _HAS_NUMBA:
+    @njit(cache=False, fastmath=False)
+    def _hermite_c_1d_jit(x, y, z, xp, nval, yp_out):                # noqa: D401
+        nmax = x.shape[0]
+        n = nval - 1
+        M = xp.shape[0]
+        x0v = x[0]
+        xLv = x[nmax - 1]
+        # i0_clip_max = nmax - n - 1
+        clip_max = nmax - n - 1
+        for m in range(M):
+            xpm = xp[m]
+            # C: error if outside [x[0], x[nmax-1]]
+            if xpm < x0v or xpm > xLv:
+                # Match numpy raise: produce NaN; parity-test would catch it.
+                yp_out[m] = np.nan
+                continue
+            # C: find first i with x[i] >= xpm  (searchsorted, side='left')
+            # Linear search is O(nmax) but nmax<=64 in gmtsar orbit context;
+            # binary search to be safe.
+            lo = 0
+            hi = nmax
+            while lo < hi:
+                mid = (lo + hi) >> 1
+                if x[mid] < xpm:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            i = lo
+            i0 = i - (n + 1) // 2
+            if i0 < 0:
+                i0 = 0
+            elif i0 > clip_max:
+                i0 = clip_max
+            yp = 0.0
+            for ii in range(nval):
+                xi = x[i0 + ii]
+                hj = 1.0
+                sj = 0.0
+                for jj in range(nval):
+                    if jj == ii:
+                        continue
+                    xj = x[i0 + jj]
+                    # C: hj = hj * (xpm - xj) / (xi - xj)
+                    # Mira #5: left-associative ((hj*(xpm-xj))/(xi-xj))
+                    hj = (hj * (xpm - xj)) / (xi - xj)
+                    sj = sj + 1.0 / (xi - xj)
+                f0 = 1.0 - 2.0 * (xpm - xi) * sj
+                f1 = xpm - xi
+                # C: yp = yp + (y*f0 + z*f1) * hj * hj   (left-assoc)
+                yp = yp + (y[i0 + ii] * f0 + z[i0 + ii] * f1) * hj * hj
+            yp_out[m] = yp
+
+
+def hermite_c_1d_numba(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+                       xp: np.ndarray, nval: int = 6) -> np.ndarray:
+    """Numba-accelerated bit-faithful wrapper around _hermite_c_1d_jit.
+
+    Same contract as `hermite_c_1d` (the pure-numpy reference). Falls back
+    to the numpy implementation when numba isn't installed / disabled.
+    """
+    if not _HAS_NUMBA:
+        return hermite_c_1d(x, y, z, xp, nval)
+    x = np.ascontiguousarray(x, dtype=np.float64)
+    y = np.ascontiguousarray(y, dtype=np.float64)
+    z = np.ascontiguousarray(z, dtype=np.float64)
+    xp = np.ascontiguousarray(np.atleast_1d(xp), dtype=np.float64)
+    out = np.empty(xp.shape[0], dtype=np.float64)
+    _hermite_c_1d_jit(x, y, z, xp, int(nval), out)
+    return out
+
+
 def hermite_orbit(times: np.ndarray, orbit: np.ndarray, t_query: np.ndarray
                   ) -> np.ndarray:
-    """Cubic Hermite interpolation of orbit state at query times.
+    """Interpolate orbit (x, y, z) at query times via Hermite interpolation.
 
     orbit shape: (N, 7) — t, px, py, pz, vx, vy, vz.
-    Uses scipy.interpolate.CubicHermiteSpline (knot, value, derivative).
-
     Returns (M, 3) array of (px, py, pz) at each t_query.
+
+    Auto-detects uniform-grid orbit (gmtsar's always uniform) and uses
+    the precomputed-basis fast path; falls back to general hermite_c_1d
+    otherwise. The earlier scipy.CubicHermiteSpline (2-point local) gave
+    ~mm orbit-position diffs vs C's 6-point Hermite → ~pixel azi_pix
+    divergence downstream. This matches C exactly while being faster.
     """
-    from scipy.interpolate import CubicHermiteSpline
     t_query = np.atleast_1d(t_query)
     out = np.empty((t_query.size, 3))
-    for axis in range(3):
-        spl = CubicHermiteSpline(orbit[:, 0],
-                                 orbit[:, 1 + axis],
-                                 orbit[:, 4 + axis])
-        out[:, axis] = spl(t_query)
+    # Uniform-grid fast path (typical gmtsar orbit format).
+    t_orb = orbit[:, 0]
+    dsec = t_orb[1] - t_orb[0]
+    is_uniform = (orbit.shape[0] >= 2 and
+                  np.allclose(np.diff(t_orb), dsec, rtol=1e-12, atol=1e-12))
+    if is_uniform:
+        x0 = float(t_orb[0])
+        _herm_u = hermite_c_1d_uniform_numba if _HAS_NUMBA else hermite_c_1d_uniform
+        out[:, 0] = _herm_u(x0, dsec, orbit[:, 1], orbit[:, 4], t_query)
+        out[:, 1] = _herm_u(x0, dsec, orbit[:, 2], orbit[:, 5], t_query)
+        out[:, 2] = _herm_u(x0, dsec, orbit[:, 3], orbit[:, 6], t_query)
+    else:
+        _herm_g = hermite_c_1d_numba if _HAS_NUMBA else hermite_c_1d
+        out[:, 0] = _herm_g(orbit[:, 0], orbit[:, 1], orbit[:, 4], t_query)
+        out[:, 1] = _herm_g(orbit[:, 0], orbit[:, 2], orbit[:, 5], t_query)
+        out[:, 2] = _herm_g(orbit[:, 0], orbit[:, 3], orbit[:, 6], t_query)
     return out
 
 
 # ---------------------------------------------------------- C4 pre-sample ---
 def presample_orbit(orbit: np.ndarray, t1: float, t2: float,
-                    ts: float, npad: int = 8000) -> np.ndarray:
+                    ts: float, npad: int = 8000,
+                    meta: dict | None = None) -> np.ndarray:
     """Sample the orbit at uniform `ts`-spaced times over [t1-npad*ts,
     t2+npad*ts]. The padding lets goldop find closest-approach points
     outside the strict acquisition window (which can be 10+ s of
@@ -163,10 +546,44 @@ def presample_orbit(orbit: np.ndarray, t1: float, t2: float,
     which uses npad=8000 (~12s with default ts=2/PRF).
 
     Returns (nrec_total, 4): [t, px, py, pz].
+
+    C-faithful, fix #1: mirrors `nrec = (int)((t2-t1)/ts)` and
+    `time = t1 - npad*ts + i*ts` (per-index, NOT np.arange which
+    accumulates a ~1e-5 s drift over 18k samples → ~7 mpx azi_pix bias).
+
+    C-faithful, fix #2: when `meta` is provided (with id, sec, dsec),
+    interpolate using C-style synthetic orbit time-knots
+    `pt[k] = 86400*id + sec + k*dsec` — NOT the actual LED times
+    parsed from the ASCII (which have ~1e-9 s roundoff that propagates
+    to ~1e-5 m orbit position error → flipped goldop branches on ~20
+    edge-case targets near the rng-vs-tm minimum). This matches C
+    calorb_alos lines 429-432 bit-exactly.
     """
-    pad = npad * ts
-    times = np.arange(t1 - pad, t2 + pad + 0.5 * ts, ts)
-    pxyz = hermite_orbit(orbit[:, 0:7], orbit, times)
+    nrec = int((t2 - t1) / ts)
+    n_total = nrec + 2 * npad
+    i = np.arange(n_total, dtype=np.int64)
+    # Per-index formula matches C calorb_alos line 444: time = t1 - npad*ts + i*ts
+    times = t1 - npad * ts + i * ts
+
+    if meta is not None and "id" in meta and "sec" in meta and "dsec" in meta:
+        # C-style synthetic time knots (matches C lines 429-432 bit-exactly).
+        # Use the GENERAL hermite_c_1d (line-by-line port of C hermite_c.c),
+        # NOT the Horner-basis fast path — the latter is algebraically
+        # equivalent but ~1e-6 m off from C due to different roundoff
+        # accumulation in polynomial evaluation. General path + synthetic
+        # knots gives BIT-EXACT match to C `hermite_c` on the RS2 dataset.
+        pt0 = 86400.0 * meta["id"] + meta["sec"]
+        dsec = float(meta["dsec"])
+        synth_times = pt0 + np.arange(orbit.shape[0], dtype=np.float64) * dsec
+        # Numba-accelerated when available; falls back to pure-numpy.
+        _herm = hermite_c_1d_numba if _HAS_NUMBA else hermite_c_1d
+        x_out = _herm(synth_times, orbit[:, 1], orbit[:, 4], times)
+        y_out = _herm(synth_times, orbit[:, 2], orbit[:, 5], times)
+        z_out = _herm(synth_times, orbit[:, 3], orbit[:, 6], times)
+        pxyz = np.column_stack([x_out, y_out, z_out])
+    else:
+        # Fallback for callers that don't pass meta (preserved for back-compat).
+        pxyz = hermite_orbit(orbit[:, 0:7], orbit, times)
     return np.column_stack([times, pxyz])
 
 
@@ -183,52 +600,200 @@ def _range_at(orb_pos: np.ndarray, i: int, xp: float, yp: float, zp: float
 def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
            stai: int = 0, endi: int | None = None,
            tol: float = 1.0) -> tuple[float, float]:
-    """Golden-section search for time-of-closest-approach (scalar version).
+    """C-faithful scalar golden-section search for time-of-closest-approach.
+
+    Mirrors SAT_llt2rat.c lines 332-393 line by line:
+      - x0..x3 = 4-point bracket (int indices)
+      - SHFT3/SHFT2 macros: cascade assignments with cross-dependencies
+        (the NEW x2 in the f2<f1 branch uses OLD x2, NOT OLD x1, because
+        the macro `(a)=(b); (b)=(c); (c)=(d)` evaluates `d` textually
+        AFTER x1 has been overwritten with x2_old)
+      - Uses C's truncated constants R=0.61803399, C=0.382 (NOT exact
+        golden ratio) — see module-level constants
+      - While loop terminates on (x3-x0) <= 2 or x2 == x1
 
     Used by unit tests; the driver uses `goldop_batch` for the live workload.
     """
     if endi is None:
         endi = orb_pos.shape[0] - 1
-    a, b = stai, endi
-    while (b - a) > 2:
-        c = int(a + C_GOLD * (b - a))
-        d = int(a + (1 - C_GOLD) * (b - a))
-        if c == d:
-            d = c + 1
-        rc = _range_at(orb_pos, c, xp, yp, zp)
-        rd = _range_at(orb_pos, d, xp, yp, zp)
-        if rc < rd:
-            b = d
+    ax, bx = stai, endi
+    # C: midi = (stai + (endi - stai) * C_GOLD)  — int truncation
+    cx = int(ax + (bx - ax) * C_GOLD)
+
+    x0 = ax
+    x3 = bx
+    if abs(bx - cx) > abs(cx - ax):
+        x1 = cx
+        x2 = cx + int(abs(C_GOLD * (bx - cx)))
+    else:
+        x2 = cx
+        x1 = cx - int(abs(C_GOLD * (cx - ax)))
+
+    f1 = _range_at(orb_pos, x1, xp, yp, zp)
+    f2 = _range_at(orb_pos, x2, xp, yp, zp)
+
+    while (x3 - x0) > 2 and (x2 != x1):
+        if f2 < f1:
+            # SHFT3(x0, x1, x2, (int)(R*x3 + C*x1));
+            # Cascade: x0:=x1; x1:=x2; x2:=int(R*x3 + C*x1_AFTER) which
+            # is x2_OLD because x1 was just overwritten with x2_old.
+            new_x0 = x1
+            new_x1 = x2
+            new_x2 = int(R_GOLD_C * x3 + C_GOLD * x2)  # OLD x2
+            x0, x1, x2 = new_x0, new_x1, new_x2
+            # SHFT2(f1, f2, dist(...,x2_new,...))
+            f1 = f2
+            f2 = _range_at(orb_pos, x2, xp, yp, zp)
         else:
-            a = c
-    best_i = a
-    best_r = _range_at(orb_pos, a, xp, yp, zp)
-    for i in range(a + 1, b + 1):
-        r = _range_at(orb_pos, i, xp, yp, zp)
-        if r < best_r:
-            best_r = r
-            best_i = i
-    return best_r, float(orb_pos[best_i, 0])
+            # SHFT3(x3, x2, x1, (int)(R*x0 + C*x2));
+            # x3:=x2; x2:=x1; x1:=int(R*x0 + C*x2_AFTER) = int(R*x0 + C*x1_OLD)
+            new_x3 = x2
+            new_x2 = x1
+            new_x1 = int(R_GOLD_C * x0 + C_GOLD * x1)  # OLD x1
+            x3, x2, x1 = new_x3, new_x2, new_x1
+            # SHFT2(f2, f1, dist(...,x1_new,...))
+            f2 = f1
+            f1 = _range_at(orb_pos, x1, xp, yp, zp)
+
+    if f1 < f2:
+        tm = float(orb_pos[x1, 0])
+        rng = f1
+    else:
+        tm = float(orb_pos[x2, 0])
+        rng = f2
+    return rng, tm
+
+
+# ---------- Numba JIT kernel for goldop_batch --------------------------------
+# Line-by-line scalar mirror of C `goldop` in SAT_llt2rat.c (lines 332-393),
+# applied per-target. This is actually CLEANER for parity than the np.where
+# vectorisation above because it mirrors the scalar C function 1:1 — same
+# SHFT3/SHFT2 cascade with OLD-value capture, same int truncation via Numba
+# float64-to-int64 cast, same per-iter sqrt (Mira bug #9).
+#
+# Constants captured: R_GOLD_C=0.61803399, C_GOLD=0.382 (Mira bug "truncated
+# golden ratio in C #define R, C"). We hard-bake these inside the kernel
+# (Numba constants) so they propagate as literals, NOT module-level lookups.
+if _HAS_NUMBA:
+    @njit(cache=False, fastmath=False)
+    def _goldop_jit(op_t, px, py, pz, tx, ty, tz, R_out, T_out):
+        R_LIT = 0.61803399
+        C_LIT = 0.382
+        nrec = px.shape[0]
+        N = tx.shape[0]
+        ax_init = 0
+        bx_init = nrec - 1
+        cx_init = int(ax_init + (bx_init - ax_init) * C_LIT)
+        # Per-target initial bracket (all identical at start). Per-C:
+        #   if abs(bx-cx) > abs(cx-ax): x1=cx, x2=cx+int(abs(C*(bx-cx)))
+        #   else:                       x2=cx, x1=cx-int(abs(C*(cx-ax)))
+        if abs(bx_init - cx_init) > abs(cx_init - ax_init):
+            x1_init = cx_init
+            x2_init = cx_init + int(abs(C_LIT * (bx_init - cx_init)))
+        else:
+            x2_init = cx_init
+            x1_init = cx_init - int(abs(C_LIT * (cx_init - ax_init)))
+        for n in range(N):
+            ttx = tx[n]
+            tty = ty[n]
+            ttz = tz[n]
+            x0 = 0
+            x3 = bx_init
+            x1 = x1_init
+            x2 = x2_init
+            # f1 = dist(orb_pos[x1], target)
+            dx1 = ttx - px[x1]
+            dy1 = tty - py[x1]
+            dz1 = ttz - pz[x1]
+            f1 = np.sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1)
+            dx2 = ttx - px[x2]
+            dy2 = tty - py[x2]
+            dz2 = ttz - pz[x2]
+            f2 = np.sqrt(dx2 * dx2 + dy2 * dy2 + dz2 * dz2)
+            # while (x3 - x0) > 2 and x2 != x1
+            for _it in range(64):
+                if not ((x3 - x0) > 2 and x2 != x1):
+                    break
+                if f2 < f1:
+                    # SHFT3(x0,x1,x2,(int)(R*x3 + C*x1));
+                    # cascade reads x1 AFTER assignment to x2_old → uses x2_old
+                    new_x0 = x1
+                    new_x1 = x2
+                    new_x2 = int(R_LIT * x3 + C_LIT * x2)  # OLD x2
+                    x0 = new_x0
+                    x1 = new_x1
+                    x2 = new_x2
+                    # clip to valid range (defensive; matches numpy version)
+                    if x2 < 0:
+                        x2 = 0
+                    elif x2 > nrec - 1:
+                        x2 = nrec - 1
+                    # SHFT2(f1,f2,dist(...,x2_new,...))
+                    f1 = f2
+                    dxn = ttx - px[x2]
+                    dyn = tty - py[x2]
+                    dzn = ttz - pz[x2]
+                    f2 = np.sqrt(dxn * dxn + dyn * dyn + dzn * dzn)
+                else:
+                    # SHFT3(x3,x2,x1,(int)(R*x0 + C*x2));
+                    # cascade reads x2 AFTER overwrite to x1_old → uses x1_old
+                    new_x3 = x2
+                    new_x2 = x1
+                    new_x1 = int(R_LIT * x0 + C_LIT * x1)  # OLD x1
+                    x3 = new_x3
+                    x2 = new_x2
+                    x1 = new_x1
+                    if x1 < 0:
+                        x1 = 0
+                    elif x1 > nrec - 1:
+                        x1 = nrec - 1
+                    # SHFT2(f2,f1,dist(...,x1_new,...))
+                    f2 = f1
+                    dxn = ttx - px[x1]
+                    dyn = tty - py[x1]
+                    dzn = ttz - pz[x1]
+                    f1 = np.sqrt(dxn * dxn + dyn * dyn + dzn * dzn)
+            # Winner (C lines 371-390)
+            if f1 < f2:
+                chosen = x1
+                rng = f1
+            else:
+                chosen = x2
+                rng = f2
+            if chosen < 0:
+                chosen = 0
+            elif chosen > nrec - 1:
+                chosen = nrec - 1
+            R_out[n] = rng
+            T_out[n] = op_t[chosen]
 
 
 def goldop_batch(orb_pos: np.ndarray, targets: np.ndarray,
-                 chunk: int = 100_000
+                 chunk: int = 200_000
                  ) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorised golden-section bisection for many targets.
+    """C-faithful vectorised true-4-point golden-section search.
 
-    Mirrors the C `goldop` algorithm — O(log nrec) iterations per target —
-    but each iteration operates on a *tile* of the target array. Tiling
-    keeps the gathered orbit-position arrays inside L3 (≈ chunk × 24 B per
-    component) so the bandwidth-bound gather + subtract + reduce stays
-    close to peak. Beats the single-shot full-N version by ~5× on
-    9.3 M RS2 cells (22 s → 4.6 s, serial, single thread).
+    Mirrors SAT_llt2rat.c `goldop` line-by-line, lock-step over N targets.
+    Each target carries its own (x0, x1, x2, x3, f1, f2) state and selects
+    which SHFT3/SHFT2 branch to take per iteration via np.where. The loop
+    continues until ALL targets have converged (per-target convergence
+    mask gates further updates).
 
-    orb_pos: (nrec, 4)  — [t, px, py, pz]
-    targets: (N, 3)     — ECEF (xp, yp, zp) per target
+    Vectorisation trap (Pattern 4): the C SHFT3 macro has cross-dependent
+    cascading assignments. In the `f2<f1` branch:
+        x0 := x1_OLD
+        x1 := x2_OLD
+        x2 := int(R*x3_OLD + C*x2_OLD)   ← uses OLD x2, not OLD x1
+    Because the macro `(a)=(b); (b)=(c); (c)=(d)` evaluates `d` textually
+    AFTER x1 has been overwritten with x2_old.
+
+    We capture ALL old values into locals first, then commit all new
+    values via np.where, gated by the not-yet-converged mask.
+
+    orb_pos: (nrec, 4) — [t, px, py, pz]
+    targets: (N, 3)    — ECEF (xp, yp, zp) per target
     Returns (ranges, times) — minimum range + orbit time per target.
     """
-    # Split orbit columns into contiguous 1-D arrays. Each gather is
-    # then a 1-D op (~3× cheaper than fancy-indexing a (nrec, 3) block).
     op_t = np.ascontiguousarray(orb_pos[:, 0])
     px = np.ascontiguousarray(orb_pos[:, 1])
     py = np.ascontiguousarray(orb_pos[:, 2])
@@ -240,86 +805,320 @@ def goldop_batch(orb_pos: np.ndarray, targets: np.ndarray,
     tz = np.ascontiguousarray(targets[:, 2])
     N = tx.shape[0]
 
-    R = np.empty(N, dtype=np.float64)
-    T = np.empty(N, dtype=np.float64)
+    R_out = np.empty(N, dtype=np.float64)
+    T_out = np.empty(N, dtype=np.float64)
+
+    # ---- Numba JIT fast path (single-thread, fastmath=False, scalar-per-target).
+    # The scalar Numba kernel mirrors C `goldop` line-by-line (cleaner parity
+    # than the np.where vectorisation below; same SHFT3/SHFT2 cascade with
+    # OLD-value capture, same per-iter sqrt, same int truncation).
+    if _HAS_NUMBA:
+        _goldop_jit(op_t, px, py, pz, tx, ty, tz, R_out, T_out)
+        return R_out, T_out
+
+    # Bracket initialisation (C main(): stai=0, endi=nrec-1, midi=int(stai+(endi-stai)*C))
+    ax_init = 0
+    bx_init = nrec - 1
+    cx_init = int(ax_init + (bx_init - ax_init) * C_GOLD)
+
+    def _dist2(idx, ttx, tty, ttz):
+        dx = ttx - px[idx]
+        dy = tty - py[idx]
+        dz = ttz - pz[idx]
+        return dx * dx + dy * dy + dz * dz
 
     for s in range(0, N, chunk):
         e = min(s + chunk, N)
         m = e - s
-        ttx, tty, ttz = tx[s:e], ty[s:e], tz[s:e]
-        a = np.zeros(m, dtype=np.int64)
-        b = np.full(m, nrec - 1, dtype=np.int64)
+        ttx = tx[s:e]
+        tty = ty[s:e]
+        ttz = tz[s:e]
 
-        # Golden-section bisection over the tile, lock-step across targets.
-        # Continues until (b - a) <= 2 everywhere (~log2(nrec) ≈ 14 for RS2).
-        while True:
-            spread = b - a
-            if int(spread.max()) <= 2:
+        # Per-target initial bracket (all identical at start).
+        x0 = np.full(m, ax_init, dtype=np.int64)
+        x3 = np.full(m, bx_init, dtype=np.int64)
+        # Per-C: if abs(bx-cx) > abs(cx-ax): x1=cx, x2=cx+int(abs(C*(bx-cx)))
+        #        else: x2=cx, x1=cx-int(abs(C*(cx-ax)))
+        if abs(bx_init - cx_init) > abs(cx_init - ax_init):
+            x1_v = cx_init
+            x2_v = cx_init + int(abs(C_GOLD * (bx_init - cx_init)))
+        else:
+            x2_v = cx_init
+            x1_v = cx_init - int(abs(C_GOLD * (cx_init - ax_init)))
+        x1 = np.full(m, x1_v, dtype=np.int64)
+        x2 = np.full(m, x2_v, dtype=np.int64)
+
+        # We MUST take sqrt to match C's compare semantics: sqrt is
+        # mathematically monotonic but at the FLOATING-POINT ULP level
+        # tiny f²-differences can be wiped out by sqrt rounding to the
+        # SAME float, so f²<f² can return True while sqrt(f²)<sqrt(f²)
+        # returns False (or vice-versa). Skipping the sqrt produces
+        # different branch decisions on ~20 edge-case targets where
+        # f1 ≈ f2 at convergence. C uses sqrt — we must too.
+        def _dist(idx, ttx, tty, ttz):
+            return np.sqrt(_dist2(idx, ttx, tty, ttz))
+        f1 = _dist(x1, ttx, tty, ttz)
+        f2 = _dist(x2, ttx, tty, ttz)
+
+        # Active mask: True while (x3 - x0) > 2 AND (x2 != x1)
+        # When a target converges, freeze it.
+        max_iter = 64  # log_phi(nrec) ≈ 21; bail-out safety
+        for _it in range(max_iter):
+            active = ((x3 - x0) > 2) & (x2 != x1)
+            if not active.any():
                 break
-            c = a + (C_GOLD       * spread).astype(np.int64)
-            d = a + ((1 - C_GOLD) * spread).astype(np.int64)
-            np.maximum(d, c + 1, out=d)        # avoid c == d
-            # rc^2 at sample c
-            dxc = ttx - px[c]; dyc = tty - py[c]; dzc = ttz - pz[c]
-            rc2 = dxc * dxc + dyc * dyc + dzc * dzc
-            # rd^2 at sample d
-            dxd = ttx - px[d]; dyd = tty - py[d]; dzd = ttz - pz[d]
-            rd2 = dxd * dxd + dyd * dyd + dzd * dzd
-            # if rc < rd → min is in [a, d]; keep a, set b = d
-            # else       → min is in [c, b]; keep b, set a = c
-            # (The wrong update — a = c on the left branch — was the
-            # bug caught on the RS2 run before commit 9aabc07.)
-            left = rc2 < rd2
-            b = np.where(left, d, b)
-            a = np.where(left, a, c)
 
-        # Final fine scan over the remaining [a, a+1, b] window.
-        cand = np.stack([a, a + 1, b], axis=1)
-        np.clip(cand, 0, nrec - 1, out=cand)
-        c0, c1, c2 = cand[:, 0], cand[:, 1], cand[:, 2]
-        d0x = ttx - px[c0]; d0y = tty - py[c0]; d0z = ttz - pz[c0]
-        d1x = ttx - px[c1]; d1y = tty - py[c1]; d1z = ttz - pz[c1]
-        d2x = ttx - px[c2]; d2y = tty - py[c2]; d2z = ttz - pz[c2]
-        r2 = np.stack([
-            d0x * d0x + d0y * d0y + d0z * d0z,
-            d1x * d1x + d1y * d1y + d1z * d1z,
-            d2x * d2x + d2y * d2y + d2z * d2z,
-        ], axis=1)
-        pick = r2.argmin(axis=1)
-        idx = cand[np.arange(m), pick]
-        R[s:e] = np.sqrt(r2[np.arange(m), pick])
-        T[s:e] = op_t[idx]
-    return R, T
+            # Branch mask: f2 < f1  (only meaningful where active)
+            left_branch = f2 < f1
+
+            # --- Capture OLD values BEFORE any updates ---
+            x0_old = x0
+            x1_old = x1
+            x2_old = x2
+            x3_old = x3
+            f1_old = f1
+            f2_old = f2
+
+            # --- Branch A: f2 < f1 ---
+            # SHFT3(x0,x1,x2, (int)(R*x3 + C*x1));
+            # → x0:=x1_old; x1:=x2_old; x2:=int(R*x3_old + C*x2_old)
+            #   (the "C*x1" in the SHFT3 d-expr is evaluated AFTER x1 was
+            #    overwritten with x2_old, so it reads x2_old)
+            x0_A = x1_old
+            x1_A = x2_old
+            x2_A = (R_GOLD_C * x3_old + C_GOLD * x2_old).astype(np.int64)
+            x3_A = x3_old
+            # SHFT2(f1, f2, dist(x2_new)) → f1:=f2_old; f2:=dist(x2_A)
+            x2_A_safe = np.clip(x2_A, 0, nrec - 1)
+            f2_A = _dist(x2_A_safe, ttx, tty, ttz)
+            f1_A = f2_old
+
+            # --- Branch B: f2 >= f1 (else) ---
+            # SHFT3(x3,x2,x1, (int)(R*x0 + C*x2));
+            # → x3:=x2_old; x2:=x1_old; x1:=int(R*x0_old + C*x1_old)
+            #   ("C*x2" in d-expr reads x2 AFTER overwrite to x1_old → x1_old)
+            x3_B = x2_old
+            x2_B = x1_old
+            x1_B = (R_GOLD_C * x0_old + C_GOLD * x1_old).astype(np.int64)
+            x0_B = x0_old
+            # SHFT2(f2, f1, dist(x1_new)) → f2:=f1_old; f1:=dist(x1_B)
+            x1_B_safe = np.clip(x1_B, 0, nrec - 1)
+            f1_B = _dist(x1_B_safe, ttx, tty, ttz)
+            f2_B = f1_old
+
+            # --- Commit: where active, pick branch A or B; else keep old ---
+            update = active
+            take_A = update & left_branch
+            take_B = update & ~left_branch
+
+            x0 = np.where(take_A, x0_A, np.where(take_B, x0_B, x0_old))
+            x1 = np.where(take_A, x1_A, np.where(take_B, x1_B, x1_old))
+            x2 = np.where(take_A, x2_A, np.where(take_B, x2_B, x2_old))
+            x3 = np.where(take_A, x3_A, np.where(take_B, x3_B, x3_old))
+            f1 = np.where(take_A, f1_A, np.where(take_B, f1_B, f1_old))
+            f2 = np.where(take_A, f2_A, np.where(take_B, f2_B, f2_old))
+
+        # --- Pick winner (mirror C lines 371-390) ---
+        # if (f1 < f2): xmin = x1; tm = orb_pos[x1]; rng = f1
+        # else:         xmin = x2; tm = orb_pos[x2]; rng = f2
+        pick_x1 = f1 < f2
+        chosen = np.where(pick_x1, x1, x2)
+        # Defensive clip — should be no-op for valid runs but guards against
+        # the C bug where x1/x2 can briefly leave [ax,bx] during the search.
+        chosen_safe = np.clip(chosen, 0, nrec - 1)
+        R_out[s:e] = np.where(pick_x1, f1, f2)
+        T_out[s:e] = op_t[chosen_safe]
+    return R_out, T_out
 
 
 # ---------------------------------------------------------- C6 polyfit refine ---
+def polyfit_c(T: np.ndarray, Y: np.ndarray, N: int) -> np.ndarray:
+    """Bit-faithful port of gmtsar's polyfit.c + gauss_jordan.c.
+
+    Fits the lowest-N-order polynomial via NORMAL EQUATIONS:
+        A[i,j] = sum_k T[k]^(i+j)         (Hankel matrix)
+        B[j]   = sum_k Y[k] * T[k]^j
+        Solve A @ C = B by gauss-jordan elimination + back-substitution.
+
+    Returns C of length N: [c0, c1, ..., c_{N-1}] such that
+        Y ≈ c0 + c1*T + c2*T^2 + ... + c_{N-1}*T^{N-1}
+
+    Differs from numpy.polyfit (Vandermonde + LAPACK lstsq) at the
+    ~1e-15 level for well-conditioned problems — but the C code uses
+    THIS exact routine in SAT_llt2rat.c precise=1, so we mirror it
+    bit-for-bit to match downstream tm/rng0 values.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    M = T.size
+    if N > M:
+        raise ValueError("polyfit_c: underdetermined system (N > M)")
+
+    A = np.zeros((N, N), dtype=np.float64)
+    B = np.zeros(N, dtype=np.float64)
+
+    # B[j] = sum_k Y[k] * T[k]^j   (j in 0..N-1)
+    pow_T = np.ones_like(T)               # T^0
+    for j in range(N):
+        B[j] = (Y * pow_T).sum()
+        pow_T *= T
+
+    # A[i,j] = sum_k T[k]^(i+j)   (i,j in 0..N-1) — Hankel
+    # The C loop computes pow_T = T^(j+i) at each (i,j), redundant but
+    # bit-faithful. Vectorized: build all needed powers once.
+    # We need T^p for p in 0..2*(N-1)
+    powers = np.empty((2 * N - 1, M), dtype=np.float64)
+    powers[0] = 1.0
+    for p in range(1, 2 * N - 1):
+        powers[p] = powers[p - 1] * T
+    sum_powers = powers.sum(axis=1)        # (2N-1,)
+    for i in range(N):
+        for j in range(N):
+            A[i, j] = sum_powers[i + j]
+
+    # gauss_jordan elimination + back-substitution (C: gauss_jordan in
+    # polyfit.c). C iterates m = k each outer step (no partial pivoting),
+    # only eliminates downward, then swaps row k with row m via the j-loop.
+    # m=k means swap is identity, so net effect: forward elimination only.
+    # Replicate C exactly to avoid numerical drift.
+    A = A.copy()
+    B = B.copy()
+    for k in range(N):
+        m = k
+        for l in range(m + 1, N):
+            if A[k, m] != 0.0:
+                factor = A[k, l] / A[k, m]
+                # row operation on A: A[j, l] -= factor * A[j, m] for all j
+                A[:, l] -= factor * A[:, m]
+                B[l] -= factor * B[m]
+        # row swap of row k with row m (m == k → no-op, but bit-faithful)
+        if m != k:
+            A[:, [k, m]] = A[:, [m, k]]
+            B[k], B[m] = B[m], B[k]
+    # back-substitute
+    X = np.zeros(N, dtype=np.float64)
+    N0 = N - 1
+    X[N0] = B[N0] / A[N0, N0]
+    for p in range(N):
+        u_lo = N0 - p + 1
+        sum_ = (A[u_lo:N, N0 - p] * X[u_lo:N]).sum() if u_lo < N else 0.0
+        X[N0 - p] = (B[N0 - p] - sum_) / A[N0 - p, N0 - p]
+    return X
+
+
+def polyfit_refine_batch(orbit: np.ndarray, tm_arr: np.ndarray,
+                         xyz: np.ndarray, lookdir: int,
+                         ntt: int = 10
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized 2nd-order polynomial refinement of (rng0, tm) + curl/det
+    sign. Mirrors the precise=1 path in SAT_llt2rat.c exactly.
+
+    Args:
+        orbit:   (N, 7) raw orbit nodes [t, px, py, pz, vx, vy, vz]
+        tm_arr:  (M,)   initial closest-approach times from goldop
+        xyz:     (M, 3) ECEF target positions
+        lookdir: +1 right-looking, -1 left-looking
+
+    Returns: (rng0_refined, tm_refined, det) — each (M,). `det` is ±1.0;
+    the caller should apply `xt[0] = rng0 * det` to get signed range.
+    """
+    M = tm_arr.size
+    dt = 1.0 / ntt
+    time_off = dt * (np.arange(ntt) - ntt / 2 + 0.5)   # (ntt,)
+
+    # Evaluate orbit at all (M * ntt) sample times in one batched call.
+    abs_times = (tm_arr[:, None] + time_off[None, :]).reshape(-1)   # (M*ntt,)
+    p_all = hermite_orbit(orbit[:, 0:7], orbit, abs_times)            # (M*ntt, 3)
+    p_all = p_all.reshape(M, ntt, 3)
+
+    # Range[k] for each target: |xyz - p_all[k]| - rng0 ... but C computes
+    # rng[k] = sqrt(...) - rng0 where rng0 is the goldop value. Since the
+    # polyfit only uses rng[k] up to a constant shift (vertex location is
+    # invariant under +const), we can fit on the unshifted range.
+    diff = xyz[:, None, :] - p_all              # (M, ntt, 3)
+    rng_samples = np.sqrt((diff * diff).sum(axis=2))   # (M, ntt)
+
+    # Fit ax^2 + bx + c per target. Vertex at x = -b/(2a).
+    # Use C-faithful polyfit per target (same algo as polyfit.c).
+    # Vectorized normal equations: for 2nd order (N=3), A is (3,3) Hankel,
+    # SAME for every target since time_off is identical. Only B varies.
+    N = 3
+    powers_t = np.empty((2 * N - 1, ntt), dtype=np.float64)
+    powers_t[0] = 1.0
+    for p in range(1, 2 * N - 1):
+        powers_t[p] = powers_t[p - 1] * time_off
+    sum_powers_t = powers_t.sum(axis=1)         # (2N-1,)
+    A_const = np.empty((N, N), dtype=np.float64)
+    for i in range(N):
+        for j in range(N):
+            A_const[i, j] = sum_powers_t[i + j]
+
+    # B[m, j] = sum_k rng_samples[m, k] * time_off[k]^j  for each target m
+    Bmat = np.empty((M, N), dtype=np.float64)
+    pow_T = np.ones_like(time_off)
+    for j in range(N):
+        Bmat[:, j] = (rng_samples * pow_T).sum(axis=1)
+        pow_T *= time_off
+
+    # Apply gauss_jordan elimination to A (constant) and to each row of Bmat.
+    A = A_const.copy()
+    B = Bmat.copy()                             # (M, N)
+    for k in range(N):
+        for l in range(k + 1, N):
+            if A[k, k] != 0.0:
+                factor = A[k, l] / A[k, k]
+                A[:, l] -= factor * A[:, k]
+                B[:, l] -= factor * B[:, k]
+    # back-substitute per target. After elimination A is upper-tri in cols.
+    X = np.zeros((M, N), dtype=np.float64)
+    N0 = N - 1
+    X[:, N0] = B[:, N0] / A[N0, N0]
+    for p in range(1, N):
+        idx_back = N0 - p
+        sum_ = (A[idx_back + 1:N, idx_back][None, :] * X[:, idx_back + 1:N]
+                ).sum(axis=1)
+        X[:, idx_back] = (B[:, idx_back] - sum_) / A[idx_back, idx_back]
+
+    # X = [d0, d1, d2] per target. Vertex dtt = -d1 / (2*d2).
+    d1 = X[:, 1]; d2 = X[:, 2]
+    safe = np.abs(d2) > 1e-30
+    dtt = np.where(safe, -d1 / (2.0 * np.where(safe, d2, 1.0)), 0.0)
+    tm_refined = tm_arr + dtt
+
+    # Re-evaluate orbit at refined tm
+    p_ref = hermite_orbit(orbit[:, 0:7], orbit, tm_refined)   # (M, 3)
+    diff_ref = xyz - p_ref
+    rng_ref = np.sqrt((diff_ref * diff_ref).sum(axis=1))
+
+    # Curl / det sign (per C lines 250-270):
+    #   vec0 = orbit at k=0; vec1 = orbit at k=ntt-1; vec1 -= vec0  (~track dir)
+    #   vec2 = xyz - orbit at refined tm
+    #   det  = (cross(vec2, vec1)) · (xs, ys, zs at refined tm)
+    #   sign = +1 if det*lookdir > 0 else -1
+    vec0 = p_all[:, 0, :]                       # (M, 3)
+    vec1 = p_all[:, ntt - 1, :] - vec0          # (M, 3) — track direction
+    vec2 = diff_ref                              # (M, 3)
+    cross = np.empty_like(vec2)
+    cross[:, 0] = vec2[:, 1] * vec1[:, 2] - vec2[:, 2] * vec1[:, 1]
+    cross[:, 1] = vec2[:, 2] * vec1[:, 0] - vec2[:, 0] * vec1[:, 2]
+    cross[:, 2] = vec2[:, 0] * vec1[:, 1] - vec2[:, 1] * vec1[:, 0]
+    det_val = (cross * p_ref).sum(axis=1)
+    det = np.where(det_val * lookdir > 0, 1.0, -1.0)
+
+    return rng_ref, tm_refined, det
+
+
 def polyfit_refine(orbit: np.ndarray, tm: float, xp: float, yp: float,
                    zp: float, ntt: int = 10) -> tuple[float, float]:
-    """Refine (range, time) of closest approach with a 2nd-order polynomial.
-
-    Samples range vs. time at ntt points around tm (window ~1 s),
-    fits parabola, returns the vertex (tm_refined, range_refined).
-    Mirrors the precise=1 path in SAT_llt2rat.c.
-    """
-    dt = 1.0 / ntt
-    times_offset = dt * (np.arange(ntt) - ntt / 2 + 0.5)
-    abs_times = tm + times_offset
-    p_orb = hermite_orbit(orbit[:, 0:7], orbit, abs_times)
-    rng = np.sqrt((xp - p_orb[:, 0]) ** 2
-                  + (yp - p_orb[:, 1]) ** 2
-                  + (zp - p_orb[:, 2]) ** 2)
-    # Fit r(t_offset) ≈ d0 + d1*t + d2*t^2.  Vertex at t = -d1/(2*d2).
-    coefs = np.polyfit(times_offset, rng, 2)   # returns [d2, d1, d0]
-    d2, d1, _d0 = coefs
-    if abs(d2) < 1e-30:
-        return float(rng.min()), tm
-    dtt = -d1 / (2.0 * d2)
-    tm_refined = tm + dtt
-    p_ref = hermite_orbit(orbit[:, 0:7], orbit, np.array([tm_refined]))[0]
-    rng_refined = float(np.sqrt((xp - p_ref[0]) ** 2
-                                + (yp - p_ref[1]) ** 2
-                                + (zp - p_ref[2]) ** 2))
-    return rng_refined, float(tm_refined)
+    """Scalar wrapper around polyfit_refine_batch (kept for tests)."""
+    r, t, _det = polyfit_refine_batch(
+        orbit,
+        np.array([tm]),
+        np.array([[xp, yp, zp]]),
+        lookdir=1,
+        ntt=ntt,
+    )
+    return float(r[0]), float(t[0])
 
 
 # ---------------------------------------------------------- C7 pixel coords ---
@@ -414,7 +1213,11 @@ def main() -> int:
     ts = 2.0 / prf if prf >= 600.0 else 1.0 / prf
 
     # Pre-sample orbit at ts-spaced times. orb_pos[:, 0] is absolute time.
-    orb_pos = presample_orbit(orbit, t1, t2, ts)
+    # Pass meta so presample_orbit uses C-style synthetic time-knots
+    # (pt[k] = 86400*id + sec + k*dsec) instead of the ASCII-roundoff
+    # affected LED times — needed for exact C parity at edge-case
+    # goldop targets near the rng-vs-tm minimum.
+    orb_pos = presample_orbit(orbit, t1, t2, ts, meta=meta)
 
     # Bounds
     r0 = -10.0
@@ -460,11 +1263,25 @@ def main() -> int:
     # Batched goldop — one (N, nrec) range matrix, row-wise argmin.
     rng0, tm = goldop_batch(orb_pos, xyz)
 
-    # Optional polyfit refinement (precise=1): scalar loop, slow path.
+    # Lookdir: +1 right, -1 left. Determines sign convention for the det
+    # check in the polyfit refinement.
+    lookdir_s = _prm_s(prm, "lookdir") or "R"
+    lookdir = -1 if lookdir_s.upper().startswith("L") else 1
+
+    # Optional polyfit refinement (precise=1): vectorised, includes the
+    # curl/det sign check from SAT_llt2rat.c lines 234-270.
     if ns.precise == 1:
-        for k in range(xyz.shape[0]):
-            rng0[k], tm[k] = polyfit_refine(orbit, tm[k],
-                                            xyz[k, 0], xyz[k, 1], xyz[k, 2])
+        rng0, tm, det = polyfit_refine_batch(orbit, tm, xyz,
+                                              lookdir=lookdir, ntt=10)
+    else:
+        det = np.ones_like(rng0)
+
+    # Apply det sign to range before pixel conversion (C line 274:
+    # `xt[0] = rng0 * det`). For points on the "wrong side" of the orbit
+    # for a right/left-looking SAR, this flips the sign and the bounds
+    # filter below rejects them. Without this, edge cells fall into the
+    # data region by mistake (the source of 8 extra rows vs C).
+    rng_signed = rng0 * det
 
     # Vectorised pixel-coord conversion
     near_range = _prm_f(prm, "near_range")
@@ -473,14 +1290,19 @@ def main() -> int:
     chirp_ext = _prm_f(prm, "chirp_ext")
     ashift = _prm_f(prm, "ashift")
     sub_int_a = _prm_f(prm, "sub_int_a")
-    range_pix = (rng0 - near_range) / dr - (rshift + sub_int_r) + chirp_ext
+    range_pix = (rng_signed - near_range) / dr - (rshift + sub_int_r) + chirp_ext
     azi_pix = prf * (tm - t1) - (ashift + sub_int_a)
 
-    # Optional Doppler correction
+    # Optional Doppler correction (mirrors C SAT_llt2rat.c lines 287-295).
+    # vel + lambda_ were ONLY defined inside the unused `doppler_correct`
+    # helper before — this inline path crashed with NameError on any case
+    # with fd1 != 0 (ALOS_SLC_L1.1 caught it 2026-05-21). Load them here.
     fd1 = _prm_f(prm, "fd1")
     if fd1 != 0.0:
         fdd1 = _prm_f(prm, "fdd1")
         num_rng_bins = _prm_i(prm, "num_rng_bins")
+        vel = _prm_f(prm, "SC_vel") or _prm_f(prm, "vel")
+        lambda_ = _prm_f(prm, "radar_wavelength") or _prm_f(prm, "lambda")
         dopc = fd1 + fdd1 * (near_range + dr * num_rng_bins / 2.0)
         rdd = vel * vel / rng0
         daa = -0.5 * (lambda_ * dopc) / rdd
