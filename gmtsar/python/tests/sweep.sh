@@ -91,22 +91,21 @@ log "hw+sw snapshot → $PERF_FILE"
 #                      results/<c>.json. Both pipelines re-extract + re-run.
 #                      ~3h for the full 21-case sweep.
 #   SWEEP_FORCE=py     soft force: wipe ONLY python_test/<c> and
-#                      results/<c>.json. csh_test/<c> is preserved as the
-#                      immutable reference — compare.py will use the existing
-#                      csh outputs. Faster turn-around when iterating on
-#                      python-side code (xcorr_py, utils_pygmt, dem2topo_ra,
-#                      etc.). ~1/2 to 1/3 the wall time of the hard force.
-# Both modes use rename-then-delete to survive NFS .nfs* lock files
-# (parent of /tmp/<stale> directory is renamed atomically; the actual rm runs
-# in the background and tolerates lingering handles).
+#                      results/<c>.json. case_runner.sh re-extracts the
+#                      tarball into a fresh python_test/<c>. csh_test/<c>
+#                      preserved as the immutable reference. ~1/2 the wall
+#                      time of the hard force. Use for iterating on
+#                      python-side code without rebuilding the csh oracle.
+# Modes use rename-then-delete to survive NFS .nfs* lock files (parent of
+# /tmp/<stale> directory is renamed atomically; the actual rm runs in the
+# background and tolerates lingering handles).
 if [ -n "${SWEEP_FORCE:-}" ]; then
     case "${SWEEP_FORCE}" in
-        py|PY|python) wipe_csh=0 ;;
-        *)            wipe_csh=1 ;;
+        py|PY|python)   wipe_csh=0 ;;
+        *)              wipe_csh=1 ;;
     esac
     ts=$(date +%s%N)
     for c in $cases; do
-        # Always wipe python_test + results; conditionally wipe csh_test.
         targets="$WORK/python_test/$c"
         [ "$wipe_csh" = 1 ] && targets="$WORK/csh_test/$c $targets"
         for d in $targets; do
