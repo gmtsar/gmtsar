@@ -14,8 +14,3 @@ utils/.DS_Store
 # Produced locally by tests/freeze_reference.py; not shipped via git.
 # Future: distribute as a GitHub Release asset + fetch_reference.sh.
 tests/reference/
-.consilium-review/
-
-# bin_py per-binary C reference oracles (regenerated on demand by the
-# corresponding parity test; ~300 MB for resamp_py alone). Not shipped.
-bin_py/tests/data/*.SLC
