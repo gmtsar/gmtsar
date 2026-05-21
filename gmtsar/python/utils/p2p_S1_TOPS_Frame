@@ -170,7 +170,11 @@ def mergeUnwrapGeocodeTops(correct_iono, det_stitch):
         print('not available yet for correct_iono!=0')
     else:
         file_shuttle('../config.py', '.', 'cp')
-        run('merge_unwrap_geocode_tops tmp.filelist config.py '+str(det_stitch))
+        try:
+            from phase_profile import time_run as _trun
+        except Exception:
+            _trun = run
+        _trun('merge_unwrap_geocode_tops tmp.filelist config.py '+str(det_stitch), "merge_unwrap_geocode_tops")
         # Post-condition: merge MUST have produced phasefilt/corr at minimum.
         # Without this, a silent failure here surfaces only when compare.py
         # later notices the missing file — the COVE/Larsen bug found in the

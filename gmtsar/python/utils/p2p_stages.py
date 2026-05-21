@@ -20,6 +20,7 @@ import shutil
 import sys, os, re
 import subprocess, glob
 from gmtsar_lib import *
+from phase_profile import time_run
 
 
 
@@ -99,7 +100,7 @@ def P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix):
         run(f"pre_proc_nsr {sys.argv2}.h5 ../config.py")
         run(f"pre_proc_nsr {sys.argv3}.h5 ../config.py")
     else:
-        run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix)
+        time_run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix, "pre_proc")
 
     print('P2P 1: exiting directory raw/')
     os.chdir('..')
@@ -189,7 +190,7 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
     other SATs use default xcorr params, with fitoffset polynomial degree 3
     for .raw-input SATs and 2 for everything else."""
     if SAT == "ALOS2_SCAN":
-        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}", "xcorr_py")
         # Median-filter the azimuth-shift column of freq_xcorr.dat, keep rows
         # within median±3, then fit a 2-rng/3-az polynomial with SNR≥10.
         # Mirrors gmtsar/csh/align_ALOS2_SCAN.csh lines 80-86.
@@ -205,10 +206,10 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
         # 40x40 grid and fitoffset_ra with 10/10 polynomial.
         run("rm -f amp*.grd")
         run(f"slc2amp {master}.PRM 4 amp-{master}.grd")
-        run(f"xcorr {master}.PRM {aligned}.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40")
-        run("fitoffset_ra 10 10 freq_xcorr.dat 20")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40", "xcorr_py")
+        time_run("fitoffset_ra 10 10 freq_xcorr.dat 20", "fitoffset_ra")
     else:
-        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}", "xcorr_py")
         fit_dim = "3 3" if SAT in _SAT_RAW_INPUT else "2 2"
         run(f"fitoffset.py {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
 
@@ -218,9 +219,9 @@ def _resamp_and_swap(master, aligned, SAT=None):
     For NSR_A/NSR_B: uses resamp factor 5 with r.grd/a.grd alignment grids
     (produced by fitoffset_ra). Other SATs use factor 4 without those grids."""
     if SAT in _NSR_FAMILY:
-        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 5 r.grd a.grd")
+        time_run(f"resamp_py {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 5 r.grd a.grd", "resamp_py")
     else:
-        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4")
+        time_run(f"resamp_py {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4", "resamp_py")
     delete(f"{aligned}.SLC")
     file_shuttle(f"{aligned}.SLCresamp", f"{aligned}.SLC", 'mv')
     file_shuttle(f"{aligned}.PRMresamp", f"{aligned}.PRM", 'cp')
@@ -367,7 +368,7 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
                 file_shuttle("../raw/offset*dat", ".", "link")
             
             if (skip_master == 0):
-                run("align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1")
+                time_run("align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1", "align_tops")
             elif (skip_master == 1):
                 cmd = "align_tops "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
                 run(cmd)
@@ -482,7 +483,7 @@ def P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo):
     if not check_file_report('dem.grd'):
         sys.exit("no DEM file found: dem.grd")
     interp_arg = " 1" if topo_interp_mode == 1 else ""
-    run(f"dem2topo_ra master.PRM dem.grd{interp_arg}")
+    time_run(f"dem2topo_ra master.PRM dem.grd{interp_arg}", "dem2topo_ra")
 
     os.chdir('..')
     print('P2P 3: DEM2TOPO_RA - END')
@@ -527,10 +528,10 @@ def _intf_and_filter(ref, rep, topo_phase, shift_topo, filter_cmd_callable):
     if topo_phase == 1:
         topo_file = "topo_shift.grd" if shift_topo == 1 else "topo_ra.grd"
         run(f"ln -sf ../../topo/{topo_file} .")
-        run(f"intf {ref}.PRM {rep}.PRM -topo {topo_file}")
+        time_run(f"intf {ref}.PRM {rep}.PRM -topo {topo_file}", "intf")
     else:
         print('P2P 4: NO TOPOGRAPHIC PHASE REMOVAL PERFORMED')
-        run(f"intf {ref}.PRM {rep}.PRM")
+        time_run(f"intf {ref}.PRM {rep}.PRM", "intf")
     filter_cmd_callable()
 
 
@@ -549,7 +550,7 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
     _stage_intf_inputs('../../SLC', cp_exts=('params*',))
 
     def _iono_filter():
-        run(f"filter {ref}.PRM {rep}.PRM 500 {dec} {new_incx} {new_incy}")
+        time_run(f"filter {ref}.PRM {rep}.PRM 500 {dec} {new_incx} {new_incy}", "filter")
     _intf_and_filter(ref, rep, topo_phase, shift_topo, _iono_filter)
 
     file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
@@ -702,7 +703,7 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
     # Use snaphu.py (Python wrapper) explicitly. The bare name `snaphu` is
     # the upstream C binary which has a different CLI; collision with our
     # wrapper was the root cause of ALOS_haiti's silent snaphu failure.
-    run(f"snaphu.py {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}")
+    time_run(f"snaphu.py {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}", "snaphu")
     print('P2P 5: SNAPHU - END')
     os.chdir("../..")
 
@@ -724,7 +725,7 @@ def P2P6Geocode(ref, rep, threshold_geocode, topo_phase):
 
     file_shuttle("../../topo/trans.dat", ".", "link")
     print(f"threshold_geocode: {threshold_geocode}")
-    run(f"geocode {threshold_geocode}")
+    time_run(f"geocode {threshold_geocode}", "geocode")
     print('P2P 6: GEOCODE - END')
     os.chdir('../..')
         

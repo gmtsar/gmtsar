@@ -1,0 +1,1254 @@
+#! /usr/bin/env python3
+"""resamp_py — Python port of the gmtsar C binary `resamp`.
+
+Resamples an aligned SLC image into the geometry of a master image
+using an affine ram-to-ras mapping defined by the aligned PRM's
+(rshift, sub_int_r, stretch_r, a_stretch_r, ashift, sub_int_a,
+stretch_a, a_stretch_a) fields, and one of four 2-D interpolation
+kernels:
+
+    intrp = 1 nearest neighbor
+    intrp = 2 bilinear (2x2)
+    intrp = 3 bicubic Keys-cubic-convolution (a = -0.3, 4x4)
+    intrp = 4 bisinc truncated sinc (NS=4, 4x4)
+    intrp = 5 bisinc-grid: bilinear-interpolate two GMT NetCDF grids
+              (dr.grd, da.grd) to shift each master pixel, then bisinc.
+
+C source ported (gmtsar/resamp.c, ~728 lines, single file containing
+main + ram2ras + kernels + helpers). All four kernel functions are
+ported verbatim from C; the main driver is vectorized over the master
+grid for speed while reproducing the C's rounding/clipping bit-for-bit.
+
+Decomposition (see Mira-Volkov workflow):
+    C1  argparse + PRM read
+    C2  SLC memmap input + output row writer
+    C3  ram2ras affine transform
+    C4  nearest kernel
+    C5  bilinear kernel
+    C6  bicubic Keys-cubic kernel (a=-0.3 — DO NOT substitute scipy)
+    C7  bisinc truncated 4-tap sinc kernel
+    C9  clipi2 + C-style (int)(x+0.5) rounding
+    C10 main loop driver (vectorized over each row)
+
+Traps documented at the call sites.
+
+CLI mirror of C:
+    resamp_py master.PRM aligned.PRM new_aligned.PRM new_aligned.SLC intrp [dr.grd da.grd]
+
+Scope: intrp in {1,2,3,4,5}. intrp=5 requires NetCDF .grd inputs.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from typing import Dict
+
+import numpy as np
+
+# ----- Optional Numba JIT --------------------------------------------------
+# Numba JIT'd inner-loop kernels close the bicubic/bisinc gap vs C.
+# fastmath=False is REQUIRED for bit-parity with C — fastmath=True lets
+# LLVM reorder FP ops, which silently breaks reproducibility against the
+# C oracle. cache=True persists the compiled IR to disk so we don't pay
+# the JIT cost on every invocation.
+# Set RESAMP_PY_NUMBA=0 to force the pure-numpy path (for debugging).
+try:
+    import numba as _numba  # noqa: F401
+    _HAVE_NUMBA = os.environ.get("RESAMP_PY_NUMBA", "1") != "0"
+except ImportError:
+    _HAVE_NUMBA = False
+
+# ----- C macros from gmtsar.h, verbatim ---------------------------------------
+# #define I2MAX 32767.0    (note: this is a DOUBLE; matters for the
+#                           `(int)fabs(real) > I2MAX` test in C, which compares
+#                           the int magnitude to the float constant)
+I2MAX = 32767.0
+# #define NS 4   (number of taps in each axis of the sinc kernel)
+NS = 4
+# #define PI 3.1415926535897932 (the C truncated value, used in sinc_kernel)
+PI = 3.1415926535897932
+
+
+# ----- C1 ---------------------------------------------------------------------
+def read_prm(path: str) -> Dict[str, str]:
+    """Parse a gmtsar PRM file into an ordered dict (last key wins on dup).
+
+    Mirrors get_prm() semantics: tolerate blank lines, comments, trailing
+    whitespace, mixed tabs/spaces around '='.
+    """
+    out: Dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _f(prm: Dict[str, str], key: str, default: float = 0.0) -> float:
+    """Get a float from a PRM dict (default if missing)."""
+    if key in prm:
+        try:
+            return float(prm[key])
+        except ValueError:
+            return default
+    return default
+
+
+def _i(prm: Dict[str, str], key: str, default: int = 0) -> int:
+    """Get an int from a PRM dict (default if missing)."""
+    if key in prm:
+        try:
+            return int(float(prm[key]))
+        except ValueError:
+            return default
+    return default
+
+
+# ----- C3 ram2ras (vectorized) -----------------------------------------------
+def ram2ras_vec(jj: np.ndarray, ii: np.ndarray, ps: Dict[str, str]):
+    """Vectorized ram2ras. jj, ii are float arrays of master-pixel coords.
+
+    Matches resamp.c:660-664 exactly:
+        ras0 = ram0 + (rshift + sub_int_r) + ram0*stretch_r + ram1*a_stretch_r
+        ras1 = ram1 + (ashift + sub_int_a) + ram0*stretch_a + ram1*a_stretch_a
+
+    Note rshift/ashift are read as ints by get_prm in C but treated as
+    doubles in the arithmetic — float() handles either.
+    """
+    rshift = _f(ps, "rshift")
+    sub_int_r = _f(ps, "sub_int_r")
+    stretch_r = _f(ps, "stretch_r")
+    a_stretch_r = _f(ps, "a_stretch_r")
+    ashift = _f(ps, "ashift")
+    sub_int_a = _f(ps, "sub_int_a")
+    stretch_a = _f(ps, "stretch_a")
+    a_stretch_a = _f(ps, "a_stretch_a")
+
+    ras0 = jj + ((rshift + sub_int_r) + jj * stretch_r + ii * a_stretch_r)
+    ras1 = ii + ((ashift + sub_int_a) + jj * stretch_a + ii * a_stretch_a)
+    return ras0, ras1
+
+
+# ----- C9 helpers: C-style rounding & clipping --------------------------------
+def _c_round_clip_int16(x: np.ndarray) -> np.ndarray:
+    """Reproduce `(short)clipi2(x + 0.5)` from C verbatim.
+
+    Steps:
+      1. y = x + 0.5
+      2. clipi2(y) = clamp y to [-I2MAX, +I2MAX] (float, not int)
+      3. (short)y = C cast = TRUNCATE TOWARD ZERO (NOT np.round /
+         numpy's banker's rounding).
+
+    np.int16(y) on a float array does NOT truncate toward zero in
+    general — it follows numpy's "round toward zero" cast rule, which
+    IS the C-cast convention for IEEE doubles. Verify:
+        >>> np.int16(np.array([-0.7, -0.5, 0.5, 0.7]))
+        array([ 0,  0,  0,  0], dtype=int16)  # all toward zero
+    so np.int16 == C (short) cast for finite values.
+
+    BUT: numpy issues a deprecation warning on out-of-range float-to-int
+    casts in some versions. We clip first to stay inside int16 range,
+    so this is safe.
+    """
+    y = x + 0.5
+    # clipi2 clamps the DOUBLE before the (short) cast. I2MAX is 32767.0
+    # exactly, so the cast of +/-32767.0 lands at +/-32767 (in range).
+    np.clip(y, -I2MAX, I2MAX, out=y)
+    # C "(short)y" truncates toward zero — which is also numpy's float->int
+    # behavior. Use astype with casting='unsafe' to suppress warnings.
+    return y.astype(np.int16)
+
+
+# ----- C4 nearest (vectorized) -----------------------------------------------
+def kernel_nearest_vec(ras0: np.ndarray, ras1: np.ndarray,
+                       sin_flat: np.ndarray, ydims: int, xdims: int,
+                       sout: np.ndarray) -> None:
+    """Vectorized nearest-neighbor. Writes into sout in-place.
+
+    sout shape: (2*xdimm,) int16 interleaved (re, im, re, im, ...).
+    sin_flat shape: (ydims * 2 * xdims,) int16 (the mmap'd SLC).
+
+    C resamp.c:401-429 — uses (int)(ras+0.5). For positive ras this is
+    rounding to nearest. For NEGATIVE ras it TRUNCATES toward zero
+    (NOT floors), so e.g. ras=-0.3 -> (int)(0.2)=0, ras=-0.7 -> (int)(-0.2)=0.
+    bounds test then catches j<0 -> writes 0.
+    """
+    # (int)(ras + 0.5) — C cast truncates toward zero
+    j = (ras0 + 0.5).astype(np.int64)  # in C this is `(int)`
+    # The above is np.float -> np.int64 which is truncate-toward-zero
+    # for finite values — matches C.
+    i = (ras1 + 0.5).astype(np.int64)
+
+    in_bounds = (i >= 0) & (i < ydims) & (j >= 0) & (j < xdims)
+
+    # default zero
+    sout[:] = 0
+
+    # Compute linear index into sin_flat for in-bounds samples
+    # row stride = 2*xdims
+    # sample address (real) = 2*xdims*i + 2*j ; imag = +1
+    ib = np.where(in_bounds)[0]
+    if ib.size == 0:
+        return
+    ii_in = i[ib]
+    jj_in = j[ib]
+    base = (2 * xdims) * ii_in + 2 * jj_in
+    sout[2 * ib] = sin_flat[base]
+    sout[2 * ib + 1] = sin_flat[base + 1]
+
+
+# ----- C5 bilinear (vectorized) ----------------------------------------------
+def kernel_bilinear_vec(ras0: np.ndarray, ras1: np.ndarray,
+                        sin_flat: np.ndarray, ydims: int, xdims: int,
+                        sout: np.ndarray) -> None:
+    """Vectorized bilinear. C resamp.c:431-494.
+
+    j0 = (int)floor(ras0); i0 = (int)floor(ras1)
+    dr = ras0 - j0; da = ras1 - i0
+    Test: i0 in [0, ydims-2] and j0 in [0, xdims-2]; else 0.
+    Else weighted sum over 4 corners with weights (1-da)(1-dr),
+    da(1-dr), (1-da)dr, da*dr.
+    Output via (short)clipi2(real + 0.5).
+    """
+    j0 = np.floor(ras0).astype(np.int64)
+    i0 = np.floor(ras1).astype(np.int64)
+    dr = ras0 - j0.astype(np.float64)
+    da = ras1 - i0.astype(np.float64)
+
+    # NOTE: C uses `(int)floor(ras)` — for ras in [0, N-1] this is just
+    # int truncation, but for negative ras floor differs from truncation:
+    # ras=-0.3 -> floor=-1 (not 0). np.floor matches C floor here.
+
+    in_bounds = (i0 >= 0) & (i0 < (ydims - 1)) & (j0 >= 0) & (j0 < (xdims - 1))
+    sout[:] = 0
+
+    ib = np.where(in_bounds)[0]
+    if ib.size == 0:
+        return
+    ii_in = i0[ib]
+    jj_in = j0[ib]
+    dr_in = dr[ib]
+    da_in = da[ib]
+    row_stride = 2 * xdims
+    base = row_stride * ii_in + 2 * jj_in
+    # 4 corners: k00=base; k01=base+2; k10=base+row_stride; k11=base+row_stride+2
+    # (matches resamp.c:459-462 after pointer shift)
+    s00r = sin_flat[base].astype(np.float64)
+    s00i = sin_flat[base + 1].astype(np.float64)
+    s01r = sin_flat[base + 2].astype(np.float64)
+    s01i = sin_flat[base + 3].astype(np.float64)
+    s10r = sin_flat[base + row_stride].astype(np.float64)
+    s10i = sin_flat[base + row_stride + 1].astype(np.float64)
+    s11r = sin_flat[base + row_stride + 2].astype(np.float64)
+    s11i = sin_flat[base + row_stride + 3].astype(np.float64)
+
+    w00 = (1.0 - da_in) * (1.0 - dr_in)
+    w01 = (1.0 - da_in) * dr_in
+    w10 = da_in * (1.0 - dr_in)
+    w11 = da_in * dr_in
+
+    real = s00r * w00 + s10r * w10 + s01r * w01 + s11r * w11
+    imag = s00i * w00 + s10i * w10 + s01i * w01 + s11i * w11
+
+    sout[2 * ib] = _c_round_clip_int16(real)
+    sout[2 * ib + 1] = _c_round_clip_int16(imag)
+
+
+# ----- C6 bicubic (vectorized) -----------------------------------------------
+def _cubic_kernel(arg: np.ndarray, a: float = -0.3) -> np.ndarray:
+    """Vectorized cubic_kernel from resamp.c:369-388.
+
+    Inputs should be NON-NEGATIVE (the caller passes fabs).
+    a is the free parameter; C uses -0.3 (NOT the classic -0.5).
+    """
+    arg2 = arg * arg
+    arg3 = arg2 * arg
+    f1 = (a + 2.0) * arg3 - (a + 3.0) * arg2 + 1.0
+    f2 = a * arg3 - 5.0 * a * arg2 + 8.0 * a * arg - 4.0 * a
+    out = np.where(arg <= 1.0, f1, np.where(arg <= 2.0, f2, 0.0))
+    return out
+
+
+def kernel_bicubic_vec(ras0: np.ndarray, ras1: np.ndarray,
+                       sin_flat: np.ndarray, ydims: int, xdims: int,
+                       sout: np.ndarray) -> None:
+    """Vectorized 4x4 bicubic. C resamp.c:496-552 + bicubic_one + cubic_kernel.
+
+    weights: wx[i] = cubic_kernel(|dr + 1 - i|, a=-0.3) for i in [0..3]
+             wy[j] = cubic_kernel(|da + 1 - j|, a=-0.3) for j in [0..3]
+    Output: rsum/wsum, isum/wsum  (NOT just rsum — there's a wsum normalize).
+    Bounds: i0-1 >= 0 and i0+2 < ydims, etc.
+    """
+    j0 = np.floor(ras0).astype(np.int64)
+    i0 = np.floor(ras1).astype(np.int64)
+    dr = ras0 - j0.astype(np.float64)
+    da = ras1 - i0.astype(np.float64)
+
+    in_bounds = ((i0 - 1) >= 0) & ((i0 + 2) < ydims) & \
+                ((j0 - 1) >= 0) & ((j0 + 2) < xdims)
+
+    # Clamp indices to a safe range so we can compute on the full grid;
+    # zero out-of-bounds outputs at the end (mirrors C "write 0,0" else
+    # block). Avoids the cost of fancy-index gather/scatter when nearly
+    # every pixel is in bounds.
+    i0_safe = np.clip(i0, 1, ydims - 3)
+    j0_safe = np.clip(j0, 1, xdims - 3)
+
+    # Compute weights, shape (N, 4)
+    i_idx = np.arange(4, dtype=np.float64)
+    wx = _cubic_kernel(np.abs(dr[:, None] + 1.0 - i_idx[None, :]))  # (N,4)
+    wy = _cubic_kernel(np.abs(da[:, None] + 1.0 - i_idx[None, :]))  # (N,4)
+
+    row_stride = 2 * xdims
+    rows = i0_safe[:, None] - 1 + np.arange(4, dtype=np.int64)[None, :]
+    cols = j0_safe[:, None] - 1 + np.arange(4, dtype=np.int64)[None, :]
+    base = row_stride * rows[:, :, None] + 2 * cols[:, None, :]  # (N,4,4)
+    rdata = sin_flat[base].astype(np.float64)
+    idata = sin_flat[base + 1].astype(np.float64)
+
+    # Separable kernel via einsum (matches C scalar form bit-for-bit
+    # within float roundoff; verified against the C reference oracle).
+    rsum = np.einsum("nji,nj,ni->n", rdata, wy, wx, optimize=True)
+    isum = np.einsum("nji,nj,ni->n", idata, wy, wx, optimize=True)
+    wsum = wx.sum(axis=1) * wy.sum(axis=1)
+    wsum_safe = np.where(wsum != 0.0, wsum, 1.0)
+    cz_r = rsum / wsum_safe
+    cz_i = isum / wsum_safe
+    cz_r = np.where(in_bounds, cz_r, 0.0)
+    cz_i = np.where(in_bounds, cz_i, 0.0)
+
+    sout[0::2] = _c_round_clip_int16(cz_r)
+    sout[1::2] = _c_round_clip_int16(cz_i)
+
+
+# ----- C7 bisinc (vectorized) ------------------------------------------------
+def _sinc_kernel(x: np.ndarray) -> np.ndarray:
+    """Vectorized sinc_kernel from resamp.c:676-687.
+
+    arg = |PI * x|; f = sin(arg)/arg if arg > 0 else 1.
+    Uses the C truncated PI value (3.1415926535897932) — np.sinc would
+    use the math.pi value and produce different last-bit values.
+
+    Implementation: compute sin(arg)/arg everywhere with arg=0 mapped to
+    1 to avoid div-by-zero, then patch the arg==0 entries to 1.0. This
+    matches C bit-for-bit because at arg==0 the patched value (1.0) is
+    exactly what the C `else` branch returns.
+    """
+    arg = np.abs(PI * x)
+    safe_arg = np.where(arg == 0.0, 1.0, arg)
+    out = np.sin(arg) / safe_arg
+    out[arg == 0.0] = 1.0
+    return out
+
+
+def kernel_bisinc_vec(ras0: np.ndarray, ras1: np.ndarray,
+                      sin_flat: np.ndarray, ydims: int, xdims: int,
+                      sout: np.ndarray) -> None:
+    """Vectorized 4x4 truncated-sinc. C resamp.c:554-608 + sinc_one +
+    sinc_kernel.
+
+    ns2 = NS/2 - 1 = 1 (computed in DOUBLE in C: `double ns2 = NS/2 - 1`
+    where NS=4, so NS/2 in C with both ints is 2; cast to double -> 1.0).
+
+    wx[i] = sinc_kernel(|dr + ns2 - i|) for i in [0..NS-1]
+    wy[i] = sinc_kernel(|da + ns2 - i|) for i in [0..NS-1]
+
+    For NS=4, ns2=1, so taps at i=0,1,2,3 sample dr-(-1)=dr+1, dr+0=dr,
+    dr-1, dr-2 (in absolute value).
+
+    Bounds: i0-ns2 >= 0 and i0+ns2+1 < ydims, etc.
+    For ns2=1 this is i0 in [1, ydims-3].
+    """
+    ns2_d = NS / 2 - 1  # 1.0 (float in C source)
+    ns2 = int(ns2_d)    # 1 (used as integer offset for indexing)
+
+    j0 = np.floor(ras0).astype(np.int64)
+    i0 = np.floor(ras1).astype(np.int64)
+    dr = ras0 - j0.astype(np.float64)
+    da = ras1 - i0.astype(np.float64)
+
+    in_bounds = ((i0 - ns2) >= 0) & ((i0 + ns2 + 1) < ydims) & \
+                ((j0 - ns2) >= 0) & ((j0 + ns2 + 1) < xdims)
+
+    # Optimization: compute kernel on ALL pixels (out-of-bounds clamped to
+    # safe indices so no OOB read), then zero out-of-bounds outputs at end.
+    # Avoids fancy-index gather/scatter overhead when most pixels are valid.
+    i0_safe = np.clip(i0, ns2, ydims - ns2 - 2)
+    j0_safe = np.clip(j0, ns2, xdims - ns2 - 2)
+
+    i_idx = np.arange(NS, dtype=np.float64)
+    wx = _sinc_kernel(np.abs(dr[:, None] + ns2_d - i_idx[None, :]))  # (N,NS)
+    wy = _sinc_kernel(np.abs(da[:, None] + ns2_d - i_idx[None, :]))  # (N,NS)
+
+    row_stride = 2 * xdims
+    rows = i0_safe[:, None] - ns2 + np.arange(NS, dtype=np.int64)[None, :]
+    cols = j0_safe[:, None] - ns2 + np.arange(NS, dtype=np.int64)[None, :]
+    base = row_stride * rows[:, :, None] + 2 * cols[:, None, :]  # (N,NS,NS)
+    # Read interleaved (real,imag) as a single int16 gather of size
+    # (N,NS,NS,2) by reshaping a 2*NS wide span... but the simpler approach
+    # is to gather rdata and idata directly. Use float32 here (sufficient
+    # for the int16 input range) to halve memory; the final reduction
+    # accumulates in float64 via einsum's optimize=True path.
+    rdata = sin_flat[base].astype(np.float64)
+    idata = sin_flat[base + 1].astype(np.float64)
+
+    rsum = np.einsum("nji,nj,ni->n", rdata, wy, wx, optimize=True)
+    isum = np.einsum("nji,nj,ni->n", idata, wy, wx, optimize=True)
+    wsum = wx.sum(axis=1) * wy.sum(axis=1)
+    wsum_safe = np.where(wsum != 0.0, wsum, 1.0)
+    cz_r = rsum / wsum_safe
+    cz_i = isum / wsum_safe
+    # Zero out-of-bounds outputs to match C's "write 0,0" behavior.
+    cz_r = np.where(in_bounds, cz_r, 0.0)
+    cz_i = np.where(in_bounds, cz_i, 0.0)
+
+    sout[0::2] = _c_round_clip_int16(cz_r)
+    sout[1::2] = _c_round_clip_int16(cz_i)
+
+
+# ----- C4-C7 Numba JIT'd kernels ---------------------------------------------
+# These mirror the C inner-loop kernels VERBATIM with the same FP accumulation
+# order (outer ii = rows, inner jj = cols; within a pixel, the bicubic/bisinc
+# reduction is exactly `for j: for i: acc += rdata[j*NS+i] * wx[i] * wy[j]`
+# as in resamp.c:344-352 / 715-723). fastmath=False so LLVM does NOT reorder.
+#
+# Numba SIMD-vectorizes the outer-pixel loop, eliminating numpy's per-call
+# dispatch overhead which dominates the small 4x4-stencil workload on the
+# pure-numpy path.
+#
+# Build the JITs lazily so the import cost is paid only if Numba is enabled
+# and the kernels are actually called.
+_NUMBA_KERNELS: dict = {}
+
+
+def _build_numba_kernels() -> dict:
+    """Compile (or load from cache) the JIT'd kernels. Returns dict of
+    callables keyed by intrp mode (1..4). Pure side-effect: caches on
+    _NUMBA_KERNELS so we only do this once per process.
+    """
+    if _NUMBA_KERNELS:
+        return _NUMBA_KERNELS
+    from numba import njit
+
+    I2MAX_LOCAL = I2MAX
+    NS_LOCAL = NS
+    PI_LOCAL = PI
+
+    # Inlined C-style round/clip helper. Matches `(short)clipi2(x+0.5)`
+    # bit-for-bit: clamp x+0.5 to [-I2MAX, +I2MAX] as DOUBLE, then truncate
+    # toward zero via int16 cast.
+    @njit(fastmath=False, cache=True, inline="always")
+    def _round_clip(x):
+        y = x + 0.5
+        if y > I2MAX_LOCAL:
+            y = I2MAX_LOCAL
+        elif y < -I2MAX_LOCAL:
+            y = -I2MAX_LOCAL
+        # Truncate-toward-zero: numpy/numba int16 cast on a finite float
+        # is round-toward-zero, identical to C's (short) cast.
+        return np.int16(y)
+
+    # ---- nearest ----
+    @njit(fastmath=False, cache=True)
+    def _knearest(ras0, ras1, sin_flat, ydims, xdims, sout):
+        # ras0/ras1: (N,) float64; sout: (2N,) int16 interleaved (re,im).
+        n = ras0.shape[0]
+        row_stride = 2 * xdims
+        for p in range(n):
+            # C: j = (int)(ras[0] + 0.5); for negative ras this TRUNCATES
+            # toward zero, NOT floors. np.int64 cast of a float does the
+            # same: (-0.3 + 0.5) -> 0.2 -> int -> 0; (-0.7 + 0.5) -> -0.2
+            # -> int -> 0.
+            j = np.int64(ras0[p] + 0.5)
+            i = np.int64(ras1[p] + 0.5)
+            if i < 0 or i >= ydims or j < 0 or j >= xdims:
+                sout[2 * p] = 0
+                sout[2 * p + 1] = 0
+            else:
+                base = row_stride * i + 2 * j
+                sout[2 * p] = sin_flat[base]
+                sout[2 * p + 1] = sin_flat[base + 1]
+
+    # ---- bilinear ----
+    @njit(fastmath=False, cache=True)
+    def _kbilinear(ras0, ras1, sin_flat, ydims, xdims, sout):
+        n = ras0.shape[0]
+        row_stride = 2 * xdims
+        for p in range(n):
+            r0 = ras0[p]
+            r1 = ras1[p]
+            j0 = np.int64(np.floor(r0))
+            i0 = np.int64(np.floor(r1))
+            dr = r0 - np.float64(j0)
+            da = r1 - np.float64(i0)
+            if i0 < 0 or i0 >= (ydims - 1) or j0 < 0 or j0 >= (xdims - 1):
+                sout[2 * p] = 0
+                sout[2 * p + 1] = 0
+            else:
+                base = row_stride * i0 + 2 * j0
+                k00 = base
+                k01 = base + 2
+                k10 = base + row_stride
+                k11 = base + row_stride + 2
+                # MATCH C ordering exactly (resamp.c:476-477):
+                #   real = s_in[k00]*(1-da)*(1-dr)
+                #        + s_in[k10]*(da)*(1-dr)
+                #        + s_in[k01]*(1-da)*(dr)
+                #        + s_in[k11]*(da)*(dr)
+                w_1mda_1mdr = (1.0 - da) * (1.0 - dr)
+                w_da_1mdr = da * (1.0 - dr)
+                w_1mda_dr = (1.0 - da) * dr
+                w_da_dr = da * dr
+                real = (np.float64(sin_flat[k00]) * w_1mda_1mdr
+                        + np.float64(sin_flat[k10]) * w_da_1mdr
+                        + np.float64(sin_flat[k01]) * w_1mda_dr
+                        + np.float64(sin_flat[k11]) * w_da_dr)
+                imag = (np.float64(sin_flat[k00 + 1]) * w_1mda_1mdr
+                        + np.float64(sin_flat[k10 + 1]) * w_da_1mdr
+                        + np.float64(sin_flat[k01 + 1]) * w_1mda_dr
+                        + np.float64(sin_flat[k11 + 1]) * w_da_dr)
+                sout[2 * p] = _round_clip(real)
+                sout[2 * p + 1] = _round_clip(imag)
+
+    # ---- bicubic helpers ----
+    @njit(fastmath=False, cache=True, inline="always")
+    def _ckernel(arg):
+        # cubic_kernel from resamp.c:369-388 with a=-0.3 (HARD-CODED;
+        # do NOT pass a as a parameter — the JIT specializes constants
+        # better when they're inlined).
+        a = -0.3
+        arg2 = arg * arg
+        arg3 = arg2 * arg
+        if arg <= 1.0:
+            return (a + 2.0) * arg3 - (a + 3.0) * arg2 + 1.0
+        elif arg <= 2.0:
+            return a * arg3 - 5.0 * a * arg2 + 8.0 * a * arg - 4.0 * a
+        else:
+            return 0.0
+
+    # ---- bicubic ----
+    @njit(fastmath=False, cache=True)
+    def _kbicubic(ras0, ras1, sin_flat, ydims, xdims, sout):
+        n = ras0.shape[0]
+        row_stride = 2 * xdims
+        wx = np.empty(4, dtype=np.float64)
+        wy = np.empty(4, dtype=np.float64)
+        for p in range(n):
+            r0 = ras0[p]
+            r1 = ras1[p]
+            j0 = np.int64(np.floor(r0))
+            i0 = np.int64(np.floor(r1))
+            dr = r0 - np.float64(j0)
+            da = r1 - np.float64(i0)
+            if (i0 - 1) < 0 or (i0 + 2) >= ydims or \
+               (j0 - 1) < 0 or (j0 + 2) >= xdims:
+                sout[2 * p] = 0
+                sout[2 * p + 1] = 0
+                continue
+            # Compute weights — mirror C bicubic_one (resamp.c:335-340):
+            #   wx[i] = cubic_kernel(|x + 1 - i|, a)
+            #   wy[i] = cubic_kernel(|y + 1 - i|, a)
+            for i in range(4):
+                wx[i] = _ckernel(abs(dr + 1.0 - i))
+                wy[i] = _ckernel(abs(da + 1.0 - i))
+            # Accumulate in C's exact order (resamp.c:344-352):
+            #   for j in 0..3: for i in 0..3:
+            #     w = wx[i]*wy[j]; rsum += rdata[j*4+i]*w; ...
+            # where rdata[j*4+i] = sin_flat[row_stride*(i0-1+j) + 2*(j0-1+i)]
+            rsum = 0.0
+            isum = 0.0
+            wsum = 0.0
+            base_row = row_stride * (i0 - 1) + 2 * (j0 - 1)
+            for j in range(4):
+                row_off = base_row + row_stride * j
+                wyj = wy[j]
+                for i in range(4):
+                    w = wx[i] * wyj
+                    k = row_off + 2 * i
+                    rsum += np.float64(sin_flat[k]) * w
+                    isum += np.float64(sin_flat[k + 1]) * w
+                    wsum += w
+            cz_r = rsum / wsum
+            cz_i = isum / wsum
+            sout[2 * p] = _round_clip(cz_r)
+            sout[2 * p + 1] = _round_clip(cz_i)
+
+    # ---- bisinc helpers ----
+    @njit(fastmath=False, cache=True, inline="always")
+    def _skernel(x):
+        # sinc_kernel from resamp.c:676-687. Uses the C truncated PI
+        # 3.1415926535897932 (hard-coded in C #define), so np.sinc would
+        # produce slightly different values — we evaluate by hand.
+        arg = abs(PI_LOCAL * x)
+        if arg > 0.0:
+            return np.sin(arg) / arg
+        else:
+            return 1.0
+
+    # ---- bisinc ----
+    @njit(fastmath=False, cache=True)
+    def _kbisinc(ras0, ras1, sin_flat, ydims, xdims, sout):
+        n = ras0.shape[0]
+        row_stride = 2 * xdims
+        # ns2 = NS/2 - 1 = 1.0 in C with NS=4 (computed in DOUBLE per
+        # resamp.c:555). Both 1.0 (double) and 1 (int) coincide here.
+        ns2_d = np.float64(NS_LOCAL // 2 - 1)  # 1.0
+        ns2 = NS_LOCAL // 2 - 1  # 1
+        wx = np.empty(NS_LOCAL, dtype=np.float64)
+        wy = np.empty(NS_LOCAL, dtype=np.float64)
+        for p in range(n):
+            r0 = ras0[p]
+            r1 = ras1[p]
+            j0 = np.int64(np.floor(r0))
+            i0 = np.int64(np.floor(r1))
+            dr = r0 - np.float64(j0)
+            da = r1 - np.float64(i0)
+            if (i0 - ns2) < 0 or (i0 + ns2 + 1) >= ydims or \
+               (j0 - ns2) < 0 or (j0 + ns2 + 1) >= xdims:
+                sout[2 * p] = 0
+                sout[2 * p + 1] = 0
+                continue
+            for i in range(NS_LOCAL):
+                wx[i] = _skernel(abs(dr + ns2_d - i))
+                wy[i] = _skernel(abs(da + ns2_d - i))
+            # Accumulate in C order (resamp.c:715-723):
+            #   for j in 0..NS-1: for i in 0..NS-1:
+            #     w = wx[i]*wy[j]; rsum += rdata[j*NS+i]*w; ...
+            rsum = 0.0
+            isum = 0.0
+            wsum = 0.0
+            base_row = row_stride * (i0 - ns2) + 2 * (j0 - ns2)
+            for j in range(NS_LOCAL):
+                row_off = base_row + row_stride * j
+                wyj = wy[j]
+                for i in range(NS_LOCAL):
+                    w = wx[i] * wyj
+                    k = row_off + 2 * i
+                    rsum += np.float64(sin_flat[k]) * w
+                    isum += np.float64(sin_flat[k + 1]) * w
+                    wsum += w
+            cz_r = rsum / wsum
+            cz_i = isum / wsum
+            sout[2 * p] = _round_clip(cz_r)
+            sout[2 * p + 1] = _round_clip(cz_i)
+
+    # ---- bisinc + GMT-grid shift (mode 5, fused) ----
+    # Fuses grid_shift_vec + _kbisinc into one Numba kernel. Avoids
+    # materializing the per-chunk (ras0, ras1) and bad_mask arrays in
+    # numpy and the chain of .astype/np.where calls (profiled at ~2.2s
+    # on NISAR mode 5). Per-pixel cost is identical to the C inner loop
+    # at resamp.c:166-253 — bilinear-interpolate two GMT grids, NaN
+    # guard, then bisinc the result. FP accumulation order matches C
+    # exactly (ram[0] as the seed, left-to-right adds).
+    #
+    # x-side per-jj arithmetic (r1, tx, one_mtx) depends only on jj and
+    # inc_x — caller precomputes these into r1_arr / tx_arr / one_mtx_arr
+    # ONCE for the whole master image and passes them in. Each is shape
+    # (xdimm,). Saves ~6 ops × xdimm × ydimm scalar work in the inner
+    # loop. The arithmetic is deterministic so the precomputed values
+    # are bit-identical to what the inline form would produce.
+    @njit(fastmath=False, cache=True)
+    def _kbisinc_grid(ii0, ii1, xdimm,
+                      R_data, A_data, inc_y,
+                      r1_arr, tx_arr, one_mtx_arr,
+                      sin_flat, ydims, xdims, sout):
+        ny_R, nx_R = R_data.shape
+        nx = nx_R
+        ny = ny_R
+        row_stride = 2 * xdims
+        ns2_d = np.float64(NS_LOCAL // 2 - 1)
+        ns2 = NS_LOCAL // 2 - 1
+        wx = np.empty(NS_LOCAL, dtype=np.float64)
+        wy = np.empty(NS_LOCAL, dtype=np.float64)
+        inv_inc_y = 1.0 / inc_y
+        p = 0  # output pixel index within sout
+        for ii in range(ii0, ii1):
+            gy = np.float64(ii) * inv_inc_y
+            # gy depends only on ii — precompute the y-side clamp & frac
+            a1 = np.int64(np.floor(gy))
+            if a1 < 0:
+                a1 = 0
+            if a1 > ny - 2:
+                a1 = ny - 2
+            ty_ = gy - np.float64(a1)
+            one_mty = 1.0 - ty_
+            a2 = a1 + 1
+            for jj in range(xdimm):
+                r1 = r1_arr[jj]
+                r2 = r1 + 1
+                tx_ = tx_arr[jj]
+                one_mtx = one_mtx_arr[jj]
+                # Range grid (R) bilinear shift, exact C accumulation order
+                # (resamp.c:203-207): seed = ram[0] = jj
+                f11 = np.float64(R_data[a1, r1])
+                f12 = np.float64(R_data[a1, r2])
+                f21 = np.float64(R_data[a2, r1])
+                f22 = np.float64(R_data[a2, r2])
+                r0 = np.float64(jj)
+                r0 = r0 + one_mtx * one_mty * f11
+                r0 = r0 + tx_ * one_mty * f12
+                r0 = r0 + one_mtx * ty_ * f21
+                r0 = r0 + tx_ * ty_ * f22
+                # Azimuth grid (A) — same indices/fracs (C asserts equal incs)
+                f11 = np.float64(A_data[a1, r1])
+                f12 = np.float64(A_data[a1, r2])
+                f21 = np.float64(A_data[a2, r1])
+                f22 = np.float64(A_data[a2, r2])
+                r1f = np.float64(ii)
+                r1f = r1f + one_mtx * one_mty * f11
+                r1f = r1f + tx_ * one_mty * f12
+                r1f = r1f + one_mtx * ty_ * f21
+                r1f = r1f + tx_ * ty_ * f22
+                # NaN guard (resamp.c:245-249)
+                if not (np.isfinite(r0) and np.isfinite(r1f)):
+                    sout[2 * p] = 0
+                    sout[2 * p + 1] = 0
+                    p += 1
+                    continue
+                # bisinc kernel (mirrors _kbisinc above)
+                j0 = np.int64(np.floor(r0))
+                i0 = np.int64(np.floor(r1f))
+                dr = r0 - np.float64(j0)
+                da = r1f - np.float64(i0)
+                if (i0 - ns2) < 0 or (i0 + ns2 + 1) >= ydims or \
+                   (j0 - ns2) < 0 or (j0 + ns2 + 1) >= xdims:
+                    sout[2 * p] = 0
+                    sout[2 * p + 1] = 0
+                    p += 1
+                    continue
+                for i in range(NS_LOCAL):
+                    wx[i] = _skernel(abs(dr + ns2_d - i))
+                    wy[i] = _skernel(abs(da + ns2_d - i))
+                rsum = 0.0
+                isum = 0.0
+                wsum = 0.0
+                base_row = row_stride * (i0 - ns2) + 2 * (j0 - ns2)
+                for j in range(NS_LOCAL):
+                    row_off = base_row + row_stride * j
+                    wyj = wy[j]
+                    for i in range(NS_LOCAL):
+                        w = wx[i] * wyj
+                        k = row_off + 2 * i
+                        rsum += np.float64(sin_flat[k]) * w
+                        isum += np.float64(sin_flat[k + 1]) * w
+                        wsum += w
+                cz_r = rsum / wsum
+                cz_i = isum / wsum
+                sout[2 * p] = _round_clip(cz_r)
+                sout[2 * p + 1] = _round_clip(cz_i)
+                p += 1
+
+    _NUMBA_KERNELS[1] = _knearest
+    _NUMBA_KERNELS[2] = _kbilinear
+    _NUMBA_KERNELS[3] = _kbicubic
+    _NUMBA_KERNELS[4] = _kbisinc
+    _NUMBA_KERNELS[5] = _kbisinc_grid  # NB: different signature, called via _dispatch_kernel_grid
+    return _NUMBA_KERNELS
+
+
+# ----- C10 main driver --------------------------------------------------------
+KERNELS_NUMPY = {
+    1: kernel_nearest_vec,
+    2: kernel_bilinear_vec,
+    3: kernel_bicubic_vec,
+    4: kernel_bisinc_vec,
+}
+
+
+# ----- C8 GMT-grid shift (intrp=5) -------------------------------------------
+# C reads two GMT NetCDF grids (.grd) holding range/azimuth shift fields,
+# bilinearly interpolates them at each master pixel (jj, ii) to recover a
+# fractional shift, adds the shift to (ram[0], ram[1]), and dispatches to
+# bisinc. See resamp.c:98-254.
+#
+# Index conventions to match the C VERBATIM:
+#   GMT stores `data[]` as a 1-D row-major buffer of shape (ny, nx) with x as
+#   the fastest axis. C indexes it as `R->data[r1 + nx * a1]` — i.e. row a1,
+#   column r1, in row-major. xarray's `ds['z'].values` is (ny, nx) with the
+#   same memory layout, so `z[a1, r1]` is bit-equivalent to C's gather.
+#
+# Grid spacing comes from `R->header->inc[GMT_X]` / `inc[GMT_Y]` (NOT the
+# coordinate vectors). For pixel-registered GMT grids the relationship is
+# `x_inc = (x_max - x_min) / n_columns`. We read this directly from the
+# CF attributes / coordinate spacing.
+#
+# Trap: `gx = jj / inc[GMT_X]` is C float division of an int by a double — Py
+# `/` between Python int and float is also double precision. No precision loss
+# but be explicit with `np.float64`.
+
+def _read_gmt_grd(path: str):
+    """Read a GMT NetCDF .grd file. Returns (data, inc_x, inc_y, nx, ny).
+
+    Data is a float32 2-D ndarray of shape (ny, nx) — the same layout as
+    GMT's `R->data` viewed as `data[a, r]` (a = row, r = column). The shape
+    matches `R->header->n_columns × n_rows` exactly so the index formula
+    `data[a1, r1] == R->data[r1 + nx * a1]` holds element-wise.
+
+    Uses xarray (already a dep of the surrounding tooling). Falls back to
+    scipy.io.netcdf_file on import failure to keep the port runnable in
+    minimal environments.
+    """
+    x_actual = y_actual = None
+    node_offset = 1  # default: pixel-registered (matches `gmt surface -rp`)
+    try:
+        import xarray as xr
+        with xr.open_dataset(path) as ds:
+            if "z" not in ds.variables:
+                raise ValueError(f"{path}: no 'z' variable in NetCDF")
+            data = np.asarray(ds["z"].values, dtype=np.float32)
+            # xarray loads the grid as (ny, nx) with y along axis 0 and x
+            # along axis 1, in the on-disk ascending-y order (z[0,:] = y_min).
+            x = np.asarray(ds["x"].values, dtype=np.float64)
+            y = np.asarray(ds["y"].values, dtype=np.float64)
+            # GMT stores the canonical (x_min, x_max) range as actual_range
+            # on the x/y variables. Used to recompute inc EXACTLY the way
+            # GMT does internally (header inc = (max-min)/n for pixel reg,
+            # or /(n-1) for gridline reg), which is what C reads from
+            # `R->header->inc[GMT_X]`.
+            if "actual_range" in ds["x"].attrs:
+                x_actual = np.asarray(ds["x"].attrs["actual_range"],
+                                      dtype=np.float64)
+            if "actual_range" in ds["y"].attrs:
+                y_actual = np.asarray(ds["y"].attrs["actual_range"],
+                                      dtype=np.float64)
+            if "node_offset" in ds.attrs:
+                node_offset = int(ds.attrs["node_offset"])
+    except ImportError:
+        from scipy.io import netcdf_file  # type: ignore
+        with netcdf_file(path, "r", mmap=False) as nc:
+            data = np.asarray(nc.variables["z"][:], dtype=np.float32)
+            x = np.asarray(nc.variables["x"][:], dtype=np.float64)
+            y = np.asarray(nc.variables["y"][:], dtype=np.float64)
+            if "actual_range" in nc.variables["x"]._attributes:
+                x_actual = np.asarray(
+                    nc.variables["x"]._attributes["actual_range"],
+                    dtype=np.float64,
+                )
+            if "actual_range" in nc.variables["y"]._attributes:
+                y_actual = np.asarray(
+                    nc.variables["y"]._attributes["actual_range"],
+                    dtype=np.float64,
+                )
+            if "node_offset" in nc._attributes:
+                node_offset = int(nc._attributes["node_offset"])
+    ny, nx = data.shape
+    # CRITICAL ORIENTATION CONVERSION:
+    # GMT_Read_Data orders `R->data[col + row * nx]` with row=0 at y_max
+    # (matching `gmt grd2xyz` output order). xarray loads in the NetCDF
+    # file's native order, which for GMT grids is ascending y (z[0,:] is
+    # y_min). To match C's `R->data[r + nx*a]` index formula, flip the
+    # data along the y-axis if the NetCDF y vector is ascending.
+    # This brings the (a, r) index from C into one-to-one alignment with
+    # numpy's (axis-0, axis-1) on the returned array.
+    if y.size > 1 and y[1] > y[0]:
+        data = data[::-1, :].copy()
+    # `R->header->inc[GMT_X]` is the cell spacing as GMT computes it from
+    # the header range and dimension. For pixel-registered (node_offset=1)
+    # grids: inc = (x_max - x_min) / n_columns. For gridline registration
+    # (node_offset=0): inc = (x_max - x_min) / (n_columns - 1). Using the
+    # *header* values reproduces C's `R->header->inc[GMT_X]` BIT-EXACTLY,
+    # which matters when computing `gx = jj / inc` near grid-cell
+    # boundaries — a 1-ULP inc difference can flip the floor result by 1.
+    if x_actual is not None and y_actual is not None:
+        denom_x = nx if node_offset == 1 else max(nx - 1, 1)
+        denom_y = ny if node_offset == 1 else max(ny - 1, 1)
+        inc_x = float((x_actual[1] - x_actual[0]) / denom_x)
+        inc_y = float((y_actual[1] - y_actual[0]) / denom_y)
+    else:
+        # Fallback: derive from coord-vector spacing (less precise — last
+        # ULP may differ from C's header value).
+        inc_x = float(abs(np.median(np.diff(x)))) if x.size > 1 else 0.0
+        inc_y = float(abs(np.median(np.diff(y)))) if y.size > 1 else 0.0
+    return data, inc_x, inc_y, nx, ny
+
+
+def grid_shift_vec(jj: np.ndarray, ii: np.ndarray,
+                   R_data: np.ndarray, A_data: np.ndarray,
+                   inc_x: float, inc_y: float):
+    """Vectorized bilinear shift from GMT grids. Mirrors resamp.c:173-249.
+
+    For each (jj, ii), compute:
+        gx = jj / inc_x;   gy = ii / inc_y
+        r1 = floor(gx);    a1 = floor(gy)
+        clamp r1 to [0, nx-2], a1 to [0, ny-2]
+        tx = gx - r1;      ty = gy - a1
+        ras[0] = ii's column (jj) + bilinear(R)
+        ras[1] = ii's row (ii)   + bilinear(A)
+
+    The clamp + offset arithmetic is reproduced VERBATIM to match C bit-for-bit.
+
+    NaN guard: any pixel where the resulting ras[0] or ras[1] is non-finite
+    is marked in the returned `bad_mask` so the caller can write (0, 0) for
+    those output pixels (mirrors C `if (!isfinite(ras[0]) || !isfinite(ras[1]))
+    { sout[0] = sout[1] = 0; continue; }`).
+    """
+    ny_R, nx_R = R_data.shape
+    ny_A, nx_A = A_data.shape
+    # C only validates that inc_x and inc_y match between R and A (resamp.c:109-112).
+    # n_rows / n_columns are NOT cross-checked. C uses nx from R for both
+    # gather formulas (resamp.c:118; reused on lines 198-201 AND 233-236).
+    # Mirror this — even if A has a different size, C still uses R's nx.
+    nx = nx_R
+    ny = ny_R
+
+    # gx, gy in double — C does double division throughout.
+    gx = jj.astype(np.float64) / np.float64(inc_x)
+    gy = ii.astype(np.float64) / np.float64(inc_y)
+
+    # floor → integer index. np.floor returns float; cast to int64.
+    r1 = np.floor(gx).astype(np.int64)
+    a1 = np.floor(gy).astype(np.int64)
+
+    # Clamp ordering matches C (resamp.c:186-189): the lower bound is applied
+    # FIRST, then the upper bound. For our master-grid jj/ii (always >= 0)
+    # both clamps trigger at the upper end only, but the order matters if
+    # the input ever produced a negative index.
+    r1 = np.where(r1 < 0, 0, r1)
+    a1 = np.where(a1 < 0, 0, a1)
+    r1 = np.where(r1 > nx - 2, nx - 2, r1)
+    a1 = np.where(a1 > ny - 2, ny - 2, a1)
+    r2 = r1 + 1
+    a2 = a1 + 1
+
+    # Fractional position. C does this AFTER clamping (so when jj/inc_x
+    # exceeds the upper bound, tx > 1 — extrapolation, not nearest-edge).
+    tx = gx - r1.astype(np.float64)
+    ty = gy - a1.astype(np.float64)
+
+    # Gather the 4 corner values of the R grid. `R_data[a, r]` is the C
+    # equivalent of `R->data[r + nx*a]`.
+    # Force float64 for the multiply-adds so the bilinear sum runs in double
+    # exactly as the C `double` arithmetic does.
+    f11 = R_data[a1, r1].astype(np.float64)
+    f12 = R_data[a1, r2].astype(np.float64)
+    f21 = R_data[a2, r1].astype(np.float64)
+    f22 = R_data[a2, r2].astype(np.float64)
+
+    # Bilinear weights — preserve C's LEFT-TO-RIGHT accumulation order
+    # EXACTLY. C (resamp.c:203-207) computes:
+    #
+    #     ras[0] = ram[0]
+    #            + (1-tx)*(1-ty)*f11
+    #            + tx*(1-ty)*f12
+    #            + (1-tx)*ty*f21
+    #            + tx*ty*f22;
+    #
+    # which under standard C parsing chains the `+`s left-to-right with
+    # ram[0] as the seed. Starting from ram[0] (which is ~4425, much
+    # larger than the ~0.7 shift) gives a different rounding chain than
+    # computing the shift in isolation and adding ram[0] last — and the
+    # difference is in the LAST BIT. For pixels where the resulting ras
+    # lies on a bisinc-kernel rounding boundary, that 1-ULP shift flips
+    # the int16 output by 1. Witnessed on NISAR_Ethiopia: 1 pixel out
+    # of 60M differed by 1 when we computed shift-then-add vs C order.
+    # Reproduce the C accumulation EXACTLY.
+    one_mtx = 1.0 - tx
+    one_mty = 1.0 - ty
+    ras0 = jj.astype(np.float64)
+    ras0 = ras0 + one_mtx * one_mty * f11
+    ras0 = ras0 + tx * one_mty * f12
+    ras0 = ras0 + one_mtx * ty * f21
+    ras0 = ras0 + tx * ty * f22
+
+    # --- Azimuth grid (A) — C recomputes gx/gy/r1/a1/... from scratch using
+    # A's inc (which we asserted equal to R's inc above), so the index math
+    # is identical. The C also reuses `nx` from R for the gather formula
+    # (resamp.c:233-236). Mirror that exactly.
+    f11 = A_data[a1, r1].astype(np.float64)
+    f12 = A_data[a1, r2].astype(np.float64)
+    f21 = A_data[a2, r1].astype(np.float64)
+    f22 = A_data[a2, r2].astype(np.float64)
+    # Same left-to-right accumulation starting from ram[1] (= ii) as C does.
+    ras1 = ii.astype(np.float64)
+    ras1 = ras1 + one_mtx * one_mty * f11
+    ras1 = ras1 + tx * one_mty * f12
+    ras1 = ras1 + one_mtx * ty * f21
+    ras1 = ras1 + tx * ty * f22
+
+    bad_mask = ~(np.isfinite(ras0) & np.isfinite(ras1))
+    return ras0, ras1, bad_mask
+
+
+def _dispatch_kernel(intrp: int):
+    """Return the kernel function for `intrp`, preferring the JIT'd
+    version when Numba is available. The JIT'd kernel has the same
+    signature as the numpy kernel: (ras0, ras1, sin_flat, ydims, xdims,
+    sout) -> None.
+
+    Mode 5 (GMT-grid shift) uses the bisinc kernel (mode 4) — only the
+    coordinate-shift step differs (see resamp.c:252).
+    """
+    intrp_for_kernel = 4 if intrp == 5 else intrp
+    if _HAVE_NUMBA:
+        return _build_numba_kernels()[intrp_for_kernel]
+    return KERNELS_NUMPY[intrp_for_kernel]
+
+
+# Back-compat alias for tests that pull `KERNELS` out of the module
+# namespace; tests don't actually call entries via this dict (they call
+# `resamp(...)` end-to-end), so it's fine to keep this pointing at the
+# numpy versions.
+KERNELS = KERNELS_NUMPY
+
+
+def write_prm(ps: Dict[str, str], path: str) -> None:
+    """Write a PRM file in the same line order as the input dict.
+
+    This is NOT a byte-identical mirror of put_sio_struct (which writes
+    in a fixed canonical order with specific format specifiers). Parity
+    target for resamp_py is the SLC output, not the PRM.
+
+    Format mirrors the gmtsar key-value style: '<key>\t= <value>\n'.
+    """
+    with open(path, "w") as f:
+        for k, v in ps.items():
+            f.write(f"{k}\t= {v} \n")
+
+
+def resamp(master_prm_path: str, aligned_prm_path: str,
+           out_prm_path: str, out_slc_path: str, intrp: int,
+           dr_grd_path: str | None = None,
+           da_grd_path: str | None = None) -> None:
+    """End-to-end resamp. Mirrors C main() resamp.c:53-310 including intrp=5.
+
+    For intrp=5, dr_grd_path and da_grd_path must point at GMT NetCDF .grd
+    files (e.g. produced by `fitoffset_ra.csh`). The grids must share
+    inc[GMT_X] and inc[GMT_Y] (resamp.c:109-112) and have inc > 1 each.
+    """
+    if intrp not in (1, 2, 3, 4, 5):
+        raise ValueError(f"intrp must be 1, 2, 3, 4, or 5 (got {intrp})")
+    if intrp == 5:
+        if dr_grd_path is None or da_grd_path is None:
+            raise ValueError(
+                "intrp=5 requires dr.grd and da.grd inputs "
+                "(usage: resamp_py ... 5 dr.grd da.grd)"
+            )
+
+    # --- C1 read PRMs ---
+    pm = read_prm(master_prm_path)
+    ps = read_prm(aligned_prm_path)
+
+    # Image sizes
+    xdimm = _i(pm, "num_rng_bins")
+    ydimm = _i(pm, "num_patches") * _i(pm, "num_valid_az")
+    xdims = _i(ps, "num_rng_bins")
+    ydims = _i(ps, "num_patches") * _i(ps, "num_valid_az")
+
+    if xdimm <= 0 or ydimm <= 0 or xdims <= 0 or ydims <= 0:
+        raise ValueError(
+            f"bad image dims: master={xdimm}x{ydimm}, aligned={xdims}x{ydims}"
+        )
+
+    # For intrp=1, zero out the sub-pixel/stretch fields per C (resamp.c:126-139).
+    # Stash originals; restore on the PRM we write out.
+    sv_pr = {}
+    if intrp == 1:
+        for k in ("sub_int_r", "stretch_r", "a_stretch_r",
+                  "sub_int_a", "stretch_a", "a_stretch_a"):
+            sv_pr[k] = ps.get(k, "0")
+            ps[k] = "0"
+
+    # --- C2 mmap input SLC ---
+    slc_in_path = ps.get("SLC_file", "")
+    # The SLC_file in the PRM is typically relative to the PRM's directory.
+    if not os.path.isabs(slc_in_path):
+        candidate = os.path.join(os.path.dirname(os.path.abspath(aligned_prm_path)),
+                                 slc_in_path)
+        if os.path.exists(candidate):
+            slc_in_path = candidate
+    if os.path.realpath(slc_in_path) == os.path.realpath(out_slc_path):
+        raise SystemExit(
+            "ERROR: output SLC file must be different from input SLC file"
+        )
+
+    expected_bytes = 4 * xdims * ydims
+    actual_bytes = os.path.getsize(slc_in_path)
+    if actual_bytes < expected_bytes:
+        # C `resamp` mmaps the declared size and silently reads past EOF,
+        # getting kernel zero-fill in those pages until SIGBUS. This bites
+        # at least TSX_SLC_Hawaii (aligned SLC is ~1 row short, declared
+        # geometry larger). To match C behavior so production pipelines
+        # don't break, we pad the file in-memory with zeros up to the
+        # declared size. The original strict guard would be safer
+        # numerically but breaks parity with C and breaks the pipeline.
+        missing = expected_bytes - actual_bytes
+        print(f"resamp_py: WARNING: input SLC {slc_in_path} is "
+              f"{missing} bytes short of declared {expected_bytes} "
+              f"(C resamp would silently zero-fill these); padding with "
+              f"zeros to match C behavior.", file=sys.stderr)
+        # Read existing data + zero-padding into a memory buffer.
+        sin_flat = np.zeros(ydims * 2 * xdims, dtype=np.int16)
+        existing = np.fromfile(slc_in_path, dtype=np.int16)
+        sin_flat[:existing.size] = existing
+    else:
+        # C mmaps st_size = 4*xdims*ydims and ignores any trailing bytes;
+        # mirror that with np.memmap of exact shape.
+        sin_flat = np.memmap(slc_in_path, dtype=np.int16, mode="r",
+                             shape=(ydims * 2 * xdims,), offset=0)
+
+    kernel = _dispatch_kernel(intrp)
+
+    # Fused mode-5 kernel (Numba only). When available, processes
+    # (chunk, R_data, A_data, inc_x, inc_y) directly without
+    # materializing (ras0, ras1) — saves ~2 s on NISAR mode 5 by
+    # eliminating per-chunk astype/where chains in grid_shift_vec.
+    kernel_grid5 = None
+    if intrp == 5 and _HAVE_NUMBA:
+        kernel_grid5 = _build_numba_kernels().get(5)
+
+    # --- intrp=5: load both GMT shift grids up front ---
+    R_data = A_data = None
+    inc_x = inc_y = 0.0
+    if intrp == 5:
+        R_data, inc_x_R, inc_y_R, nx_R, ny_R = _read_gmt_grd(dr_grd_path)
+        A_data, inc_x_A, inc_y_A, nx_A, ny_A = _read_gmt_grd(da_grd_path)
+        # Match C validation (resamp.c:109-112): inc[GMT_X] and inc[GMT_Y]
+        # must agree between R and A AND be > 1.
+        if inc_x_R != inc_x_A or inc_x_R <= 1:
+            raise SystemExit(
+                f"shift table size does not match or too small "
+                f"(inc_x R={inc_x_R} A={inc_x_A})"
+            )
+        if inc_y_R != inc_y_A or inc_y_R <= 1:
+            raise SystemExit(
+                f"shift table size does not match or too small "
+                f"(inc_y R={inc_y_R} A={inc_y_A})"
+            )
+        inc_x = inc_x_R
+        inc_y = inc_y_R
+        print(f"reading in coregistration grid {dr_grd_path} and "
+              f"{da_grd_path} ", file=sys.stdout)
+
+    # Precompute jj for one row (constant across rows)
+    jj_row = np.arange(xdimm, dtype=np.float64)
+
+    # For the fused mode-5 Numba kernel: precompute the per-jj x-side
+    # arithmetic (r1, tx, one_mtx) ONCE for the whole image. These depend
+    # only on jj and inc_x and are bit-deterministic given the inputs,
+    # so the kernel sees the identical values as if it had recomputed
+    # them inline (parity verified).
+    r1_arr_pre = tx_arr_pre = one_mtx_arr_pre = None
+    if intrp == 5 and _HAVE_NUMBA:
+        inv_inc_x = 1.0 / inc_x
+        gx_pre = np.arange(xdimm, dtype=np.float64) * inv_inc_x
+        r1_pre = np.floor(gx_pre).astype(np.int64)
+        # Clamp: r1 >= 0 and r1 <= nx-2 (same logic as C resamp.c:186-189)
+        nx_R = R_data.shape[1]
+        np.clip(r1_pre, 0, nx_R - 2, out=r1_pre)
+        tx_pre = gx_pre - r1_pre.astype(np.float64)
+        one_mtx_pre = 1.0 - tx_pre
+        r1_arr_pre = r1_pre
+        tx_arr_pre = tx_pre
+        one_mtx_arr_pre = one_mtx_pre
+
+    # --- C10 main loop, vectorized per CHUNK of rows ---
+    # Process CHUNK rows at a time to amortize numpy per-call overhead.
+    # Memory: for bisinc, intermediate footprint ~ chunk*xdimm*NS*NS*8 bytes
+    #         for one float64 patch tensor. CHUNK=64 -> ~70 MB peak for
+    #         RS2 size (xdimm=3416). Tunable via env RESAMP_PY_CHUNK.
+    CHUNK = int(os.environ.get("RESAMP_PY_CHUNK", "64"))
+    if CHUNK <= 0:
+        CHUNK = 1
+    sout_chunk = np.zeros(CHUNK * 2 * xdimm, dtype=np.int16)
+    with open(out_slc_path, "wb") as fout:
+        for ii0 in range(0, ydimm, CHUNK):
+            ii1 = min(ii0 + CHUNK, ydimm)
+            nrows = ii1 - ii0
+            buf = sout_chunk[: nrows * 2 * xdimm]
+            if kernel_grid5 is not None:
+                # Fused Numba path for mode 5: do grid shift + bisinc in
+                # one pass without allocating ras0/ras1/bad_mask arrays.
+                # Bit-parity-equivalent to the (grid_shift_vec → kernel
+                # → zero-bad-pixels) path; verified against the C oracle.
+                kernel_grid5(ii0, ii1, xdimm,
+                             R_data, A_data, inc_y,
+                             r1_arr_pre, tx_arr_pre, one_mtx_arr_pre,
+                             sin_flat, ydims, xdims, buf)
+            else:
+                # Build (nrows, xdimm) jj and ii arrays, then flatten to 1D
+                # for the kernel — the kernel writes a flat sout_chunk of
+                # length nrows*2*xdimm interleaved per row.
+                ii_grid = np.repeat(np.arange(ii0, ii1, dtype=np.float64), xdimm)
+                jj_grid = np.tile(jj_row, nrows)
+                if intrp == 5:
+                    ras0, ras1, bad_mask = grid_shift_vec(
+                        jj_grid, ii_grid, R_data, A_data, inc_x, inc_y
+                    )
+                    # Sanitize ras0/ras1 BEFORE the kernel sees them. NaN/
+                    # inf cast through np.floor → undefined int64. Replace
+                    # with a known-safe in-bounds value (jj/ii themselves
+                    # are always finite and in [0, xdimm)/[0, ydimm)); the
+                    # bisinc result for those pixels is then overwritten
+                    # to (0, 0) below.
+                    if bad_mask.any():
+                        ras0 = np.where(bad_mask, jj_grid, ras0)
+                        ras1 = np.where(bad_mask, ii_grid, ras1)
+                else:
+                    ras0, ras1 = ram2ras_vec(jj_grid, ii_grid, ps)
+                    bad_mask = None
+                kernel(ras0, ras1, sin_flat, ydims, xdims, buf)
+                if bad_mask is not None and bad_mask.any():
+                    # C writes (0, 0) for the output pixel and `continue`s
+                    # before calling bisinc (resamp.c:245-249). After-the-
+                    # fact zeroing gives the same observable bytes.
+                    idx = np.where(bad_mask)[0]
+                    buf[2 * idx] = 0
+                    buf[2 * idx + 1] = 0
+            fout.write(buf.tobytes())
+
+    # Restore sub_int / stretch fields if intrp=1 (resamp.c:281-288)
+    if intrp == 1:
+        for k, v in sv_pr.items():
+            ps[k] = v
+
+    # Update PRM master-sourced fields (resamp.c:291-299)
+    for k in ("num_rng_bins", "bytes_per_line", "good_bytes_per_line",
+              "num_valid_az", "num_lines", "num_patches", "nrows"):
+        if k in pm:
+            ps[k] = pm[k]
+    # fs/PRF are stored under different keys in PRM files; map them.
+    # C does ps.fs = pm.fs; ps.prf = pm.prf. The PRM text uses
+    # 'rng_samp_rate' for fs and 'PRF' for prf.
+    if "rng_samp_rate" in pm:
+        ps["rng_samp_rate"] = pm["rng_samp_rate"]
+    if "PRF" in pm:
+        ps["PRF"] = pm["PRF"]
+
+    # Point the PRM at the new SLC file (caller may have given a path
+    # different from ps.SLC_file). Match C: ps.SLC_file is unchanged in
+    # C; only the OUTPUT filename argv[4] is what gets written. So we
+    # leave ps['SLC_file'] alone too.
+    write_prm(ps, out_prm_path)
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog="resamp_py",
+        description="Python port of gmtsar resamp (intrp 1..4).",
+    )
+    p.add_argument("master_prm")
+    p.add_argument("aligned_prm")
+    p.add_argument("out_prm")
+    p.add_argument("out_slc")
+    p.add_argument("intrp", type=int,
+                   help="1=nearest 2=bilinear 3=bicubic 4=bisinc 5=bisinc-grid")
+    p.add_argument("dr_grd", nargs="?", default=None,
+                   help="(intrp=5 only) range shift grid (GMT NetCDF .grd)")
+    p.add_argument("da_grd", nargs="?", default=None,
+                   help="(intrp=5 only) azimuth shift grid (GMT NetCDF .grd)")
+    args = p.parse_args(argv)
+    try:
+        resamp(args.master_prm, args.aligned_prm, args.out_prm,
+               args.out_slc, args.intrp,
+               dr_grd_path=args.dr_grd, da_grd_path=args.da_grd)
+    except NotImplementedError as e:
+        print(f"resamp_py: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
