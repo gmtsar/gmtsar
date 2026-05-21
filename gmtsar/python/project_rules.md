@@ -83,3 +83,52 @@ Every test run must record, alongside the SUCCESS/FAIL scorecard:
   changed.
 
 The framework refuses to ship a scorecard without these fields.
+
+## 7. Every full sweep produces a faithfully-recorded snapshot
+
+Every `bash tests/sweep.sh --full ...` run (whether passing or not, whether
+3-case or 20-case) MUST emit a snapshot file before any performance claim
+is made publicly (README, release notes, slides, papers). The snapshot:
+
+- Lives at `docs/perf_snapshots/perf_snapshot_<UTC-iso8601>_<git-sha>.md`
+  (and optionally `.json` alongside), named so it sorts chronologically and
+  ties back to the source tree. `docs/` (not `work/`) so it gets committed
+  with the code it benchmarks. Use the format produced by
+  `tools/perf_snapshot.py` (four tables: per-case timeline, per-binary
+  breakdown, aggregate by stage, failure mode).
+- Captures **every** of these fields, no exceptions:
+  - **invocation**: full env (`NUMBA_NUM_THREADS`, `XCORR_PY_WORKERS`,
+    `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+    `BLIS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `NUMEXPR_NUM_THREADS`,
+    `MAX_PARALLEL`, `SWEEP_FORCE`), exact `TEST_CASES` list, sweep wall
+    time, scope of the run (cases set).
+  - **per-case**: score (S/F), py total seconds, csh total seconds,
+    speedup ratio, per-binary breakdown from `phase_profile_py.json`
+    (all binaries reported by `time_run`).
+  - **environment**: same fields as rule 6's `perf_*.txt` (CPU model,
+    core count, RAM, disk type, GMT/Python/Numba versions, framework
+    git short SHA, dirty/clean working tree flag).
+  - **failures**: for any case scored ≠ all-SUCCESS, the failing-file
+    list + reason text (from the scorecard's `comparisons` array).
+
+Rule of thumb: a snapshot must contain enough information that **another
+person on another machine could attempt to reproduce the measurement** and
+**identify what's different** if they get different numbers. "Trust me
+bro" perf claims are forbidden — point at a snapshot file or don't make
+the claim.
+
+A snapshot must NOT cherry-pick. If the sweep produced 15/20 pass and
+5/20 fail, the snapshot records all 20 entries, not just the 15 wins.
+"Best result" framing belongs in commentary, not in the snapshot itself.
+
+Stale or contaminated runs (cached intermediate outputs short-circuiting
+stages, mid-flight kills, env-var bleed between configurations) must be
+explicitly flagged in the snapshot's `caveats` field. If a measurement
+is suspect, the snapshot says so — it does not silently get folded into
+aggregate claims.
+
+The snapshot is committed alongside the code it benchmarks. Re-running
+the same code against the same hardware must reproduce within ±10% wall
+time (NFS I/O variance dominant); larger deviations are a signal the
+underlying code or environment has drifted and must be investigated, not
+papered over.
