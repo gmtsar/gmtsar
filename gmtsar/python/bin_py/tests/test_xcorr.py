@@ -415,6 +415,96 @@ class TestXcorrVsCBinary(unittest.TestCase):
                 err_msg=f"snr diverges from C (max|d|={abs(snr_d).max()}).")
 
 
+# --------------------------------------------------- StaleRowReader UNIT ---
+class TestStaleRowReader(unittest.TestCase):
+    """Verify `_StaleRowReader` matches C `read_complex_short2`'s
+    `fread`-with-stale-`tmp[]` behaviour at the EOF boundary.
+
+    The NISAR_Ethiopia parity gap (Mira #16) traces to this exact
+    semantic: when an aligned-SLC patch crosses past the file EOF, C's
+    OOB rows inherit the last-successfully-read row's bytes (not
+    zeros). Zero-padding the OOB rows perturbs the freq-FFT correlation
+    surface enough to change which rows clear the downstream SNR>20
+    filter — feeding different (x,y,dr,da) tuples to trend2d → r.grd
+    and breaking the resamp / intf / phasefilt comparisons.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._StaleRowReader = _NS.get("_StaleRowReader")
+        if cls._StaleRowReader is None:
+            raise unittest.SkipTest(
+                "_StaleRowReader not exported by xcorr_py")
+
+    def _mk_mm(self, ny: int = 100, nx: int = 8) -> np.ndarray:
+        """Synthetic (ny, nx, 2) int16 memmap-shaped array with a
+        distinctive value per row so stale data is detectable."""
+        rng = np.random.default_rng(0)
+        arr = rng.integers(-1000, 1000, (ny, nx, 2), dtype=np.int16)
+        # encode row index in column 0 of the imaginary part for asserts
+        arr[:, 0, 1] = np.arange(ny, dtype=np.int16)
+        return arr
+
+    def test_full_in_range(self):
+        """Fully-valid read returns a bulk slice equal to memmap[a:b]."""
+        mm = self._mk_mm(100, 8)
+        r = self._StaleRowReader(mm)
+        out = r.read(iy=10, npy=20)
+        self.assertEqual(out.shape, (20, 8, 2))
+        np.testing.assert_array_equal(out, mm[10:30])
+
+    def test_partial_oob_high(self):
+        """Partial OOB above ny: first N rows valid, last K rows = row[ny-1]."""
+        mm = self._mk_mm(100, 8)
+        r = self._StaleRowReader(mm)
+        # Read 20 rows starting at iy=90 → rows 90..99 valid, 100..109 OOB.
+        out = r.read(iy=90, npy=20)
+        # First 10 = mm[90:100]
+        np.testing.assert_array_equal(out[:10], mm[90:100])
+        # Next 10 should EACH equal the last valid row mm[99].
+        for i in range(10, 20):
+            np.testing.assert_array_equal(
+                out[i], mm[99],
+                err_msg=f"OOB row {i} should mirror last valid row "
+                        f"(C fread leaves tmp[] holding row 99).")
+
+    def test_full_oob_inherits_last_call(self):
+        """Across calls: a fully-OOB read inherits the LAST VALID ROW
+        from the previous call (mirrors glibc heap-reuse / C
+        stale-tmp persistence)."""
+        mm = self._mk_mm(100, 8)
+        r = self._StaleRowReader(mm)
+        # Call 1: partial OOB, ends with last valid row 99.
+        _ = r.read(iy=90, npy=20)
+        # Call 2: ALL OOB — every row should equal row 99.
+        out2 = r.read(iy=200, npy=10)
+        for i in range(10):
+            np.testing.assert_array_equal(
+                out2[i], mm[99],
+                err_msg=f"Fully-OOB call should inherit row 99 from "
+                        f"prior call; row {i} differs.")
+
+    def test_initial_zero_state(self):
+        """Before any valid read, tmp[] is zero (matches Linux 20 KB
+        malloc zero-init on first call)."""
+        mm = self._mk_mm(100, 8)
+        r = self._StaleRowReader(mm)
+        out = r.read(iy=500, npy=4)   # entirely OOB, no prior call
+        self.assertTrue(np.all(out == 0),
+                        "Fresh reader should produce zeros for OOB-only reads.")
+
+    def test_partial_oob_below(self):
+        """Partial OOB below 0: first K rows = initial zero (no prior
+        valid read), then valid rows."""
+        mm = self._mk_mm(100, 8)
+        r = self._StaleRowReader(mm)
+        out = r.read(iy=-3, npy=6)
+        # First 3 rows = OOB → initial zero state
+        np.testing.assert_array_equal(out[:3], np.zeros((3, 8, 2), np.int16))
+        # Next 3 rows = mm[0:3]
+        np.testing.assert_array_equal(out[3:], mm[0:3])
+
+
 if __name__ == "__main__":
     # Run with verbose output when invoked directly (no pytest needed).
     unittest.main(verbosity=2)

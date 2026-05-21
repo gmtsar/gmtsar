@@ -387,47 +387,69 @@ def _fft_interpolate_2d(md: np.ndarray, ny2: int, nx2: int,
 
 
 # ----------------------------------------------------- do_correlation ---
-def _read_npy_zero_pad(mm: np.ndarray, iy: int, npy: int) -> np.ndarray:
-    """Read npy rows starting at iy from an int16 (ny, nx, 2) memmap, zero-
-    padding any rows outside [0, mm.shape[0]).
+class _StaleRowReader:
+    """Mirror C `read_complex_short2`'s per-row `fread` semantics, including
+    the stale-`tmp[]` behaviour past EOF that the parity oracle depends on.
 
-    Mirrors the C `read_complex_short2` behaviour at the file boundary:
-    `fseek` past EOF is allowed and `fread` short-reads leave the trailing
-    buffer with whatever was in malloc'd `tmp[]`. For x-correlation patches
-    that straddle EOF, the inner mask zeros most of the boundary already; the
-    only effective contribution from OOB rows is the masked overlap, which is
-    far enough into the patch that zero-padding the OOB rows produces a
-    correlation peak indistinguishable from C's stale-buffer reads for the
-    SNR>threshold rows that fitoffset actually retains (rows with corr<20
-    are dropped downstream by the awk SNR filter in p2p_stages).
+    C does:
+        for (i = 0; i < npy; i++) {
+            fread(&tmp[0], 2*sizeof(short), nx, f);   // EOF → tmp unchanged
+            for (j = 0; j < nx; j++) { d[i*nx+j] = tmp[j]; }
+        }
+    so an OOB row inherits the LAST successfully-read row's bytes. The
+    `tmp` buffer is freshly malloc'd inside `read_xcorr_data` (heap-backed
+    at this size, not mmap'd), and across the nyl outer-loop iterations
+    glibc's small-bin allocator typically returns the same chunk, so its
+    state effectively persists across calls. The dominant behaviour on
+    the gmtsar parity host is:
+        * partial-OOB row band → OOB rows = last valid row of THIS call;
+        * fully-OOB row band  → OOB rows = last valid row of any PRIOR
+                                 call (with zero-init on the very first
+                                 call, matching Linux glibc 20 KB sbrk
+                                 zero-fill).
 
-    Prior to this routine xcorr_py.do_correlation simply SKIPPED any y bin
-    whose patch went past EOF, producing 5*nxl=200 fewer rows than C on
-    NISAR_Ethiopia (and matching downstream r.grd/SLC divergence vs the C
-    oracle). Mirroring C's read-and-pad behaviour restores parity."""
-    ny = mm.shape[0]
-    if iy >= 0 and iy + npy <= ny:
-        return np.asarray(mm[iy:iy + npy])
-    out = np.zeros((npy,) + mm.shape[1:], dtype=mm.dtype)
-    src_lo = max(0, iy)
-    src_hi = min(ny, iy + npy)
-    if src_lo < src_hi:
-        dst_lo = src_lo - iy
-        dst_hi = dst_lo + (src_hi - src_lo)
-        out[dst_lo:dst_hi] = mm[src_lo:src_hi]
-    return out
+    Prior `_read_npy_zero_pad` zero-padded OOB rows instead, which made
+    the correlation surface at y=5084-5592 (NISAR_Ethiopia) diverge from
+    C — passing/dropping different SNR>20 rows than the C oracle and
+    pushing trend2d → r.grd → resamp → intf off, breaking phasefilt /
+    filtcorr / display_amp_ll / phasefilt_mask_ll downstream."""
+
+    def __init__(self, mm: np.ndarray):
+        self.mm = mm
+        # Persistent tmp[] — shape (nx, 2), int16. Init to zeros to
+        # match Linux 20 KB malloc on first call.
+        self.tmp = np.zeros(mm.shape[1:], dtype=mm.dtype)
+
+    def read(self, iy: int, npy: int) -> np.ndarray:
+        ny = self.mm.shape[0]
+        out = np.empty((npy,) + self.mm.shape[1:], dtype=self.mm.dtype)
+        # Vectorised happy path: full-valid range → bulk memmap slice.
+        if 0 <= iy and iy + npy <= ny:
+            out[:] = self.mm[iy:iy + npy]
+            self.tmp = np.asarray(self.mm[iy + npy - 1]).copy()
+            return out
+        # Partial / fully OOB → per-row C-faithful loop.
+        for i in range(npy):
+            r = iy + i
+            if 0 <= r < ny:
+                self.tmp = np.asarray(self.mm[r]).copy()
+            out[i] = self.tmp
+        return out
 
 
 def do_correlation(xc: XCorr, out_path: str) -> None:
     """Mirror xcorr.c:do_correlation. Outer y loop reads npy lines of
     each SLC once, inner x loop processes nxl patches in that band.
 
-    Boundary handling: C `fread` silently short-reads past EOF and the
-    correlation goes ahead with whatever was in the malloc'd tmp buffer
-    (typically zeros or stale data from the previous row). We mirror this
-    with zero-padding via _read_npy_zero_pad — see that docstring for why
-    skipping the row (the prior behaviour) is wrong."""
+    Boundary handling: see `_StaleRowReader` — C `fread` short-reads
+    past EOF leave the trailing buffer with prior-row data, so OOB
+    rows of the aligned patch inherit the LAST VALID ROW READ, not
+    zeros. Mirroring this is required for parity when ashift pushes
+    the aligned patch past EOF (NISAR_Ethiopia: y=5084-5465 partial-
+    OOB, y=5592 fully OOB)."""
     mask = make_mask(xc)
+    reader_m = _StaleRowReader(xc.mm1)
+    reader_a = _StaleRowReader(xc.mm2)
     with open(out_path, "w") as f:
         iloc = 0
         for j_y in range(xc.nyl):
@@ -436,8 +458,8 @@ def do_correlation(xc: XCorr, out_path: str) -> None:
             ishft = int(y * xc.astretcha)
             iy_a = y + xc.y_offset + ishft - xc.npy // 2
 
-            d1_row = _read_npy_zero_pad(xc.mm1, iy_m, xc.npy)
-            d2_row = _read_npy_zero_pad(xc.mm2, iy_a, xc.npy)
+            d1_row = reader_m.read(iy_m, xc.npy)
+            d2_row = reader_a.read(iy_a, xc.npy)
 
             for i_x in range(xc.nxl):
                 x = int(xc.loc[iloc, 0])
