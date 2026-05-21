@@ -1,0 +1,23 @@
+{
+  "schema": "pygmtsar_thread_matrix_v1",
+  "hardware": {
+    "cores": 48, "ram_gb": 1024,
+    "cpu": "Intel Xeon", "disk": "NFS",
+    "gmt": "6.5.0", "python": "3.12.10", "numba": "0.59.1"
+  },
+  "methodology": "py-only sweep, SWEEP_FORCE=py (keep extract). csh oracle reused.",
+  "runs": [
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"RS2_SLC_Hawaii",  "csh":178, "numba":1, "workers":1, "max_par":3, "py":94,  "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"RS2_SLC_Hawaii",  "csh":178, "numba":2, "workers":2, "max_par":3, "py":101, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"RS2_SLC_Hawaii",  "csh":178, "numba":4, "workers":4, "max_par":2, "py":95,  "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"RS2_SLC_Hawaii",  "csh":178, "numba":8, "workers":8, "max_par":2, "py":94,  "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"NISAR_Ethiopia",  "csh":459, "numba":1, "workers":1, "max_par":3, "py":282, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"NISAR_Ethiopia",  "csh":459, "numba":2, "workers":2, "max_par":3, "py":288, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"NISAR_Ethiopia",  "csh":459, "numba":4, "workers":4, "max_par":2, "py":278, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"NISAR_Ethiopia",  "csh":459, "numba":8, "workers":8, "max_par":2, "py":279, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"ALOS_SLC_L1.1",   "csh":449, "numba":1, "workers":1, "max_par":3, "py":393, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"ALOS_SLC_L1.1",   "csh":449, "numba":2, "workers":2, "max_par":3, "py":390, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"ALOS_SLC_L1.1",   "csh":449, "numba":4, "workers":4, "max_par":2, "py":391, "score":"6/0"},
+    {"batch":1, "date":"2026-05-21", "commit":"8844ad6", "case":"ALOS_SLC_L1.1",   "csh":449, "numba":8, "workers":8, "max_par":2, "py":387, "score":"6/0"}
+  ]
+}
