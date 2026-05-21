@@ -52,17 +52,20 @@ from gmt_compat import (
 def _piped_grd2xyz_llt2rat(dem_grd: str, prm: str, mode_flag: str, out: str) -> None:
     """grd2xyz dem.grd | SAT_llt2rat prm > trans.dat.
 
-    If SAT_llt2rat_py is on PATH, use the binary-stream fast path
-    (`gmt grd2xyz -bo3d | SAT_llt2rat_py -bi3d`) — ~2× faster than the
-    C binary on the 9.3 M-row RS2 DEM (7.5 s vs 15.9 s). The ASCII
-    grd2xyz step is what dominates the C pipeline (16 s on its own);
-    -bo3d drops it to 0.87 s. Falls back to the C binary + ASCII pipe
-    if the py port isn't installed.
+    Mira #4 (2026-05-21): MUST use ASCII `--FORMAT_FLOAT_OUT=%lf` even
+    when calling SAT_llt2rat_py. Using `-bo3d` + `-bi3d` feeds the py
+    port full-precision float64 inputs that C SAT_llt2rat (which is the
+    parity oracle) never sees — goldop's golden-section bracket lands
+    in different time bins, producing 1-2 azi_pixel azi_pix shifts on
+    ~99% of rows. These compound through blockmedian/surface into
+    topo_ra → topo_shift → phase → unwrap → los corruption (ALOS_haiti:
+    los_ll RMS diff vs csh = 1.51 mm). The ASCII path gives sub-ULP
+    parity (lon/lat max|d|=0, azi_pix max|d|=3.6e-12 px).
     """
     py_bin = shutil.which("SAT_llt2rat_py")
     if py_bin is not None:
-        cmd = (f"gmt grd2xyz {dem_grd} -s -bo3d "
-               f"| {py_bin} {prm} {mode_flag} -bod -bi3d > {out}")
+        cmd = (f"gmt grd2xyz --FORMAT_FLOAT_OUT=%lf {dem_grd} -s "
+               f"| {py_bin} {prm} {mode_flag} -bod > {out}")
     else:
         cmd = (f"gmt grd2xyz --FORMAT_FLOAT_OUT=%lf {dem_grd} -s "
                f"| SAT_llt2rat {prm} {mode_flag} -bod > {out}")

@@ -144,3 +144,71 @@ hot-path optimisations (binary stdin via `-bi3d`, etc.) still apply.
 - `gmtsar/python/bin_py/tests/test_SAT_llt2rat.py` — new parity tests
 - `gmtsar/SAT_llt2rat.c`, `hermite_c.c`, `plxyz.c`, `llt2xyz.h`,
   `gmtsar.h` — C source consulted (no changes)
+
+## 2026-05-21 follow-up (Mira #4) — ALOS_haiti los_ll fix
+
+The `utils/dem2topo_ra` wire-in shipped on 2026-05-20 used the
+`-bi3d`/`-bo3d` binary-stdin fast path:
+
+```
+gmt grd2xyz dem.grd -s -bo3d | SAT_llt2rat_py master.PRM 0 -bod -bi3d
+```
+
+This was **WRONG** for parity. The C dem2topo_ra.csh pipeline that
+SAT_llt2rat_py mirrors is:
+
+```
+gmt grd2xyz --FORMAT_FLOAT_OUT=%lf dem.grd -s | SAT_llt2rat master.PRM 0 -bod
+```
+
+i.e. ASCII output with `%lf` (6-digit) quantization. The C binary has
+never been exposed to full-precision float64 inputs in production
+pipelines. Feeding SAT_llt2rat_py full-precision inputs via `-bi3d`
+fed it lon/lat/h that the C parity oracle had never seen and produced:
+
+- ALOS_haiti: max|d| azi_pix = **2 pixels** on ~99% of rows,
+  range_pix max|d| 0.0058 px, height max|d| 7.7e-5 m, lon/lat max|d|
+  3.3e-7 deg (the %lf-to-full-float64 step itself).
+
+These compound through blockmedian -> surface -> topo_ra -> topo_shift
+-> phase -> unwrap -> los into:
+
+| stage              | RMS diff vs C |
+|--------------------|---------------|
+| topo_ra.grd        | 0.077 m       |
+| topo_shift.grd     | 0.077 m       |
+| phase.grd          | 0.073 rad     |
+| phasefilt.grd      | 0.11 rad      |
+| unwrap.grd         | 0.069 rad     |
+| los.grd            | 1.30 mm       |
+| los_ll.grd         | 1.51 mm       |
+
+This is Mira Pattern 5: "Input-format quantization in the parity test".
+The unit test in `test_precise0_bit_identical` uses `%.17g` ASCII —
+finer than what csh actually sends C — so it passed even while the
+production pipeline was off-trajectory.
+
+Fix: revert `dem2topo_ra` to the `%lf` ASCII pipeline. This restores
+sub-ULP parity (lon/lat max|d|=0, azi_pix max|d|=3.6e-12 px, range_pix
+max|d|=1e-10 px, height max|d|=1.9e-9 m) on ALOS_haiti — verified by
+direct C-vs-py diff at trans.dat.
+
+Test added: `test_precise0_csh_lf_pipeline_parity` mirrors the actual
+csh `dem2topo_ra.csh` pipeline (`--FORMAT_FLOAT_OUT=%lf`) and asserts
+byte-level parity. This catches the regression that
+`test_precise0_bit_identical` couldn't see because it used
+full-precision ASCII.
+
+Files updated:
+- `gmtsar/python/utils/dem2topo_ra` (line 103-105 revert to ASCII pipe)
+- `gmtsar/python/bin_py/dem2topo_ra_py` (the same fix in the bin_py
+  alternate path that also defaulted to `-bi3d` if SAT_llt2rat_py was
+  on PATH)
+- `gmtsar/python/bin_py/tests/test_SAT_llt2rat.py` (new
+  `test_precise0_csh_lf_pipeline_parity` test)
+
+Performance cost: the `-bi3d` path was advertised as ~2x faster on the
+standalone SAT_llt2rat_py call (15.9 s -> 7.5 s on RS2 9.3 M rows). In
+the end-to-end dem2topo_ra wallclock, `surface` (5-10 min) and
+`blockmedian` dominate; SAT_llt2rat_py is a small fraction. Reverting
+to ASCII is a negligible end-to-end cost for restored parity.

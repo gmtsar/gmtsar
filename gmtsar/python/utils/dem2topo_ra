@@ -95,14 +95,25 @@ def dem2topo_ra():
     # SAT_llt2rat_py wire-in (2026-05-20, after Mira #2 goldop closure):
     # bit-identical to C SAT_llt2rat on RS2 Hawaii DEM (azi_pix max|d|=0
     # on all 978882 rows, sub-Angstrom range_pix residual). 3.5× slower
-    # than C (precise=0: 32 s vs 9 s) but the fast `-bi3d` binary-stdin
-    # path + upstream `gmt grd2xyz -bo3d` keeps the end-to-end pipe
-    # competitive. See gmtsar/python/AUDIT_SAT_llt2rat_py.md for the
-    # 9 sub-ULP bugs Mira #2 fixed to close parity.
+    # than C (precise=0: 32 s vs 9 s) but the end-to-end pipe stays
+    # competitive because blockmedian/surface dominate the runtime.
+    #
+    # Mira #4 (2026-05-21): MUST use the SAME ASCII `--FORMAT_FLOAT_OUT=%lf`
+    # input pipe that dem2topo_ra.csh uses. The earlier `-bi3d` fast path
+    # fed SAT_llt2rat_py full-precision float64 lon/lat/h that the C
+    # SAT_llt2rat never saw — quantization-free inputs push goldop's
+    # time-bracket search into different bins on ~99% of rows (max|d|
+    # azi_pix = 2 px on ALOS_haiti), corrupting topo_ra → topo_shift →
+    # phase → unwrap → los by ~0.077 m / 0.07 rad / 1.5 mm RMS.
+    # ASCII %lf path gives sub-ULP parity to C on lon/lat (max|d|=0),
+    # azi_pix (max|d|=3.6e-12 px), and height (1.9e-9 m). See Mira
+    # AUDIT note in gmtsar/python/AUDIT.md (ALOS_haiti los_ll fix).
+    # See gmtsar/python/AUDIT_SAT_llt2rat_py.md for the 9 sub-ULP bugs
+    # Mira #2 fixed to close parity.
     if SC == 10 or SC == 11:
-        run('gmt grd2xyz '+sys.argv[2]+' -s -bo3d | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod -bi3d > trans.dat')
+        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod > trans.dat')
     else:
-        run('gmt grd2xyz '+sys.argv[2]+' -s -bo3d | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod -bi3d > trans.dat')
+        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod > trans.dat')
     
     print(' ')
     print('DEM2TOPO_RA: use an azimuth spacing of 2 for low PRF data such as S1 TOPS ... ...')
