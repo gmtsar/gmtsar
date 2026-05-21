@@ -158,6 +158,47 @@ Each phase ships as a minor release (`v1.2.0`, `v1.3.0`, ...) with:
 - Visualization / KML utilities beyond existing `grd2kml`: dev resources better
   spent on the pipeline.
 
+## 7b. TODO — port `p2p_S1_TOPS_Frame.csh` to native Python + wire phase_profile
+
+The S1 TOPS family (S1A_SLC_TOPS_*, S1_Larsen_C, S1_Ridgecrest_EQ) is
+currently the only pipeline that still runs through a csh recipe end-to-end
+(`p2p_S1_TOPS_Frame.csh` → 3 parallel `p2p_processing.csh` per-subswath
+→ `merge_unwrap_geocode_tops.csh`). Consequence:
+
+- The Python `phase_profile.py` hooks aren't called inside `.csh` recipes,
+  so the per-binary timing JSON (`phase_profile_py.json`) is **missing**
+  for all S1 TOPS cases.
+- We can only measure their wall time from the sweep log (`DONE <case>
+  (Ns)`), not their per-binary breakdown.
+- This means perf-snapshot Table 2 (per-binary timing) has a gap for the
+  4-5 biggest cases in the sweep — exactly the ones whose internal
+  breakdown would be most informative for next-phase optimization.
+
+**The work:**
+1. Port `p2p_S1_TOPS_Frame.csh` → `p2p_S1_TOPS_Frame` (Python). Mirror the
+   shell flow: parse args, sort SAFE archives, prep aligned PRMs, drive
+   `p2p_processing` per-subswath via `multiprocessing.Pool`, then call
+   `merge_unwrap_geocode_tops`.
+2. Wrap per-subswath `p2p_processing` calls with `phase()` context manager
+   so each subswath's `phase_profile_py.json` lands in `F1/`, `F2/`, `F3/`.
+3. Aggregate the 3 subswath profiles into a single Frame-level
+   `phase_profile_py.json` at the case root (sum binaries across
+   subswaths, sum phases).
+4. Verify against `S1A_SLC_TOPS_LA`, `S1_Larsen_C`, `S1_Ridgecrest_EQ`
+   — must produce bit-identical merge output to the csh recipe.
+
+**Difficulty:** medium. `p2p_S1_TOPS_Frame.csh` is ~250 lines of shell;
+no fundamentally new algorithms (it's an orchestrator). Main risk is
+matching the csh recipe's parallel-subswath wait/sync pattern exactly so
+we don't get races on the shared topo_ra.grd.
+
+**Cleanup payoff:** removes the largest remaining csh shell-out in the
+fork's pipeline. After this, the only csh callers are the `align_tops.csh`
+chain (Phase 2 of this plan) and `snaphu*.csh` (Phase 4).
+
+**Effort estimate:** 1-2 weeks (1 Mira-port mission + parity validation
+sweep + Frame-level profile aggregation).
+
 ## 8. Open questions
 
 - **SBAS test fixture:** does `topex.ucsd.edu/gmtsar/tar/` host a multi-pair
