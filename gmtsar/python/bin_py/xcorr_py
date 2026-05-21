@@ -387,9 +387,46 @@ def _fft_interpolate_2d(md: np.ndarray, ny2: int, nx2: int,
 
 
 # ----------------------------------------------------- do_correlation ---
+def _read_npy_zero_pad(mm: np.ndarray, iy: int, npy: int) -> np.ndarray:
+    """Read npy rows starting at iy from an int16 (ny, nx, 2) memmap, zero-
+    padding any rows outside [0, mm.shape[0]).
+
+    Mirrors the C `read_complex_short2` behaviour at the file boundary:
+    `fseek` past EOF is allowed and `fread` short-reads leave the trailing
+    buffer with whatever was in malloc'd `tmp[]`. For x-correlation patches
+    that straddle EOF, the inner mask zeros most of the boundary already; the
+    only effective contribution from OOB rows is the masked overlap, which is
+    far enough into the patch that zero-padding the OOB rows produces a
+    correlation peak indistinguishable from C's stale-buffer reads for the
+    SNR>threshold rows that fitoffset actually retains (rows with corr<20
+    are dropped downstream by the awk SNR filter in p2p_stages).
+
+    Prior to this routine xcorr_py.do_correlation simply SKIPPED any y bin
+    whose patch went past EOF, producing 5*nxl=200 fewer rows than C on
+    NISAR_Ethiopia (and matching downstream r.grd/SLC divergence vs the C
+    oracle). Mirroring C's read-and-pad behaviour restores parity."""
+    ny = mm.shape[0]
+    if iy >= 0 and iy + npy <= ny:
+        return np.asarray(mm[iy:iy + npy])
+    out = np.zeros((npy,) + mm.shape[1:], dtype=mm.dtype)
+    src_lo = max(0, iy)
+    src_hi = min(ny, iy + npy)
+    if src_lo < src_hi:
+        dst_lo = src_lo - iy
+        dst_hi = dst_lo + (src_hi - src_lo)
+        out[dst_lo:dst_hi] = mm[src_lo:src_hi]
+    return out
+
+
 def do_correlation(xc: XCorr, out_path: str) -> None:
     """Mirror xcorr.c:do_correlation. Outer y loop reads npy lines of
-    each SLC once, inner x loop processes nxl patches in that band."""
+    each SLC once, inner x loop processes nxl patches in that band.
+
+    Boundary handling: C `fread` silently short-reads past EOF and the
+    correlation goes ahead with whatever was in the malloc'd tmp buffer
+    (typically zeros or stale data from the previous row). We mirror this
+    with zero-padding via _read_npy_zero_pad — see that docstring for why
+    skipping the row (the prior behaviour) is wrong."""
     mask = make_mask(xc)
     with open(out_path, "w") as f:
         iloc = 0
@@ -399,14 +436,8 @@ def do_correlation(xc: XCorr, out_path: str) -> None:
             ishft = int(y * xc.astretcha)
             iy_a = y + xc.y_offset + ishft - xc.npy // 2
 
-            ok = (0 <= iy_m and iy_m + xc.npy <= xc.mm1.shape[0]
-                  and 0 <= iy_a and iy_a + xc.npy <= xc.mm2.shape[0])
-            if not ok:
-                iloc += xc.nxl
-                continue
-
-            d1_row = xc.mm1[iy_m:iy_m + xc.npy]
-            d2_row = xc.mm2[iy_a:iy_a + xc.npy]
+            d1_row = _read_npy_zero_pad(xc.mm1, iy_m, xc.npy)
+            d2_row = _read_npy_zero_pad(xc.mm2, iy_a, xc.npy)
 
             for i_x in range(xc.nxl):
                 x = int(xc.loc[iloc, 0])
