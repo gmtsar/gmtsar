@@ -44,13 +44,15 @@ _NUMBA_ENV = os.environ.get("SAT_LLT2RAT_PY_NUMBA", "1")
 if _NUMBA_ENV == "0":
     _HAS_NUMBA = False
     njit = None
+    prange = range  # type: ignore[assignment]
 else:
     try:
-        from numba import njit                                  # type: ignore
+        from numba import njit, prange                          # type: ignore
         _HAS_NUMBA = True
     except ImportError:                                         # pragma: no cover
         _HAS_NUMBA = False
         njit = None
+        prange = range  # type: ignore[assignment]
 
 
 SOL = 299792456.0   # speed of light, m/s — MATCHES C `#define SOL` in
@@ -290,14 +292,18 @@ def hermite_c_1d_uniform(x0: float, dsec: float, y: np.ndarray, z: np.ndarray,
 # the numpy result bit-for-bit so the precise=1 azi_pix max|d|=2.4e-6 doesn't
 # get worse.
 if _HAS_NUMBA:
-    @njit(cache=False, fastmath=False)
+    # parallel=True + prange over query points: per-query state (i, i0, u, yp)
+    # is iteration-local; the only writes are to yp_out[m] (disjoint indices).
+    # No cross-iteration FP reduction → bit-identical to single-thread, and
+    # the per-target Horner basis sum order inside the loop is preserved.
+    @njit(cache=False, fastmath=False, parallel=True)
     def _hermite_c_1d_uniform_jit(x0, dsec, y, z, xp, nval,
                                   HJ, S_VALS, yp_out):
         nmax = y.shape[0]
         n = nval - 1
         clip_max = nmax - n - 1
         M = xp.shape[0]
-        for m in range(M):
+        for m in prange(M):
             xpm = xp[m]
             raw = (xpm - x0) / dsec
             # i = ceil(raw)
@@ -430,7 +436,10 @@ def hermite_c_1d(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 # so the same compiled body handles nval=6 (the only one gmtsar uses) without
 # specialisation.
 if _HAS_NUMBA:
-    @njit(cache=False, fastmath=False)
+    # parallel=True + prange over query points: per-query state is
+    # iteration-local; writes to yp_out[m] are disjoint. Inner ii/jj sums and
+    # the bisect search are per-iteration only, so no cross-thread state.
+    @njit(cache=False, fastmath=False, parallel=True)
     def _hermite_c_1d_jit(x, y, z, xp, nval, yp_out):                # noqa: D401
         nmax = x.shape[0]
         n = nval - 1
@@ -439,7 +448,7 @@ if _HAS_NUMBA:
         xLv = x[nmax - 1]
         # i0_clip_max = nmax - n - 1
         clip_max = nmax - n - 1
-        for m in range(M):
+        for m in prange(M):
             xpm = xp[m]
             # C: error if outside [x[0], x[nmax-1]]
             if xpm < x0v or xpm > xLv:
@@ -675,7 +684,11 @@ def goldop(orb_pos: np.ndarray, xp: float, yp: float, zp: float,
 # golden ratio in C #define R, C"). We hard-bake these inside the kernel
 # (Numba constants) so they propagate as literals, NOT module-level lookups.
 if _HAS_NUMBA:
-    @njit(cache=False, fastmath=False)
+    # parallel=True + prange over the per-target outer loop. Each target
+    # runs its own scalar goldop iterating x0/x1/x2/x3/f1/f2 to convergence
+    # — no cross-target FP reductions, only disjoint writes to R_out[n] and
+    # T_out[n]. Bit-parity with the single-thread scalar mirror is preserved.
+    @njit(cache=False, fastmath=False, parallel=True)
     def _goldop_jit(op_t, px, py, pz, tx, ty, tz, R_out, T_out):
         R_LIT = 0.61803399
         C_LIT = 0.382
@@ -693,7 +706,7 @@ if _HAS_NUMBA:
         else:
             x2_init = cx_init
             x1_init = cx_init - int(abs(C_LIT * (cx_init - ax_init)))
-        for n in range(N):
+        for n in prange(N):
             ttx = tx[n]
             tty = ty[n]
             ttz = tz[n]
