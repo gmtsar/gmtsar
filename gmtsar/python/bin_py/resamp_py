@@ -431,7 +431,7 @@ def _build_numba_kernels() -> dict:
     """
     if _NUMBA_KERNELS:
         return _NUMBA_KERNELS
-    from numba import njit, prange
+    from numba import njit
 
     I2MAX_LOCAL = I2MAX
     NS_LOCAL = NS
@@ -452,18 +452,12 @@ def _build_numba_kernels() -> dict:
         return np.int16(y)
 
     # ---- nearest ----
-    # parallel=True + prange over the outer pixel loop: each iteration writes
-    # to disjoint positions sout[2*p], sout[2*p+1] and reads only sin_flat,
-    # so there is no cross-iteration FP reduction → bit-identical to the
-    # single-thread version. cache=False because Numba's on-disk cache does
-    # not currently support parallel=True bodies (it falls back to a JIT
-    # recompile per process, which is still ~150ms cold).
-    @njit(fastmath=False, cache=False, parallel=True)
+    @njit(fastmath=False, cache=True)
     def _knearest(ras0, ras1, sin_flat, ydims, xdims, sout):
         # ras0/ras1: (N,) float64; sout: (2N,) int16 interleaved (re,im).
         n = ras0.shape[0]
         row_stride = 2 * xdims
-        for p in prange(n):
+        for p in range(n):
             # C: j = (int)(ras[0] + 0.5); for negative ras this TRUNCATES
             # toward zero, NOT floors. np.int64 cast of a float does the
             # same: (-0.3 + 0.5) -> 0.2 -> int -> 0; (-0.7 + 0.5) -> -0.2
@@ -479,14 +473,11 @@ def _build_numba_kernels() -> dict:
                 sout[2 * p + 1] = sin_flat[base + 1]
 
     # ---- bilinear ----
-    # parallel=True / prange over outer p: each iteration's accumulator (real,
-    # imag) is iteration-local; sout writes are disjoint. The 4-term sum order
-    # is preserved within each iteration (matches C resamp.c:476-477 bit-for-bit).
-    @njit(fastmath=False, cache=False, parallel=True)
+    @njit(fastmath=False, cache=True)
     def _kbilinear(ras0, ras1, sin_flat, ydims, xdims, sout):
         n = ras0.shape[0]
         row_stride = 2 * xdims
-        for p in prange(n):
+        for p in range(n):
             r0 = ras0[p]
             r1 = ras1[p]
             j0 = np.int64(np.floor(r0))
@@ -539,19 +530,13 @@ def _build_numba_kernels() -> dict:
             return 0.0
 
     # ---- bicubic ----
-    # parallel=True / prange over outer p: each thread needs its own wx/wy
-    # scratch (4 doubles each). We allocate INSIDE the parallel loop so
-    # Numba's auto-privatization gives each thread its own buffer — sharing
-    # the outer-scope arrays would be a race condition. Inner accumulation
-    # order matches C resamp.c:344-352 (left-to-right, ascending j,i) exactly,
-    # iteration-local, so bit-identical to single-thread.
-    @njit(fastmath=False, cache=False, parallel=True)
+    @njit(fastmath=False, cache=True)
     def _kbicubic(ras0, ras1, sin_flat, ydims, xdims, sout):
         n = ras0.shape[0]
         row_stride = 2 * xdims
-        for p in prange(n):
-            wx = np.empty(4, dtype=np.float64)
-            wy = np.empty(4, dtype=np.float64)
+        wx = np.empty(4, dtype=np.float64)
+        wy = np.empty(4, dtype=np.float64)
+        for p in range(n):
             r0 = ras0[p]
             r1 = ras1[p]
             j0 = np.int64(np.floor(r0))
@@ -604,11 +589,7 @@ def _build_numba_kernels() -> dict:
             return 1.0
 
     # ---- bisinc ----
-    # parallel=True / prange over outer p. Per-iteration wx/wy buffers are
-    # allocated inside the loop so each thread gets its own copy (Numba auto
-    # private). Inner C-order accumulation (resamp.c:715-723) is preserved
-    # iteration-locally → bit-identical to the single-thread version.
-    @njit(fastmath=False, cache=False, parallel=True)
+    @njit(fastmath=False, cache=True)
     def _kbisinc(ras0, ras1, sin_flat, ydims, xdims, sout):
         n = ras0.shape[0]
         row_stride = 2 * xdims
@@ -616,9 +597,9 @@ def _build_numba_kernels() -> dict:
         # resamp.c:555). Both 1.0 (double) and 1 (int) coincide here.
         ns2_d = np.float64(NS_LOCAL // 2 - 1)  # 1.0
         ns2 = NS_LOCAL // 2 - 1  # 1
-        for p in prange(n):
-            wx = np.empty(NS_LOCAL, dtype=np.float64)
-            wy = np.empty(NS_LOCAL, dtype=np.float64)
+        wx = np.empty(NS_LOCAL, dtype=np.float64)
+        wy = np.empty(NS_LOCAL, dtype=np.float64)
+        for p in range(n):
             r0 = ras0[p]
             r1 = ras1[p]
             j0 = np.int64(np.floor(r0))
@@ -669,14 +650,7 @@ def _build_numba_kernels() -> dict:
     # (xdimm,). Saves ~6 ops × xdimm × ydimm scalar work in the inner
     # loop. The arithmetic is deterministic so the precomputed values
     # are bit-identical to what the inline form would produce.
-    # parallel=True / prange over outer ii: each (ii, jj) writes to disjoint
-    # sout[2*p .. 2*p+1] with p = (ii - ii0) * xdimm + jj. The original
-    # `p = 0; ... p += 1` running counter is replaced by an absolute index
-    # so iterations are independent. wx/wy buffers are per-iteration to give
-    # each thread its own scratch. All FP accumulations are iteration-local
-    # (the r0/r1f bilinear seed + bisinc kernel both reduce inside the loop)
-    # so bit-parity is preserved.
-    @njit(fastmath=False, cache=False, parallel=True)
+    @njit(fastmath=False, cache=True)
     def _kbisinc_grid(ii0, ii1, xdimm,
                       R_data, A_data, inc_y,
                       r1_arr, tx_arr, one_mtx_arr,
@@ -687,11 +661,11 @@ def _build_numba_kernels() -> dict:
         row_stride = 2 * xdims
         ns2_d = np.float64(NS_LOCAL // 2 - 1)
         ns2 = NS_LOCAL // 2 - 1
+        wx = np.empty(NS_LOCAL, dtype=np.float64)
+        wy = np.empty(NS_LOCAL, dtype=np.float64)
         inv_inc_y = 1.0 / inc_y
-        for ii in prange(ii0, ii1):
-            wx = np.empty(NS_LOCAL, dtype=np.float64)
-            wy = np.empty(NS_LOCAL, dtype=np.float64)
-            p_row_base = (ii - ii0) * xdimm
+        p = 0  # output pixel index within sout
+        for ii in range(ii0, ii1):
             gy = np.float64(ii) * inv_inc_y
             # gy depends only on ii — precompute the y-side clamp & frac
             a1 = np.int64(np.floor(gy))
@@ -703,7 +677,6 @@ def _build_numba_kernels() -> dict:
             one_mty = 1.0 - ty_
             a2 = a1 + 1
             for jj in range(xdimm):
-                p = p_row_base + jj
                 r1 = r1_arr[jj]
                 r2 = r1 + 1
                 tx_ = tx_arr[jj]
@@ -733,6 +706,7 @@ def _build_numba_kernels() -> dict:
                 if not (np.isfinite(r0) and np.isfinite(r1f)):
                     sout[2 * p] = 0
                     sout[2 * p + 1] = 0
+                    p += 1
                     continue
                 # bisinc kernel (mirrors _kbisinc above)
                 j0 = np.int64(np.floor(r0))
@@ -743,6 +717,7 @@ def _build_numba_kernels() -> dict:
                    (j0 - ns2) < 0 or (j0 + ns2 + 1) >= xdims:
                     sout[2 * p] = 0
                     sout[2 * p + 1] = 0
+                    p += 1
                     continue
                 for i in range(NS_LOCAL):
                     wx[i] = _skernel(abs(dr + ns2_d - i))
@@ -764,6 +739,7 @@ def _build_numba_kernels() -> dict:
                 cz_i = isum / wsum
                 sout[2 * p] = _round_clip(cz_r)
                 sout[2 * p + 1] = _round_clip(cz_i)
+                p += 1
 
     _NUMBA_KERNELS[1] = _knearest
     _NUMBA_KERNELS[2] = _kbilinear
