@@ -434,6 +434,62 @@ class TestEndToEndCParity(unittest.TestCase):
             self.assertLess(np.max(np.abs(p[:, 2] - c[:, 2])), 1e-6,
                             "height exceeds 1e-6 m residual tolerance")
 
+    def test_precise0_csh_lf_pipeline_parity(self):
+        """Mirror the REAL csh `dem2topo_ra.csh` pipeline byte-for-byte.
+
+        Mira #4 (2026-05-21): dem2topo_ra.csh feeds SAT_llt2rat through
+        `gmt grd2xyz --FORMAT_FLOAT_OUT=%lf dem.grd -s | SAT_llt2rat ...`
+        (ASCII, 6-digit `%lf` quantization). That is the input the C
+        binary actually sees in production. test_precise0_bit_identical
+        above uses `%.17g` (full-precision ASCII) which is finer than the
+        real pipeline — it can pass while the wire-in is broken.
+
+        This test mirrors the csh pipeline exactly and asserts byte parity
+        of the resulting trans.dat. Catches the regression where the py
+        wire-in switched to `-bo3d | -bi3d` (binary full-precision) and
+        broke topo_ra → los_ll by 1.51 mm on ALOS_haiti.
+        """
+        import subprocess, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            xyz = Path(d) / "dem.xyz.lf"
+            c_out = Path(d) / "c.dat"
+            py_out = Path(d) / "py.dat"
+
+            # 1. grd2xyz → ASCII with %lf (6-digit) — exactly what csh does
+            with open(xyz, "w") as fout:
+                subprocess.check_call(
+                    ["gmt", "grd2xyz", "--FORMAT_FLOAT_OUT=%lf",
+                     str(self.DEM), "-s"], stdout=fout)
+            # 2. Run C and Py on the same %lf-quantized input bytes
+            with open(xyz, "rb") as fin, open(c_out, "wb") as fout:
+                subprocess.check_call(
+                    [self.C_BIN, str(self.PRM), "0", "-bod"],
+                    stdin=fin, stdout=fout,
+                    cwd=str(self.PRM.parent))
+            py_bin = str(_MOD)
+            with open(xyz, "rb") as fin, open(py_out, "wb") as fout:
+                subprocess.check_call(
+                    [sys.executable, py_bin, str(self.PRM), "0", "-bod"],
+                    stdin=fin, stdout=fout,
+                    cwd=str(self.PRM.parent))
+            c = np.fromfile(c_out, dtype=np.float64).reshape(-1, 5)
+            p = np.fromfile(py_out, dtype=np.float64).reshape(-1, 5)
+            self.assertEqual(c.shape, p.shape, "row count must match exactly")
+            # In the %lf pipeline, lon/lat must be bit-identical and
+            # azi_pix should be sub-ULP (~1e-11). range_pix and height
+            # follow at sub-mm levels.
+            for j, name in [(3, "lon"), (4, "lat")]:
+                np.testing.assert_array_equal(
+                    p[:, j], c[:, j],
+                    err_msg=f"col {name} not bit-identical "
+                    f"(%lf csh-pipeline parity)")
+            self.assertLess(np.max(np.abs(p[:, 1] - c[:, 1])), 1e-9,
+                "azi_pix exceeds 1e-9 px residual tolerance (%lf pipeline)")
+            self.assertLess(np.max(np.abs(p[:, 0] - c[:, 0])), 1e-7,
+                "range_pix exceeds 1e-7 px residual tolerance (%lf pipeline)")
+            self.assertLess(np.max(np.abs(p[:, 2] - c[:, 2])), 1e-6,
+                "height exceeds 1e-6 m residual tolerance (%lf pipeline)")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
