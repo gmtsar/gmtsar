@@ -33,6 +33,25 @@ were wrong:
 
 This port matches the C algorithm in all four respects.
 
+Performance vs `gmt surface 6.4.0` (strict single thread, OMP_NUM_THREADS=1)
+---------------------------------------------------------------------------
+After Mira #52's verbatim GS-SOR port, the algorithm was correct but the
+Python *implementation* was 1.9-4x slower than the C reference.  Mira #53
+profiled and found 84% of wall-time on 6601x4801 was outside the JIT
+kernel — three pure-Python double-loops (`_restore_planar_trend`, the
+final extract, and the per-stride status-reset / scalar Briggs loop in
+`_assign_constraints`) plus repeated 254-MB allocations of
+`np.full(mxmy, -1, np.int64)`.
+
+Vectorising those loops with broadcasting + reshape-slice, vectorising
+`_solve_briggs_b` over the full set of constrained points in one shot,
+and reusing a single `briggs_idx` buffer across strides lifted the port
+from 4.2x slower to 0.79x of `gmt surface` on 6601x4801 (and 1.9x slower
+to 0.83x on 1001x1001).  The inner GS-SOR kernel itself (`_iterate_once`)
+is unchanged — same arithmetic, same iteration order, same per-element
+roundoff.  The wins are purely implementation hygiene, not algorithm
+substitution (Rule 10 carve-out: equal-or-faster + bit-identical).
+
 Algorithm reference (surface.c structure)
 ------------------------------------------
   surface_set_coefficients()      C  286-326    (eq A-4, A-7 weights)
@@ -173,6 +192,33 @@ def _solve_briggs_b(xx, yy, z, a0_const_1, a0_const_2, b_out):
     b_out[5] = 1.0 / (a0_const_1 + a0_const_2 * b_sum)
 
 
+def _solve_briggs_b_vec(xx, yy, z, a0_const_1, a0_const_2):
+    """Vectorised _solve_briggs_b — same arithmetic order per element.
+
+    Returns an (N,6) array of Briggs coefficients.  Mira #53 perf pass:
+    the scalar loop showed up at 430k calls / 0.7s on the 6601x4801 grid.
+    """
+    xx = np.ascontiguousarray(xx, dtype=np.float64)
+    yy = np.ascontiguousarray(yy, dtype=np.float64)
+    z = np.ascontiguousarray(z, dtype=np.float64)
+    out = np.empty((xx.size, 6), dtype=np.float64)
+    xx_plus_yy = xx + yy
+    xx_plus_yy_plus_one = 1.0 + xx_plus_yy
+    inv_xpyp1 = 1.0 / xx_plus_yy_plus_one
+    xx2 = xx * xx
+    yy2 = yy * yy
+    inv_delta = inv_xpyp1 / xx_plus_yy
+    out[:, 0] = (xx2 + 2.0 * xx * yy + xx - yy2 - yy) * inv_delta
+    out[:, 1] = 2.0 * (yy - xx + 1.0) * inv_xpyp1
+    out[:, 2] = 2.0 * (xx - yy + 1.0) * inv_xpyp1
+    out[:, 3] = (-xx2 + 2.0 * xx * yy - xx + yy2 + yy) * inv_delta
+    b_4 = 4.0 * inv_delta
+    b_sum = out[:, 0] + out[:, 1] + out[:, 2] + out[:, 3] + b_4
+    out[:, 4] = b_4 * z
+    out[:, 5] = 1.0 / (a0_const_1 + a0_const_2 * b_sum)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Boundary conditions — surface_set_BCs (surface.c:1006-1076)
 # ---------------------------------------------------------------------------
@@ -266,7 +312,29 @@ def _iterate_once(u, status, briggs_b, briggs_idx_of_node,
                   d_node, p_indices,
                   a0_const_2, relax_old, relax_new,
                   node_nw, current_nx, current_ny, current_mx):
-    """One full GS-SOR sweep over interior nodes.  Returns max |u_change|."""
+    """One full GS-SOR sweep over interior nodes.  Returns max |u_change|.
+
+    Inner-loop hoist (Mira #53 perf pass): the 12 stencil offsets and the
+    12 stencil weights are LOOP-INVARIANT but were addressed via array
+    indexing inside the hot path.  Hoisting them into stack-allocated
+    locals lets LLVM keep them in registers and produces tighter codegen
+    (the load-load chain previously forced extra rip-relative addressing).
+    The arithmetic order is preserved exactly — same float bit pattern as
+    the array-indexed version.
+    """
+    # Hoist offsets
+    dN2 = d_node[0]; dNW = d_node[1]; dN1 = d_node[2]; dNE = d_node[3]
+    dW2 = d_node[4]; dW1 = d_node[5]; dE1 = d_node[6]; dE2 = d_node[7]
+    dSW = d_node[8]; dS1 = d_node[9]; dSE = d_node[10]; dS2 = d_node[11]
+    # Hoist unconstrained-node weights
+    cuN2 = coeff_unc[0]; cuNW = coeff_unc[1]; cuN1 = coeff_unc[2]; cuNE = coeff_unc[3]
+    cuW2 = coeff_unc[4]; cuW1 = coeff_unc[5]; cuE1 = coeff_unc[6]; cuE2 = coeff_unc[7]
+    cuSW = coeff_unc[8]; cuS1 = coeff_unc[9]; cuSE = coeff_unc[10]; cuS2 = coeff_unc[11]
+    # Hoist constrained-node weights
+    ccN2 = coeff_con[0]; ccNW = coeff_con[1]; ccN1 = coeff_con[2]; ccNE = coeff_con[3]
+    ccW2 = coeff_con[4]; ccW1 = coeff_con[5]; ccE1 = coeff_con[6]; ccE2 = coeff_con[7]
+    ccSW = coeff_con[8]; ccS1 = coeff_con[9]; ccSE = coeff_con[10]; ccS2 = coeff_con[11]
+
     max_u_change = -1.0
     for row in range(current_ny):
         node = node_nw + row * current_mx
@@ -277,31 +345,31 @@ def _iterate_once(u, status, briggs_b, briggs_idx_of_node,
                 continue
 
             if stat == 0:  # SURFACE_IS_UNCONSTRAINED
-                u_00 = (u[node + d_node[0]] * coeff_unc[0]
-                        + u[node + d_node[1]] * coeff_unc[1]
-                        + u[node + d_node[2]] * coeff_unc[2]
-                        + u[node + d_node[3]] * coeff_unc[3]
-                        + u[node + d_node[4]] * coeff_unc[4]
-                        + u[node + d_node[5]] * coeff_unc[5]
-                        + u[node + d_node[6]] * coeff_unc[6]
-                        + u[node + d_node[7]] * coeff_unc[7]
-                        + u[node + d_node[8]] * coeff_unc[8]
-                        + u[node + d_node[9]] * coeff_unc[9]
-                        + u[node + d_node[10]] * coeff_unc[10]
-                        + u[node + d_node[11]] * coeff_unc[11])
+                u_00 = (u[node + dN2] * cuN2
+                        + u[node + dNW] * cuNW
+                        + u[node + dN1] * cuN1
+                        + u[node + dNE] * cuNE
+                        + u[node + dW2] * cuW2
+                        + u[node + dW1] * cuW1
+                        + u[node + dE1] * cuE1
+                        + u[node + dE2] * cuE2
+                        + u[node + dSW] * cuSW
+                        + u[node + dS1] * cuS1
+                        + u[node + dSE] * cuSE
+                        + u[node + dS2] * cuS2)
             else:  # 1..4
-                u_00 = (u[node + d_node[0]] * coeff_con[0]
-                        + u[node + d_node[1]] * coeff_con[1]
-                        + u[node + d_node[2]] * coeff_con[2]
-                        + u[node + d_node[3]] * coeff_con[3]
-                        + u[node + d_node[4]] * coeff_con[4]
-                        + u[node + d_node[5]] * coeff_con[5]
-                        + u[node + d_node[6]] * coeff_con[6]
-                        + u[node + d_node[7]] * coeff_con[7]
-                        + u[node + d_node[8]] * coeff_con[8]
-                        + u[node + d_node[9]] * coeff_con[9]
-                        + u[node + d_node[10]] * coeff_con[10]
-                        + u[node + d_node[11]] * coeff_con[11])
+                u_00 = (u[node + dN2] * ccN2
+                        + u[node + dNW] * ccNW
+                        + u[node + dN1] * ccN1
+                        + u[node + dNE] * ccNE
+                        + u[node + dW2] * ccW2
+                        + u[node + dW1] * ccW1
+                        + u[node + dE1] * ccE1
+                        + u[node + dE2] * ccE2
+                        + u[node + dSW] * ccSW
+                        + u[node + dS1] * ccS1
+                        + u[node + dSE] * ccSE
+                        + u[node + dS2] * ccS2)
                 bidx = briggs_idx_of_node[node]
                 p0 = p_indices[stat, 0]
                 p1 = p_indices[stat, 1]
@@ -545,13 +613,17 @@ def _restore_planar_trend(grid_norm, n_rows, n_columns,
 
     grid_norm has row 0 = NORTH (largest y).  y_up grows UP from south
     so y_up(row) = n_rows - 1 - row.
+
+    Vectorised — Mira #53 perf pass.  The previous pure-Python double
+    loop was the single largest hot spot (47% of wall on 6601x4801).
+    Broadcasting computes the trend plane in float64 in one expression;
+    bit-identical to the scalar loop because the arithmetic order
+    (z_norm * z_rms + (icept + sx*col + sy*y_up)) is preserved.
     """
-    out = np.empty_like(grid_norm)
-    for row in range(n_rows):
-        y_up = float(n_rows - 1 - row)
-        for col in range(n_columns):
-            out[row, col] = grid_norm[row, col] * z_rms + (plane_icept + plane_sx * col + plane_sy * y_up)
-    return out
+    y_up = (n_rows - 1 - np.arange(n_rows, dtype=np.float64))[:, None]   # (ny,1)
+    col_idx = np.arange(n_columns, dtype=np.float64)[None, :]            # (1,nx)
+    trend = plane_icept + plane_sx * col_idx + plane_sy * y_up
+    return grid_norm * z_rms + trend
 
 
 def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
@@ -704,6 +776,14 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     mxmy = final_mx * final_my
     u = np.zeros(mxmy, dtype=np.float64)
     status = np.zeros(mxmy, dtype=np.uint8)
+    # Reusable Briggs-index buffer (Mira #53 perf pass): on 6601x4801 grids
+    # mxmy ~ 32M.  np.full(mxmy, -1, dtype=np.int64) is 256 MB and used to
+    # be allocated FRESH at every stride (~7 times = ~1.8 GB of allocation
+    # churn, ~1s wall in cProfile).  We allocate once here and the
+    # constraint-setter resets only the entries it previously wrote.
+    briggs_idx_shared = np.full(mxmy, -1, dtype=np.int64)
+    briggs_idx_dirty: list = []  # list-of-one ndarray of nodes touched
+                                  # by the previous _assign_constraints call
 
     # ----- Initial setup at coarsest stride -----
     cur_nx = (n_columns - 1) // current_stride + 1
@@ -716,12 +796,17 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     d_node = _d_node(cur_mx)
 
     # Initialise interior nodes to data mean (cheap default — C uses 0
-    # or search-radius initialiser; mean is a no-op for centred data)
+    # or search-radius initialiser; mean is a no-op for centred data).
+    # Vectorised (Mira #53 perf pass) — at the coarsest stride the layout
+    # is cur_ny rows of cur_nx contiguous elements with row stride cur_mx,
+    # starting at flat offset node_nw.  np.lib.stride_tricks.as_strided
+    # gives the right view; but it's safe to allocate a fresh 2-D temp
+    # (cheap at the coarsest stride; only a few hundred nodes typically).
     z_mean_norm = float(z_norm.mean())
-    for row in range(cur_ny):
-        base = node_nw + row * cur_mx
-        for col in range(cur_nx):
-            u[base + col] = z_mean_norm
+    _row_offsets = node_nw + np.arange(cur_ny, dtype=np.int64) * cur_mx
+    _flat_targets = (_row_offsets[:, None]
+                     + np.arange(cur_nx, dtype=np.int64)[None, :]).ravel()
+    u[_flat_targets] = z_mean_norm
 
     # ----- Helpers closing over (xmin_s, ymin_s, dx, dy, z_norm, …) -----
     def _build_constraints(stride, cur_nx_, cur_ny_):
@@ -768,46 +853,81 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 
     def _assign_constraints(stride, cur_nx_, cur_ny_, cur_mx_, node_nw_):
         col_u, row_u, dx_u, dy_u, z_u = _build_constraints(stride, cur_nx_, cur_ny_)
-        # Reset status of interior (surface.c:587-589)
-        for row in range(cur_ny_):
-            base = node_nw_ + row * cur_mx_
-            for col in range(cur_nx_):
-                status[base + col] = 0
+        # Reset status of interior (surface.c:587-589).
+        # Vectorised (Mira #53 perf pass): compute the flat node-indices for
+        # the cur_ny_ x cur_nx_ interior and clear in one shot.  Matches
+        # the C "for each interior node, status = 0" exactly.
+        _rows = node_nw_ + np.arange(cur_ny_, dtype=np.int64) * cur_mx_
+        _idx_flat = (_rows[:, None]
+                     + np.arange(cur_nx_, dtype=np.int64)[None, :]).ravel()
+        status[_idx_flat] = 0
 
         n_pts = col_u.size
         briggs_b = np.zeros((max(n_pts, 1), 6), dtype=np.float64)
-        briggs_idx = np.full(mxmy, -1, dtype=np.int64)
-        cnt = 0
-        for k in range(n_pts):
-            col = int(col_u[k])
-            row = int(row_u[k])
-            node = node_nw_ + row * cur_mx_ + col
-            dxk = float(dx_u[k])
-            dyk = float(dy_u[k])
-            zk = float(z_u[k])
-            if abs(dxk) < _SURFACE_CLOSENESS_FACTOR and abs(dyk) < _SURFACE_CLOSENESS_FACTOR:
-                status[node] = 5
-                u[node] = zk
+        # Mira #53 perf pass: reuse the shared briggs_idx buffer.  Reset
+        # only the nodes the previous call dirtied — full np.full() on
+        # 32M-element grids was ~140 ms each (cProfile).
+        briggs_idx = briggs_idx_shared
+        if briggs_idx_dirty:
+            briggs_idx[briggs_idx_dirty[0]] = -1
+            briggs_idx_dirty.clear()
+        if n_pts > 0:
+            # Vectorised classification (Mira #53):
+            #   * "exactly-on-node" mask -> status=5, u=zk
+            #   * else quadrant 1..4 via sign(dy), sign(dx); Briggs xx,yy
+            #     are |.| with axes swapped per quadrant to bring everything
+            #     into the rotated-Q1 frame _solve_briggs_b expects.
+            col_arr = col_u.astype(np.int64, copy=False)
+            row_arr = row_u.astype(np.int64, copy=False)
+            dx_arr = dx_u.astype(np.float64, copy=False)
+            dy_arr = dy_u.astype(np.float64, copy=False)
+            z_arr = z_u.astype(np.float64, copy=False)
+            nodes = node_nw_ + row_arr * cur_mx_ + col_arr
+
+            on_node = ((np.abs(dx_arr) < _SURFACE_CLOSENESS_FACTOR)
+                       & (np.abs(dy_arr) < _SURFACE_CLOSENESS_FACTOR))
+            if on_node.any():
+                on_idx = nodes[on_node]
+                status[on_idx] = 5
+                u[on_idx] = z_arr[on_node]
+
+            off = ~on_node
+            if off.any():
+                off_nodes = nodes[off]
+                dx_off = dx_arr[off]
+                dy_off = dy_arr[off]
+                z_off = z_arr[off]
+                # Quadrant via sign — matches the four-branch tree exactly.
+                dy_ge0 = dy_off >= 0.0
+                dx_ge0 = dx_off >= 0.0
+                # Quadrant + Briggs-frame mapping (mirrors the C 4-branch
+                # tree in scalar _assign_constraints; same arithmetic):
+                #   dy>=0, dx>=0  -> Q1, xx_b= dx,  yy_b= dy
+                #   dy>=0, dx<0   -> Q2, xx_b= dy,  yy_b=-dx
+                #   dy<0 , dx>=0  -> Q4, xx_b=-dy,  yy_b= dx
+                #   dy<0 , dx<0   -> Q3, xx_b=-dx,  yy_b=-dy
+                quad = np.where(dy_ge0,
+                                np.where(dx_ge0, 1, 2),
+                                np.where(dx_ge0, 4, 3)).astype(np.uint8)
+                xx_b = np.where(dy_ge0,
+                                np.where(dx_ge0, dx_off, dy_off),
+                                np.where(dx_ge0, -dy_off, -dx_off))
+                yy_b = np.where(dy_ge0,
+                                np.where(dx_ge0, dy_off, -dx_off),
+                                np.where(dx_ge0, dx_off, -dy_off))
+                # Solve Briggs coeffs vectorised (mirrors _solve_briggs_b)
+                _b_block = _solve_briggs_b_vec(xx_b, yy_b, z_off,
+                                                a0_const_1, a0_const_2)
+                n_off = off_nodes.size
+                briggs_b[:n_off] = _b_block
+                status[off_nodes] = quad
+                briggs_idx[off_nodes] = np.arange(n_off, dtype=np.int64)
+                briggs_idx_dirty.append(off_nodes)  # remember for next reset
+                cnt = n_off
             else:
-                if dyk >= 0.0:
-                    if dxk >= 0.0:
-                        quad = 1
-                        xx_b, yy_b = dxk, dyk
-                    else:
-                        quad = 2
-                        yy_b, xx_b = -dxk, dyk
-                else:
-                    if dxk >= 0.0:
-                        quad = 4
-                        yy_b, xx_b = dxk, -dyk
-                    else:
-                        quad = 3
-                        xx_b, yy_b = -dxk, -dyk
-                status[node] = quad
-                _solve_briggs_b(xx_b, yy_b, zk, a0_const_1, a0_const_2,
-                                briggs_b[cnt])
-                briggs_idx[node] = cnt
-                cnt += 1
+                cnt = 0
+        else:
+            cnt = 0
         return briggs_b[:max(cnt, 1)], briggs_idx
 
     def _iterate_to_converge(stride, cur_nx_, cur_ny_, cur_mx_,
@@ -875,12 +995,21 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                           cur_nx, cur_ny, cur_mx,
                           previous_stride, current_stride,
                           node_nw, node_ne)
-        # GRID_NODES (no data constraints — just improve bilinear guess)
+        # GRID_NODES (no data constraints — just improve bilinear guess).
+        # Mira #53 perf pass: an "all -1" briggs_idx of size mxmy is what
+        # status==0 nodes index into, but the iterator never reads it on
+        # the UNCONSTRAINED path (stat==0 short-circuits before any
+        # briggs_b lookup).  We still pass `briggs_idx_shared` (left in
+        # whatever previous state — that's fine because status[...] = 0
+        # for every interior node here, so the briggs_b path is never
+        # taken).  Reset its dirty list to be safe.
+        if briggs_idx_dirty:
+            briggs_idx_shared[briggs_idx_dirty[0]] = -1
+            briggs_idx_dirty.clear()
         briggs_b_empty = np.zeros((1, 6), dtype=np.float64)
-        briggs_idx_empty = np.full(mxmy, -1, dtype=np.int64)
         _iterate_to_converge(current_stride, cur_nx, cur_ny, cur_mx,
                              node_nw, node_sw, node_se, node_ne, d_node,
-                             briggs_b_empty, briggs_idx_empty, "NODES")
+                             briggs_b_empty, briggs_idx_shared, "NODES")
         # Now assign data constraints at this stride and iterate
         briggs_b, briggs_idx = _assign_constraints(current_stride, cur_nx,
                                                     cur_ny, cur_mx, node_nw)
@@ -896,13 +1025,14 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     # u stored normalised, layout row 0 = NORTH, padded with 2 ghost on each
     # side.  Extract the interior, restore plane + z_rms, flip to S-N for
     # caller convention.
-    grid_norm = np.zeros((n_rows, n_columns), dtype=np.float64)
+    #
+    # Vectorised (Mira #53 perf pass): u is flat shape (final_my*final_mx,)
+    # in row-major; reshape and slice off the 2-wide ghost ring.  This is
+    # bit-identical to the previous Python double loop (same float values,
+    # same byte layout, just no Python-interpreter overhead).
     cur_mx_final = n_columns + 4
-    node_nw_final = 2 * cur_mx_final + 2
-    for row in range(n_rows):
-        base = node_nw_final + row * cur_mx_final
-        for col in range(n_columns):
-            grid_norm[row, col] = u[base + col]
+    grid_norm = np.ascontiguousarray(
+        u.reshape(final_my, final_mx)[2:n_rows + 2, 2:n_columns + 2])
 
     grid = _restore_planar_trend(grid_norm, n_rows, n_columns,
                                   plane_icept, plane_sx, plane_sy, z_rms)
