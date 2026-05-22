@@ -10,6 +10,7 @@
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
+import numpy as _np
 from gmtsar_lib import *
 
 # In-process replacement for the proj_ra2ll subprocess chain. Eliminates
@@ -25,6 +26,87 @@ except ImportError as _e:
     print(f"GEOCODE: WARN: proj_ra2ll_lib import failed ({_e}); "
           "falling back to subprocess proj_ra2ll.", file=sys.stderr)
     _HAVE_FAST_PROJ = False
+
+# Mira #36 (2026-05-22): Tier-1 in-process grdmath A B MUL = C wire-in.
+# Replaces the per-file `gmt grdmath A B MUL = C` subprocess (~150-300 ms
+# fork+launch+netCDF read each) with a numpy multiply through
+# gmt_grd_io.{read,write}_gmt_grd. Five sites in geocode use this pattern:
+#   - phase.grd      x mask2.grd  -> phase_mask.grd
+#   - xphase.grd     x mask2.grd  -> xphase_mask.grd   (conditional)
+#   - yphase.grd     x mask2.grd  -> yphase_mask.grd   (conditional)
+#   - unwrap.grd     x mask3.grd  -> unwrap_mask.grd   (conditional)
+#   - phasefilt.grd  x mask2.grd  -> phasefilt_mask.grd (conditional)
+# All five operate on same-shape grids produced earlier in the pipeline,
+# so a strict shape/coord match is the in-process precondition; on any
+# mismatch we fall through to gmt subprocess. Set GMTSAR_GMT_INPROC=0 to
+# disable the wire-in entirely (debug/regression A/B path).
+try:
+    from gmt_grd_io import read_gmt_grd as _read_gmt_grd
+    from gmt_grd_io import write_gmt_grd as _write_gmt_grd
+    _HAVE_GMT_GRD_IO = True
+except ImportError as _e:
+    print(f"GEOCODE: WARN: gmt_grd_io import failed ({_e}); "
+          "using gmt grdmath subprocess.", file=sys.stderr)
+    _HAVE_GMT_GRD_IO = False
+
+
+def _inproc_enabled() -> bool:
+    """Match the master switch used by other in-process wire-ins
+    (utils/dem2topo_ra, etc.). GMTSAR_GMT_INPROC=0 disables in-process."""
+    return os.environ.get("GMTSAR_GMT_INPROC", "1") != "0"
+
+
+def _grdmath_mul_grid_grid(a_grd: str, b_grd: str, out_grd: str,
+                            V: str = "") -> None:
+    """Replacement for `gmt grdmath <a> <b> MUL = <out>` (grid * grid).
+
+    In-process path: read a + b via gmt_grd_io.read_gmt_grd, assert
+    shape + coord-array equality, multiply element-wise, write via
+    gmt_grd_io.write_gmt_grd preserving node_offset and geographic
+    flags. NaNs propagate (numpy: NaN * anything = NaN), matching
+    GMT's grdmath MUL semantics on _FillValue cells.
+
+    Falls back to `gmt grdmath ...` subprocess when:
+      - GMTSAR_GMT_INPROC=0
+      - gmt_grd_io / netCDF4 not importable
+      - the two grids disagree on shape or coord arrays (extension/
+        broadcast semantics are not implemented; gmt handles those)
+      - any read/write raises (fail-soft to subprocess)
+    """
+    use_inproc = _HAVE_GMT_GRD_IO and _inproc_enabled()
+    if use_inproc:
+        try:
+            a_data, a_x, a_y, a_info = _read_gmt_grd(a_grd)
+            b_data, b_x, b_y, b_info = _read_gmt_grd(b_grd)
+            # Strict shape/coord match — gmt grdmath also extends and
+            # broadcasts, but the five geocode sites all use co-produced
+            # grids (same RAD pipeline → identical layout). Anything else
+            # means we hit a usage we haven't audited.
+            if (a_data.shape != b_data.shape or
+                not _np.array_equal(a_x, b_x) or
+                not _np.array_equal(a_y, b_y)):
+                raise ValueError(
+                    f"shape/coord mismatch: {a_grd}{a_data.shape} vs "
+                    f"{b_grd}{b_data.shape}; falling back to gmt grdmath")
+            # numpy float32 mul with NaN propagation = grdmath MUL.
+            out = a_data * b_data
+            # Preserve A's registration; mask grids are produced with the
+            # same node_offset as the phase grids so this is correct.
+            _write_gmt_grd(
+                out_grd, out, a_x, a_y,
+                node_offset=int(a_info.get("node_offset", 0)),
+                geographic=bool(a_info.get("geographic", False)),
+                history=f"gmt grdmath {a_grd} {b_grd} MUL = {out_grd} "
+                        "[gmt_grd_io in-process]",
+            )
+            return
+        except Exception as exc:
+            print(f"GEOCODE: WARN: in-process MUL {a_grd} x {b_grd} "
+                  f"failed ({exc!r}); falling back to gmt grdmath.",
+                  file=sys.stderr)
+    # Fallback: classic gmt subprocess (preserves -V verbose flag).
+    suffix = (" " + V) if V else ""
+    run(f"gmt grdmath {a_grd} {b_grd} MUL = {out_grd}{suffix}")
 
 def geocode():
     
@@ -55,19 +137,20 @@ def geocode():
     cmd = 'gmt grdmath corr.grd '+sys.argv[1]+' GE 0 NAN mask.grd MUL = mask2.grd '+V
     run(cmd)
     
-    cmd = 'gmt grdmath phase.grd mask2.grd MUL = phase_mask.grd'
-    run(cmd)
-    
+    # Mira #36 wire-in: in-process A B MUL via numpy + gmt_grd_io.
+    # GMTSAR_GMT_INPROC=0 forces the gmt subprocess fallback.
+    _grdmath_mul_grid_grid('phase.grd', 'mask2.grd', 'phase_mask.grd')
+
     if check_file_report('xphase.grd')==True:
-        run('gmt grdmath xphase.grd mask2.grd MUL = xphase_mask.grd')
-        run('gmt grdmath yphase.grd mask2.grd MUL = yphase_mask.grd')
-    
+        _grdmath_mul_grid_grid('xphase.grd', 'mask2.grd', 'xphase_mask.grd')
+        _grdmath_mul_grid_grid('yphase.grd', 'mask2.grd', 'yphase_mask.grd')
+
     if check_file_report('unwrap.grd')==True:
         run('''gmt grdsample mask2.grd `gmt grdinfo unwrap.grd -I-` `gmt grdinfo unwrap.grd -I` -Gmask3.grd''')
-        run('gmt grdmath unwrap.grd mask3.grd MUL = unwrap_mask.grd')
-    
+        _grdmath_mul_grid_grid('unwrap.grd', 'mask3.grd', 'unwrap_mask.grd')
+
     if check_file_report('phasefilt.grd')==True:
-        run('gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd')
+        _grdmath_mul_grid_grid('phasefilt.grd', 'mask2.grd', 'phasefilt_mask.grd')
         
     print(' ')
     print('GEOCODE: look at the masked phase ... ...')
