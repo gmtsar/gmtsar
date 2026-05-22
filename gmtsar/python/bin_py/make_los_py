@@ -1,0 +1,107 @@
+#! /usr/bin/env python3
+"""make_los_py — Python port of the phase-to-LOS conversion.
+
+Background
+----------
+GMTSAR does NOT have a stand-alone `make_los` C binary. The phase → line-of-
+sight (LOS) displacement conversion is done by the `gmt grdmath` call inside
+`gmtsar/csh/geocode.csh`:
+
+    gmt grdmath unwrap_mask.grd $wavel MUL -79.58 MUL = los.grd       (line 77)
+    gmt grdmath unwrap_mask_ll.grd $wavel MUL -79.58 MUL = los_ll.grd (line 139)
+
+That formula is:
+    los_mm  =  -1000 / (4*pi)  *  wavelength_m  *  phase_rad
+            ≈  -79.5775 * wavelength_m * phase_rad
+
+Where:
+    -1000 / (4*pi) = -79.57747154... mm/rad/m  (the "-79.58" is a 2-sf
+                                                 truncation; see below)
+    The wavelength is in metres (from the PRM file's `lambda` field).
+    The factor of 1000 turns metres → millimetres.
+    The negative sign matches GMT's "positive LOS = range decrease" sign
+    convention (label "equals negative range" in geocode.csh:140).
+
+CRITICAL: the truncated constant
+--------------------------------
+geocode.csh uses the literal `-79.58`, NOT the mathematically-exact
+`-1000/(4*pi) = -79.5774715459...`. That's a 0.003% truncation per
+Mira-Volkov rule 2 (use C #define values verbatim). The downstream
+`los.grd` values are biased upward by 0.003% as a result. We mirror
+that EXACT factor here so a port of `geocode.csh` to Python produces
+bit-equal LOS grids; do NOT "fix" it to the precise value.
+
+CLI:
+    make_los_py phase_in.grd wavelength_m los_out.grd
+
+Reads the GMT netCDF input, applies `los = -79.58 * wavelength * phase`,
+writes the output grd with the same coords / registration.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+
+_HERE = Path(__file__).resolve().parent
+_UTILS = _HERE.parent / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
+
+from gmt_grd_io import read_gmt_grd, write_gmt_grd  # noqa: E402
+
+# Verbatim from geocode.csh — DO NOT replace with -1000/(4*pi).
+# See module docstring for why.
+GEOCODE_FACTOR = -79.58
+
+
+def phase_to_los(phase: np.ndarray, wavelength_m: float,
+                 factor: float = GEOCODE_FACTOR) -> np.ndarray:
+    """Convert wrapped or unwrapped phase (rad) to LOS displacement (mm).
+
+    los_mm = factor * wavelength_m * phase
+
+    `factor` defaults to -79.58 (the geocode.csh truncated constant).
+    Pass `factor=-1000/(4*np.pi)` to use the mathematically exact value;
+    note this produces a 0.003% offset relative to the C/csh pipeline.
+    """
+    return factor * wavelength_m * phase
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="make_los_py",
+        description="Convert phase grd (rad) to LOS displacement grd (mm).",
+    )
+    p.add_argument("phase_grd", help="input phase grd (radians)")
+    p.add_argument("wavelength_m", type=float,
+                   help="radar wavelength (metres); from PRM `lambda` field")
+    p.add_argument("los_grd", help="output LOS grd (mm)")
+    p.add_argument("--exact-factor", action="store_true",
+                   help="use the mathematically exact factor -1000/(4*pi) "
+                        "instead of the geocode.csh truncated -79.58. NOT "
+                        "bit-equal to the csh pipeline.")
+    args = p.parse_args(argv)
+
+    factor = -1000.0 / (4.0 * np.pi) if args.exact_factor else GEOCODE_FACTOR
+
+    phase, x, y, info = read_gmt_grd(args.phase_grd)
+    los = phase_to_los(phase, args.wavelength_m, factor=factor)
+
+    write_gmt_grd(
+        args.los_grd, los, x, y,
+        node_offset=info.get("node_offset", 0),
+        geographic=info.get("geographic", False),
+        title="LOS displacement",
+        history=f"make_los_py {args.phase_grd} {args.wavelength_m} "
+                f"{args.los_grd}"
+                + (" --exact-factor" if args.exact_factor else ""),
+        description="equals negative range",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
