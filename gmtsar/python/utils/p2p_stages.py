@@ -19,8 +19,34 @@ Imported into the p2p_processing entry script via `from p2p_stages import *`.
 import shutil
 import sys, os, re
 import subprocess, glob
+import time
 from gmtsar_lib import *
-from phase_profile import time_run
+from phase_profile import time_run, _BINARY_TIMES
+from snaphu import snaphu_unwrap, snaphu_interp_unwrap
+
+
+def _snaphu_py_enabled():
+    """Native Python snaphu wrapper is ON by default. `GMTSAR_SNAPHU_PY=0`
+    reverts to the legacy `snaphu.py` shell shim — useful for A/B parity
+    debugging if a regression is suspected."""
+    return os.environ.get("GMTSAR_SNAPHU_PY", "1") != "0"
+
+
+def _call_snaphu(threshold, defomax, near_interp):
+    """Dispatch to native Python snaphu (default) or shell shim (env override).
+    Either path is timed under the `snaphu` profiler bucket so phase timings
+    stay comparable across A/B runs."""
+    if _snaphu_py_enabled():
+        t0 = time.time()
+        try:
+            if near_interp == 1:
+                return snaphu_interp_unwrap(threshold, defomax)
+            return snaphu_unwrap(threshold, defomax)
+        finally:
+            _BINARY_TIMES.setdefault("snaphu", []).append(time.time() - t0)
+    interp_flag = 1 if near_interp == 1 else 0
+    time_run(f"snaphu.py {threshold} {defomax} {interp_flag}", "snaphu")
+    return None
 
 
 
@@ -568,7 +594,8 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
                 run(f"landmask {rcut}")
                 os.chdir(f"../iono_phase/{side}")
                 file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-        run('snaphu.py 0.05 0 1')
+        # iono path uses interp=1, threshold=0.05, defomax=0 (always).
+        _call_snaphu(0.05, 0, near_interp=1)
     os.chdir('..')
 
 
@@ -699,11 +726,12 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
         _ensure_landmask(sub)
 
     print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
-    # Python snaphu unifies snaphu/snaphu_interp; the 3rd arg is interp flag.
-    # Use snaphu.py (Python wrapper) explicitly. The bare name `snaphu` is
-    # the upstream C binary which has a different CLI; collision with our
-    # wrapper was the root cause of ALOS_haiti's silent snaphu failure.
-    time_run(f"snaphu.py {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}", "snaphu")
+    # Native Python snaphu wrappers (utils/snaphu.py), env-gated by
+    # GMTSAR_SNAPHU_PY (default ON). Setting GMTSAR_SNAPHU_PY=0 falls back
+    # to the legacy `snaphu.py` shell shim. The bare name `snaphu` is the
+    # third-party C binary with a different CLI — never call that directly
+    # (collision was ALOS_haiti's silent-failure root cause).
+    _call_snaphu(threshold_snaphu, defomax, near_interp)
     print('P2P 5: SNAPHU - END')
     os.chdir("../..")
 
