@@ -66,11 +66,27 @@ from pathlib import Path
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Reuse the orbit / hermite / goldop / plh2xyz / polyfit helpers from the
-# Mira #2 ancestor SAT_llt2rat_py. Loading that script as a module (it has
-# no .py extension) via SourceFileLoader gives us the full ladder of 9
-# sub-ULP fixes for free — no copy/paste, no drift.
+# Source of truth for primitives: utils/vector.py (Mira #34). Importing the
+# constants + cross3 from there eliminates duplicated inline definitions and
+# locks the values to the test_vector.py suite. Orbit-level helpers (Hermite,
+# goldop_batch, presample_orbit, read_prm/read_led) are NOT yet in
+# utils/vector.py — those stay on the SourceFileLoader path below.
 _HERE = Path(__file__).resolve().parent
+_PY_ROOT = _HERE.parent
+if str(_PY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PY_ROOT))
+from utils.vector import (                                       # noqa: E402
+    SOL,                          # 299792456.0 m/s
+    PI as _PI_TRUNC,              # 3.14159265358979 (truncated, llt2xyz.h:61)
+    R_GOLD as _R_GOLD,            # 0.61803399 (SAT_llt2rat_sub.c #define R)
+    C_GOLD as _C_GOLD,            # 0.382      (SAT_llt2rat_sub.c #define C)
+    cross_3 as _cross_3_njit,     # @njit, out-param signature
+)
+
+# Reuse the orbit / Hermite / goldop / plh2xyz / polyfit helpers from the
+# Mira #2 ancestor SAT_llt2rat_py via SourceFileLoader (script with no .py
+# extension). Future Miras may pull plh2xyz / polyfit / hermite into
+# utils/vector.py at which point those names can move to the import block above.
 _LLT_PATH = _HERE / "SAT_llt2rat_py"
 _spec = _ilu.spec_from_loader(
     "sat_llt2rat_py_for_baseline",
@@ -80,10 +96,9 @@ _LLT = _ilu.module_from_spec(_spec)
 sys.modules["sat_llt2rat_py_for_baseline"] = _LLT
 _spec.loader.exec_module(_LLT)
 
-# Reused helpers from SAT_llt2rat_py
 read_prm = _LLT.read_prm
 read_led = _LLT.read_led
-plh2xyz = _LLT.plh2xyz                       # uses TRUNCATED pi
+plh2xyz = _LLT.plh2xyz                       # uses TRUNCATED pi (matches _PI_TRUNC)
 hermite_orbit = _LLT.hermite_orbit
 hermite_c_1d_numba = _LLT.hermite_c_1d_numba  # numba general path
 hermite_c_1d = _LLT.hermite_c_1d              # pure-numpy general path
@@ -91,16 +106,16 @@ presample_orbit = _LLT.presample_orbit
 goldop_batch = _LLT.goldop_batch
 polyfit_c = _LLT.polyfit_c
 _HAS_NUMBA = getattr(_LLT, "_HAS_NUMBA", False)
-SOL = _LLT.SOL                               # 299792456.0
 
 
 # ---------------------------------------------------------- Constants ---
-# llt2xyz.h:61 — truncated π used by plh2xyz / xyz2plh.
-_PI_TRUNC = 3.14159265358979
 # gmtsar.h:13 — full M_PI used by find_alpha_degrees / find_parallel_perp.
 # math.pi == 3.141592653589793 which is the IEEE-754 closest representable
 # double of the full π, identical to C's M_PI 3.14159265358979323846 after
 # rounding to double. We verify in tests.
+# NB: this is DISTINCT from _PI_TRUNC (the truncated 14-digit llt2xyz.h:61
+# value used by plh2xyz / xyz2plh, imported above from utils.vector). DO NOT
+# unify the two.
 _M_PI = math.pi
 
 # Helpers for PRM scalar access — mirror SAT_llt2rat_py's
@@ -131,20 +146,17 @@ def find_unit_vectors(x: float, y: float, z: float
 
 
 def cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Port of utils.c cross3 (3-vector cross product), matching C
-    component formulae line-for-line:
+    """Thin wrapper around utils.vector.cross_3 (out-param @njit kernel).
 
-        c[0] = a[1]*b[2] - a[2]*b[1]
-        c[1] = -a[0]*b[2] + a[2]*b[0]
-        c[2] = a[0]*b[1] - a[1]*b[0]
-
-    Note c[1] is `(-a[0]*b[2]) + (a[2]*b[0])` — left-to-right, NOT
-    `a[2]*b[0] - a[0]*b[2]` which differs by 1 ULP for some inputs.
+    Returns a fresh (3,) ndarray to keep the existing call sites
+    (cross3(a, b) -> ndarray) unchanged. The C component formulae
+    (`c[1] = -a[0]*b[2] + a[2]*b[0]`, left-to-right) live in
+    utils.vector.cross_3 and are pinned by test_vector.TestCross3.
     """
     c = np.empty(3, dtype=np.float64)
-    c[0] = (a[1] * b[2]) - (a[2] * b[1])
-    c[1] = (-a[0] * b[2]) + (a[2] * b[0])
-    c[2] = (a[0] * b[1]) - (a[1] * b[0])
+    _cross_3_njit(np.ascontiguousarray(a, dtype=np.float64),
+                  np.ascontiguousarray(b, dtype=np.float64),
+                  c)
     return c
 
 
@@ -505,9 +517,10 @@ def poly_interp(orbit: np.ndarray, meta: dict, t_ref: float,
 # goldop_batch in SAT_llt2rat_py mirrors SAT_llt2rat.c — we need a
 # variant here for llt2rat_sub callers (SAT_baseline.c L447-448).
 # Mira #11 (NEW for SAT_baseline_py).
-
-_R_GOLD = 0.61803399   # C #define R in SAT_llt2rat_sub.c L51
-_C_GOLD = 0.382         # C #define C in SAT_llt2rat_sub.c L52
+# _R_GOLD / _C_GOLD now come from utils.vector (Mira #34) — same truncated
+# C #define values: R = 0.61803399, C = 0.382 (sum = 0.99996601, NOT 1.0).
+# Identical numeric values to the previous inline `_R_GOLD = 0.61803399`
+# and `_C_GOLD = 0.382` literals.
 
 
 def goldop_sub(orb_pos: np.ndarray, xp: float, yp: float, zp: float
