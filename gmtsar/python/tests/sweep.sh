@@ -278,4 +278,17 @@ log "all case runs complete"
 "$PY" "$TESTSYS/report.py" >> "$LOG" 2>&1
 log "summary written to $WORK/sweep_summary.md"
 
+# project_rules.md #7 — every full sweep MUST emit a perf snapshot under
+# docs/perf_snapshots/ so the run is reproducible/auditable. Tier becomes a
+# label so partial sweeps (smoke/fast) don't masquerade as full ones.
+SNAPSHOT_TOOL="$GMTSAR/gmtsar/python/tools/perf_snapshot.py"
+if [ -f "$SNAPSHOT_TOOL" ]; then
+    label_for_snapshot="${TEST_TIER:-full}"
+    "$PY" "$SNAPSHOT_TOOL" --label "$label_for_snapshot" >> "$LOG" 2>&1 \
+        && log "perf snapshot written under docs/perf_snapshots/" \
+        || log "WARN: perf_snapshot.py failed (non-fatal)"
+else
+    log "WARN: $SNAPSHOT_TOOL missing — skipping rule-7 snapshot"
+fi
+
 log "=== sweep finished ==="
