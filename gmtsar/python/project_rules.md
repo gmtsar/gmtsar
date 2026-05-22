@@ -316,3 +316,70 @@ A port qualifies for keep-as-is if BOTH:
 
 If both hold and a Mira's audit says GREEN, accept the port. Otherwise
 follow Rule 10's verbatim-port discipline.
+
+## 11. Every bug found → a regression test must guard against it shipping again
+
+When investigation surfaces a real bug (algorithmic, edge case, or
+silent-divergence), the fix-Mira's deliverable MUST include a unit or
+parity test that:
+
+1. **Reproduces the bug deterministically** on the smallest fixture
+   that triggers it (not the full real-world case).
+2. **Asserts the corrected behaviour** with a tolerance tight enough
+   to catch the original bug if it returns.
+3. **Is added to the appropriate test tier** so future runs catch
+   regressions:
+   - Numerical kernel bugs → `bin_py/tests/test_<module>.py`
+   - Pipeline-stage drift → enable the relevant case in the proper
+     `--smoke`/`--smart_fast`/`--fast`/`--full` tier
+   - Configuration / env-gate bugs → tests/test_env_gate_*.py
+
+The commit message references the bug + the test that guards it.
+
+**Concrete examples that motivated this rule:**
+
+- **gmt_surface_py gcd=1 algorithm bug (Mira #61 finding 2026-05-22):**
+  ENVI (5191×7579) and TSX (9440×6937) grids hit
+  `gcd(n_columns-1, n_rows-1) == 1`. surface_py's smart_divide collapses
+  to a single stride [1] → no multigrid hierarchy → wrong fixed point.
+  ALL existing parity tests used grids with gcd>1, masking this regression.
+  Mira #68's fix mission MUST include a gcd=1 parity test fixture
+  (e.g. test_gcd_1_small with 7×13 grid, test_gcd_1_envi_subset with
+  real ENVI sub-region).
+
+- **NaN slow-path in gmt_grdsample_py (Mira #59 finding 2026-05-22):**
+  Wire-in to snaphu.py landmask exposed 2.7× regression on 38%-NaN data.
+  Mira #65's @njit gather fix MUST include a parity test that hits
+  >30% NaN data (real ALOS_haiti landmask or synthetic equivalent).
+
+- **fitoffset.csh vs fitoffset C-binary mismatch (Wei audit 2026-05-22):**
+  utils/align_tops:211 called C `fitoffset` with csh-style args. Latent
+  because no test exercises that line. Fix landed at v2.0.4, but no
+  regression test was added at the time. RETROACTIVE: a test that asserts
+  `align_tops` uses `fitoffset.csh` (csh wrapper) for argv shape would
+  guard against silent reintroduction. Track as a Mira mission.
+
+**The rule:**
+
+For every bug-fix commit:
+
+```
+- file: utils/<module>.py
+- file: bin_py/tests/test_<module>.py (NEW or UPDATED)
+  - add a test that exercises the buggy path with the smallest fixture
+  - assert correctness with tolerance tight enough to catch the bug
+- commit message references both files
+```
+
+If a fix is committed WITHOUT a regression test, the test must land in
+the next commit before the version tag advances. Wei enforces this on
+every Mira return — if a bug-fix Mira reports the fix but not a test,
+send her back with the test as the next deliverable.
+
+**The cost of not following this rule:**
+
+The gcd=1 bug shipped to v2.1.10 (surface wire default-on) and required
+a full --fast 9 SAT to surface. Cost: ~30 min sweep + ~2 hours Mira #61
+investigation + ~3 hours Mira #68 fix mission. Total ~6 hours could
+have been ~30 min if a gcd=1 fixture had been in the test suite from
+day 1.
