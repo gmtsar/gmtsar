@@ -53,6 +53,26 @@ import numpy as np
 # C oracle. cache=True persists the compiled IR to disk so we don't pay
 # the JIT cost on every invocation.
 # Set RESAMP_PY_NUMBA=0 to force the pure-numpy path (for debugging).
+#
+# The JIT kernels themselves live in bin_py/_jit_kernels_resamp.py (a
+# proper .py module with stable __name__) so that Numba's `cache=True`
+# can write IR sidecars to `__pycache__/_jit_kernels_resamp.*.nbc/.nbi`
+# and reload them on subsequent invocations — saving ~7 s of cold JIT
+# per process. Keeping them in this script (no .py extension) defeated
+# the cache because Numba's cache namespace requires a module file
+# Python can statically locate.
+#
+# Make sure this script's directory is on sys.path so the kernel module
+# is importable when the script is invoked directly (the conventional
+# `python3 bin_py/resamp_py ...` from the sweep). When loaded via
+# `exec(compile(...))` (test harness), `__file__` may not be set — fall
+# back to the test-runner's CWD as a best-effort.
+try:
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]) if sys.argv else os.getcwd())
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 try:
     import numba as _numba  # noqa: F401
     _HAVE_NUMBA = os.environ.get("RESAMP_PY_NUMBA", "1") != "0"
@@ -425,327 +445,26 @@ _NUMBA_KERNELS: dict = {}
 
 
 def _build_numba_kernels() -> dict:
-    """Compile (or load from cache) the JIT'd kernels. Returns dict of
-    callables keyed by intrp mode (1..4). Pure side-effect: caches on
-    _NUMBA_KERNELS so we only do this once per process.
+    """Return the JIT'd kernels dict, keyed by intrp mode (1..5).
+
+    Lazy-imports `_jit_kernels_resamp` (a .py module next to this script
+    so Numba's cache=True can write IR sidecars under a stable module
+    name — see bin_py/_jit_kernels_resamp.py). Cached on _NUMBA_KERNELS
+    so the import (and any first-call compile cost) happens once per
+    process.
+
+    Mode 5 carries a DIFFERENT signature than 1-4 (it's the fused
+    grid-shift+bisinc kernel) and is dispatched separately by the
+    caller — not via _dispatch_kernel which only handles modes 1-4.
     """
     if _NUMBA_KERNELS:
         return _NUMBA_KERNELS
-    from numba import njit
-
-    I2MAX_LOCAL = I2MAX
-    NS_LOCAL = NS
-    PI_LOCAL = PI
-
-    # Inlined C-style round/clip helper. Matches `(short)clipi2(x+0.5)`
-    # bit-for-bit: clamp x+0.5 to [-I2MAX, +I2MAX] as DOUBLE, then truncate
-    # toward zero via int16 cast.
-    @njit(fastmath=False, cache=True, inline="always")
-    def _round_clip(x):
-        y = x + 0.5
-        if y > I2MAX_LOCAL:
-            y = I2MAX_LOCAL
-        elif y < -I2MAX_LOCAL:
-            y = -I2MAX_LOCAL
-        # Truncate-toward-zero: numpy/numba int16 cast on a finite float
-        # is round-toward-zero, identical to C's (short) cast.
-        return np.int16(y)
-
-    # ---- nearest ----
-    @njit(fastmath=False, cache=True)
-    def _knearest(ras0, ras1, sin_flat, ydims, xdims, sout):
-        # ras0/ras1: (N,) float64; sout: (2N,) int16 interleaved (re,im).
-        n = ras0.shape[0]
-        row_stride = 2 * xdims
-        for p in range(n):
-            # C: j = (int)(ras[0] + 0.5); for negative ras this TRUNCATES
-            # toward zero, NOT floors. np.int64 cast of a float does the
-            # same: (-0.3 + 0.5) -> 0.2 -> int -> 0; (-0.7 + 0.5) -> -0.2
-            # -> int -> 0.
-            j = np.int64(ras0[p] + 0.5)
-            i = np.int64(ras1[p] + 0.5)
-            if i < 0 or i >= ydims or j < 0 or j >= xdims:
-                sout[2 * p] = 0
-                sout[2 * p + 1] = 0
-            else:
-                base = row_stride * i + 2 * j
-                sout[2 * p] = sin_flat[base]
-                sout[2 * p + 1] = sin_flat[base + 1]
-
-    # ---- bilinear ----
-    @njit(fastmath=False, cache=True)
-    def _kbilinear(ras0, ras1, sin_flat, ydims, xdims, sout):
-        n = ras0.shape[0]
-        row_stride = 2 * xdims
-        for p in range(n):
-            r0 = ras0[p]
-            r1 = ras1[p]
-            j0 = np.int64(np.floor(r0))
-            i0 = np.int64(np.floor(r1))
-            dr = r0 - np.float64(j0)
-            da = r1 - np.float64(i0)
-            if i0 < 0 or i0 >= (ydims - 1) or j0 < 0 or j0 >= (xdims - 1):
-                sout[2 * p] = 0
-                sout[2 * p + 1] = 0
-            else:
-                base = row_stride * i0 + 2 * j0
-                k00 = base
-                k01 = base + 2
-                k10 = base + row_stride
-                k11 = base + row_stride + 2
-                # MATCH C ordering exactly (resamp.c:476-477):
-                #   real = s_in[k00]*(1-da)*(1-dr)
-                #        + s_in[k10]*(da)*(1-dr)
-                #        + s_in[k01]*(1-da)*(dr)
-                #        + s_in[k11]*(da)*(dr)
-                w_1mda_1mdr = (1.0 - da) * (1.0 - dr)
-                w_da_1mdr = da * (1.0 - dr)
-                w_1mda_dr = (1.0 - da) * dr
-                w_da_dr = da * dr
-                real = (np.float64(sin_flat[k00]) * w_1mda_1mdr
-                        + np.float64(sin_flat[k10]) * w_da_1mdr
-                        + np.float64(sin_flat[k01]) * w_1mda_dr
-                        + np.float64(sin_flat[k11]) * w_da_dr)
-                imag = (np.float64(sin_flat[k00 + 1]) * w_1mda_1mdr
-                        + np.float64(sin_flat[k10 + 1]) * w_da_1mdr
-                        + np.float64(sin_flat[k01 + 1]) * w_1mda_dr
-                        + np.float64(sin_flat[k11 + 1]) * w_da_dr)
-                sout[2 * p] = _round_clip(real)
-                sout[2 * p + 1] = _round_clip(imag)
-
-    # ---- bicubic helpers ----
-    @njit(fastmath=False, cache=True, inline="always")
-    def _ckernel(arg):
-        # cubic_kernel from resamp.c:369-388 with a=-0.3 (HARD-CODED;
-        # do NOT pass a as a parameter — the JIT specializes constants
-        # better when they're inlined).
-        a = -0.3
-        arg2 = arg * arg
-        arg3 = arg2 * arg
-        if arg <= 1.0:
-            return (a + 2.0) * arg3 - (a + 3.0) * arg2 + 1.0
-        elif arg <= 2.0:
-            return a * arg3 - 5.0 * a * arg2 + 8.0 * a * arg - 4.0 * a
-        else:
-            return 0.0
-
-    # ---- bicubic ----
-    @njit(fastmath=False, cache=True)
-    def _kbicubic(ras0, ras1, sin_flat, ydims, xdims, sout):
-        n = ras0.shape[0]
-        row_stride = 2 * xdims
-        wx = np.empty(4, dtype=np.float64)
-        wy = np.empty(4, dtype=np.float64)
-        for p in range(n):
-            r0 = ras0[p]
-            r1 = ras1[p]
-            j0 = np.int64(np.floor(r0))
-            i0 = np.int64(np.floor(r1))
-            dr = r0 - np.float64(j0)
-            da = r1 - np.float64(i0)
-            if (i0 - 1) < 0 or (i0 + 2) >= ydims or \
-               (j0 - 1) < 0 or (j0 + 2) >= xdims:
-                sout[2 * p] = 0
-                sout[2 * p + 1] = 0
-                continue
-            # Compute weights — mirror C bicubic_one (resamp.c:335-340):
-            #   wx[i] = cubic_kernel(|x + 1 - i|, a)
-            #   wy[i] = cubic_kernel(|y + 1 - i|, a)
-            for i in range(4):
-                wx[i] = _ckernel(abs(dr + 1.0 - i))
-                wy[i] = _ckernel(abs(da + 1.0 - i))
-            # Accumulate in C's exact order (resamp.c:344-352):
-            #   for j in 0..3: for i in 0..3:
-            #     w = wx[i]*wy[j]; rsum += rdata[j*4+i]*w; ...
-            # where rdata[j*4+i] = sin_flat[row_stride*(i0-1+j) + 2*(j0-1+i)]
-            rsum = 0.0
-            isum = 0.0
-            wsum = 0.0
-            base_row = row_stride * (i0 - 1) + 2 * (j0 - 1)
-            for j in range(4):
-                row_off = base_row + row_stride * j
-                wyj = wy[j]
-                for i in range(4):
-                    w = wx[i] * wyj
-                    k = row_off + 2 * i
-                    rsum += np.float64(sin_flat[k]) * w
-                    isum += np.float64(sin_flat[k + 1]) * w
-                    wsum += w
-            cz_r = rsum / wsum
-            cz_i = isum / wsum
-            sout[2 * p] = _round_clip(cz_r)
-            sout[2 * p + 1] = _round_clip(cz_i)
-
-    # ---- bisinc helpers ----
-    @njit(fastmath=False, cache=True, inline="always")
-    def _skernel(x):
-        # sinc_kernel from resamp.c:676-687. Uses the C truncated PI
-        # 3.1415926535897932 (hard-coded in C #define), so np.sinc would
-        # produce slightly different values — we evaluate by hand.
-        arg = abs(PI_LOCAL * x)
-        if arg > 0.0:
-            return np.sin(arg) / arg
-        else:
-            return 1.0
-
-    # ---- bisinc ----
-    @njit(fastmath=False, cache=True)
-    def _kbisinc(ras0, ras1, sin_flat, ydims, xdims, sout):
-        n = ras0.shape[0]
-        row_stride = 2 * xdims
-        # ns2 = NS/2 - 1 = 1.0 in C with NS=4 (computed in DOUBLE per
-        # resamp.c:555). Both 1.0 (double) and 1 (int) coincide here.
-        ns2_d = np.float64(NS_LOCAL // 2 - 1)  # 1.0
-        ns2 = NS_LOCAL // 2 - 1  # 1
-        wx = np.empty(NS_LOCAL, dtype=np.float64)
-        wy = np.empty(NS_LOCAL, dtype=np.float64)
-        for p in range(n):
-            r0 = ras0[p]
-            r1 = ras1[p]
-            j0 = np.int64(np.floor(r0))
-            i0 = np.int64(np.floor(r1))
-            dr = r0 - np.float64(j0)
-            da = r1 - np.float64(i0)
-            if (i0 - ns2) < 0 or (i0 + ns2 + 1) >= ydims or \
-               (j0 - ns2) < 0 or (j0 + ns2 + 1) >= xdims:
-                sout[2 * p] = 0
-                sout[2 * p + 1] = 0
-                continue
-            for i in range(NS_LOCAL):
-                wx[i] = _skernel(abs(dr + ns2_d - i))
-                wy[i] = _skernel(abs(da + ns2_d - i))
-            # Accumulate in C order (resamp.c:715-723):
-            #   for j in 0..NS-1: for i in 0..NS-1:
-            #     w = wx[i]*wy[j]; rsum += rdata[j*NS+i]*w; ...
-            rsum = 0.0
-            isum = 0.0
-            wsum = 0.0
-            base_row = row_stride * (i0 - ns2) + 2 * (j0 - ns2)
-            for j in range(NS_LOCAL):
-                row_off = base_row + row_stride * j
-                wyj = wy[j]
-                for i in range(NS_LOCAL):
-                    w = wx[i] * wyj
-                    k = row_off + 2 * i
-                    rsum += np.float64(sin_flat[k]) * w
-                    isum += np.float64(sin_flat[k + 1]) * w
-                    wsum += w
-            cz_r = rsum / wsum
-            cz_i = isum / wsum
-            sout[2 * p] = _round_clip(cz_r)
-            sout[2 * p + 1] = _round_clip(cz_i)
-
-    # ---- bisinc + GMT-grid shift (mode 5, fused) ----
-    # Fuses grid_shift_vec + _kbisinc into one Numba kernel. Avoids
-    # materializing the per-chunk (ras0, ras1) and bad_mask arrays in
-    # numpy and the chain of .astype/np.where calls (profiled at ~2.2s
-    # on NISAR mode 5). Per-pixel cost is identical to the C inner loop
-    # at resamp.c:166-253 — bilinear-interpolate two GMT grids, NaN
-    # guard, then bisinc the result. FP accumulation order matches C
-    # exactly (ram[0] as the seed, left-to-right adds).
-    #
-    # x-side per-jj arithmetic (r1, tx, one_mtx) depends only on jj and
-    # inc_x — caller precomputes these into r1_arr / tx_arr / one_mtx_arr
-    # ONCE for the whole master image and passes them in. Each is shape
-    # (xdimm,). Saves ~6 ops × xdimm × ydimm scalar work in the inner
-    # loop. The arithmetic is deterministic so the precomputed values
-    # are bit-identical to what the inline form would produce.
-    @njit(fastmath=False, cache=True)
-    def _kbisinc_grid(ii0, ii1, xdimm,
-                      R_data, A_data, inc_y,
-                      r1_arr, tx_arr, one_mtx_arr,
-                      sin_flat, ydims, xdims, sout):
-        ny_R, nx_R = R_data.shape
-        nx = nx_R
-        ny = ny_R
-        row_stride = 2 * xdims
-        ns2_d = np.float64(NS_LOCAL // 2 - 1)
-        ns2 = NS_LOCAL // 2 - 1
-        wx = np.empty(NS_LOCAL, dtype=np.float64)
-        wy = np.empty(NS_LOCAL, dtype=np.float64)
-        inv_inc_y = 1.0 / inc_y
-        p = 0  # output pixel index within sout
-        for ii in range(ii0, ii1):
-            gy = np.float64(ii) * inv_inc_y
-            # gy depends only on ii — precompute the y-side clamp & frac
-            a1 = np.int64(np.floor(gy))
-            if a1 < 0:
-                a1 = 0
-            if a1 > ny - 2:
-                a1 = ny - 2
-            ty_ = gy - np.float64(a1)
-            one_mty = 1.0 - ty_
-            a2 = a1 + 1
-            for jj in range(xdimm):
-                r1 = r1_arr[jj]
-                r2 = r1 + 1
-                tx_ = tx_arr[jj]
-                one_mtx = one_mtx_arr[jj]
-                # Range grid (R) bilinear shift, exact C accumulation order
-                # (resamp.c:203-207): seed = ram[0] = jj
-                f11 = np.float64(R_data[a1, r1])
-                f12 = np.float64(R_data[a1, r2])
-                f21 = np.float64(R_data[a2, r1])
-                f22 = np.float64(R_data[a2, r2])
-                r0 = np.float64(jj)
-                r0 = r0 + one_mtx * one_mty * f11
-                r0 = r0 + tx_ * one_mty * f12
-                r0 = r0 + one_mtx * ty_ * f21
-                r0 = r0 + tx_ * ty_ * f22
-                # Azimuth grid (A) — same indices/fracs (C asserts equal incs)
-                f11 = np.float64(A_data[a1, r1])
-                f12 = np.float64(A_data[a1, r2])
-                f21 = np.float64(A_data[a2, r1])
-                f22 = np.float64(A_data[a2, r2])
-                r1f = np.float64(ii)
-                r1f = r1f + one_mtx * one_mty * f11
-                r1f = r1f + tx_ * one_mty * f12
-                r1f = r1f + one_mtx * ty_ * f21
-                r1f = r1f + tx_ * ty_ * f22
-                # NaN guard (resamp.c:245-249)
-                if not (np.isfinite(r0) and np.isfinite(r1f)):
-                    sout[2 * p] = 0
-                    sout[2 * p + 1] = 0
-                    p += 1
-                    continue
-                # bisinc kernel (mirrors _kbisinc above)
-                j0 = np.int64(np.floor(r0))
-                i0 = np.int64(np.floor(r1f))
-                dr = r0 - np.float64(j0)
-                da = r1f - np.float64(i0)
-                if (i0 - ns2) < 0 or (i0 + ns2 + 1) >= ydims or \
-                   (j0 - ns2) < 0 or (j0 + ns2 + 1) >= xdims:
-                    sout[2 * p] = 0
-                    sout[2 * p + 1] = 0
-                    p += 1
-                    continue
-                for i in range(NS_LOCAL):
-                    wx[i] = _skernel(abs(dr + ns2_d - i))
-                    wy[i] = _skernel(abs(da + ns2_d - i))
-                rsum = 0.0
-                isum = 0.0
-                wsum = 0.0
-                base_row = row_stride * (i0 - ns2) + 2 * (j0 - ns2)
-                for j in range(NS_LOCAL):
-                    row_off = base_row + row_stride * j
-                    wyj = wy[j]
-                    for i in range(NS_LOCAL):
-                        w = wx[i] * wyj
-                        k = row_off + 2 * i
-                        rsum += np.float64(sin_flat[k]) * w
-                        isum += np.float64(sin_flat[k + 1]) * w
-                        wsum += w
-                cz_r = rsum / wsum
-                cz_i = isum / wsum
-                sout[2 * p] = _round_clip(cz_r)
-                sout[2 * p + 1] = _round_clip(cz_i)
-                p += 1
-
-    _NUMBA_KERNELS[1] = _knearest
-    _NUMBA_KERNELS[2] = _kbilinear
-    _NUMBA_KERNELS[3] = _kbicubic
-    _NUMBA_KERNELS[4] = _kbisinc
-    _NUMBA_KERNELS[5] = _kbisinc_grid  # NB: different signature, called via _dispatch_kernel_grid
+    import _jit_kernels_resamp as _jk  # type: ignore
+    _NUMBA_KERNELS[1] = _jk._knearest
+    _NUMBA_KERNELS[2] = _jk._kbilinear
+    _NUMBA_KERNELS[3] = _jk._kbicubic
+    _NUMBA_KERNELS[4] = _jk._kbisinc
+    _NUMBA_KERNELS[5] = _jk._kbisinc_grid
     return _NUMBA_KERNELS
 
 
