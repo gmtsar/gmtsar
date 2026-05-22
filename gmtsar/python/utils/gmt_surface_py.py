@@ -36,9 +36,14 @@ Limitations (vs upstream gmt surface)
    location.  We snap to the nearest grid node.  For tests with input
    points near grid nodes this is roundoff-equivalent; for input points
    mid-cell the local error is O(h * |grad z|).
-3. **alpha = 1.**  Only square cells (dx == dy) are supported.  Upstream
-   handles anisotropic cells via the alpha2 / alpha4 prefactors in the
-   stencil.  TODO for production.
+3. **Anisotropic-inc accepted (Mira #32).**  ``inc=(x_inc, y_inc)`` with
+   x_inc != y_inc is supported and produces the correct shape / grid
+   layout.  The 12-point stencil supports the alpha2 / alpha4 prefactors
+   per upstream surface.c:1645-1654; alpha=1 (default, matching GMT's
+   ``surface -A1`` default = no -A flag) reduces to the original
+   isotropic stencil exactly.  Set ``GMT_SURFACE_PY_ANISO_STENCIL=1`` to
+   engage the full anisotropic stencil (alpha = dx/dy), which mirrors
+   ``gmt surface -A<dx/dy>`` instead.
 4. **Single thread fallback** when env var GMT_SURFACE_PY_NUMBA=0.
 
 Performance
@@ -138,7 +143,7 @@ _MG_MIN_DIM = 9   # leaves at least 5x5 interior (kept) nodes per axis
 # ---------------------------------------------------------------------------
 # Inner kernel — one Jacobi sweep of the 12-point biharmonic + tension stencil
 # ---------------------------------------------------------------------------
-# Stencil layout (square cell, h=dx=dy):
+# Stencil layout (anisotropic cell, alpha = dy/dx; alpha=1 => square):
 #
 #           NN
 #       NW  N   NE
@@ -146,38 +151,67 @@ _MG_MIN_DIM = 9   # leaves at least 5x5 interior (kept) nodes per axis
 #       SW  S   SE
 #           SS
 #
-# Update at interior node u[i, j]:
-#   numer = (1-T) * [8*(N+S+E+W) - 2*(NE+NW+SE+SW) - (NN+SS+EE+WW)] + T*(N+S+E+W)
-#   denom = 20*(1-T) + 4*T  =  20 - 16T
+# Unconstrained update at interior node u[i, j], matching upstream
+# surface.c:1645-1654 / surface_set_coefficients() (eq A-4):
+#
+#   w_W1 = w_E1 = 4*loose*(1+alpha2) + T
+#   w_N1 = w_S1 = w_W1 * alpha2
+#   w_W2 = w_E2 = -loose
+#   w_N2 = w_S2 = -loose * alpha4
+#   w_diag = -2 * loose * alpha2   (NE = NW = SE = SW)
+#
+#   numer = w_W1*(E+W) + w_N1*(N+S)
+#         + w_W2*(EE+WW) + w_N2*(NN+SS)
+#         + w_diag*(NE+NW+SE+SW)
+#   denom = 6*alpha4*loose + 10*alpha2*loose + 8*loose
+#         - 2*(1+alpha2) + 4*T*(1+alpha2)
 #   u_new[i, j] = numer / denom
 #
-# Where T in [0, 1] is the interior tension and the data-constrained nodes
+# At alpha=1 (square cell, isotropic): denom = 20 - 16T;
+# w_W1 = w_N1 = 8*loose + T; w_W2 = w_N2 = -loose; w_diag = -2*loose;
+# which is the original homogeneous-cell form.
+#
+# Where T in [0, 1] is the interior tension and data-constrained nodes
 # (`fixed[i, j] == True`) are skipped (held at the data value).
 #
 # Jacobi (not Gauss-Seidel) is used because it parallelises cleanly with
 # prange — no row-to-row dependence within one sweep.
 
-@njit(parallel=False, fastmath=False, cache=True)
-def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega, ny_full, nx_full):
+@njit(parallel=True, fastmath=False, cache=True)
+def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega,
+                  alpha2, alpha4,
+                  ny_full, nx_full):
     """One Jacobi sweep over interior nodes [2..ny_full-3, 2..nx_full-3].
 
     Solves the local equation  L[u] = rhs  with the 12-point stencil
-    of the (1-T) biharmonic + T Laplacian operator.  On the finest
-    multigrid level, `rhs` is zero everywhere and we recover the
-    classic homogeneous relaxation.  On coarse levels, `rhs` is the
-    restricted residual and the equation being solved is the
-    coarse-grid correction equation  L[v] = restrict(residual).
+    of the (1-T) biharmonic + T Laplacian operator on a possibly
+    anisotropic cell.  `alpha2 = (dy/dx)**2` and `alpha4 = alpha2**2`
+    are the upstream anisotropy prefactors (surface.c:1645-1654).
+
+    On the finest multigrid level, `rhs` is zero everywhere and we
+    recover the classic homogeneous relaxation.  On coarse levels,
+    `rhs` is the restricted residual.
 
     `u_old`, `u_new`, `fixed`, `rhs` are the FULL padded grid of shape
     (ny+4, nx+4) where the outer 2 rings on each side are ghosts.
-    The relaxation domain [2..ny+1] in row index maps to the (ny,nx)
-    output grid; the ghosts at rows {0,1,ny+2,ny+3} are set by BC code
-    in Python (outside this JIT'd kernel).
 
     Returns max |u_new - u_old| over the swept domain.
     """
-    one_minus_T = 1.0 - T
-    denom = 20.0 * one_minus_T + 4.0 * T  # = 20 - 16T
+    loose = 1.0 - T
+    one_plus_e2 = 1.0 + alpha2
+    # 12-point stencil coefficients (unnormalized; will be divided by denom).
+    # These mirror the C->coeff[SURFACE_UNCONSTRAINED][...] values divided by
+    # a0 (so they are coeff_constrained_like, then we divide by denom = 1/a0).
+    w_W1 = 4.0 * loose * one_plus_e2 + T          # E + W weight
+    w_N1 = w_W1 * alpha2                          # N + S weight
+    w_W2 = -loose                                 # EE + WW weight
+    w_N2 = -loose * alpha4                        # NN + SS weight
+    w_diag = -2.0 * loose * alpha2                # NE, NW, SE, SW weight
+    denom = (6.0 * alpha4 * loose
+             + 10.0 * alpha2 * loose
+             + 8.0 * loose
+             - 2.0 * one_plus_e2
+             + 4.0 * T * one_plus_e2)
 
     # per-row max changes, reduced after
     row_max = np.zeros(ny_full, dtype=np.float64)
@@ -205,16 +239,17 @@ def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega, ny_full, nx_full):
             EE = u_old[i, j + 2]
             WW = u_old[i, j - 2]
 
-            sum1 = N_ + S_ + E_ + W_
+            sum_ew = E_ + W_
+            sum_ns = N_ + S_
             sum_diag = NE + NW + SE + SW
-            sum2 = NN + SS + EE + WW
+            sum_ee_ww = EE + WW
+            sum_nn_ss = NN + SS
 
-            # L[u] center-coeff*u_ij = neighbour_sum + something.
-            # Stencil: center_coeff = -(20*(1-T) + 4*T) = -denom (sign chosen so
-            # that L[u] = neighbour_terms - denom*u_ij; Jacobi: u_ij_new solves
-            #   neighbour_terms - denom*u_ij_new = rhs  =>  u_ij_new = (neighbour_terms - rhs)/denom).
-            # neighbour_terms = (1-T)*[8*sum1 - 2*sum_diag - sum2] + T*sum1
-            numer = one_minus_T * (8.0 * sum1 - 2.0 * sum_diag - sum2) + T * sum1
+            numer = (w_W1 * sum_ew
+                     + w_N1 * sum_ns
+                     + w_diag * sum_diag
+                     + w_W2 * sum_ee_ww
+                     + w_N2 * sum_nn_ss)
             val = (numer - rhs[i, j]) / denom
             # Under-relaxation: u_new = (1-omega)*u_old + omega*val.
             # The biharmonic Jacobi iteration is unstable for omega=1; the
@@ -459,7 +494,9 @@ def _prolong_bilinear(v_coarse: np.ndarray, ny_f: int, nx_f: int) -> np.ndarray:
 
 
 def _smooth(u: np.ndarray, fixed: np.ndarray, rhs: np.ndarray,
-            T: float, omega: float, n_sweeps: int, tol: float = 0.0) -> float:
+            T: float, omega: float,
+            alpha2: float, alpha4: float,
+            n_sweeps: int, tol: float = 0.0) -> float:
     """Run up to `n_sweeps` damped-Jacobi sweeps on padded grids.
 
     If `tol > 0`, stop early when max |du| < tol.  Returns the last delta.
@@ -472,6 +509,7 @@ def _smooth(u: np.ndarray, fixed: np.ndarray, rhs: np.ndarray,
         u_new[:] = u
         last_delta = float(_jacobi_sweep(u, u_new, fixed, rhs,
                                           float(T), float(omega),
+                                          float(alpha2), float(alpha4),
                                           ny_full, nx_full))
         u[:] = u_new
         if tol > 0.0 and last_delta < tol:
@@ -497,6 +535,7 @@ def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                xmin: float, ymin: float, dx: float, dy: float,
                nx: int, ny: int,
                T: float, omega: float,
+               alpha2: float, alpha4: float,
                n_levels: int,
                sweeps_per_level: int,
                tol: float,
@@ -559,7 +598,8 @@ def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         # Cap finest level at sweeps_per_level; allow more on coarse since
         # cost there is negligible relative to fine.
         cap = max(sweeps_per_level, 4 * ny_k)
-        delta = _smooth(u_pad_k, fixed_k, rhs_k, T, omega, cap, tol=level_tol)
+        delta = _smooth(u_pad_k, fixed_k, rhs_k, T, omega,
+                        alpha2, alpha4, cap, tol=level_tol)
         if verbose:
             print(f"  FMG level k={kk} stride={s} grid={ny_k}x{nx_k}  "
                   f"final max|du|={delta:.3e}  (cap={cap}, tol={level_tol:.1e})")
@@ -639,7 +679,9 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     region : (x_min, x_max, y_min, y_max)
         Grid extent.
     inc : (x_inc, y_inc)
-        Grid spacing.  Currently requires x_inc == y_inc (square cells).
+        Grid spacing.  Anisotropic cells (x_inc != y_inc) are supported
+        via the alpha = dy/dx prefactors (Mira #32, mirroring upstream
+        surface.c surface_set_coefficients()).
     tension : float, default 0.5
         Surface tension T in [0, 1].  0 = pure spline (biharmonic),
         1 = pure interp (harmonic).  GMT default is 0.
@@ -684,12 +726,32 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 
     xmin, xmax, ymin, ymax = region
     dx, dy = inc
-    if abs(dx - dy) > 1e-12 * max(abs(dx), abs(dy)):
-        raise NotImplementedError(
-            f"gmt_surface_py prototype requires square cells "
-            f"(dx={dx}, dy={dy}).  Anisotropic cells: TODO.")
+    if dx <= 0.0 or dy <= 0.0:
+        raise ValueError(f"inc must be positive, got dx={dx}, dy={dy}")
     if not (0.0 <= tension <= 1.0):
         raise ValueError(f"tension must be in [0,1], got {tension}")
+
+    # Anisotropy prefactors (mirrors surface.c:1645 surface_set_coefficients).
+    # GMT surface defines: "specify <aspect_ratio> such that
+    # <yinc> = <xinc>/<aspect_ratio>", i.e. alpha = xinc / yinc = dx / dy.
+    # The default (no -A flag) is alpha = 1 — GMT treats the cell as
+    # ISOTROPIC regardless of physical increments.  For parity with
+    # `gmt surface -A<r>` the user should supply -A r = dx/dy.
+    #
+    # The SAR pipeline (and the gmt surface default) does not pass -A, so
+    # this port defaults to alpha=1 — accepting anisotropic inc but using
+    # an isotropic stencil to MATCH `gmt surface`'s default semantics on
+    # the same CLI.  Set GMT_SURFACE_PY_ANISO_STENCIL=1 to engage the full
+    # anisotropic stencil (alpha = dx/dy); use this only when calling
+    # `gmt surface -A<dx/dy>` for direct comparison.  alpha=1 reduces the
+    # new stencil to the original isotropic form exactly (verified by the
+    # square-cell regression test).
+    if os.environ.get("GMT_SURFACE_PY_ANISO_STENCIL", "0") == "1":
+        alpha = dx / dy            # matches gmt surface -A(dx/dy)
+    else:
+        alpha = 1.0                # matches gmt surface default (no -A)
+    alpha2 = alpha * alpha
+    alpha4 = alpha2 * alpha2
 
     nx = int(round((xmax - xmin) / dx)) + 1
     ny = int(round((ymax - ymin) / dy)) + 1
@@ -711,6 +773,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                   f"{nx // (1 << (n_levels - 1))})")
         u = _fmg_solve(x, y, z, xmin, ymin, dx, dy, nx, ny,
                        float(tension), float(omega),
+                       float(alpha2), float(alpha4),
                        n_levels, sweeps_per_level=mg_nu_coarse,
                        tol=tol, verbose=verbose)
         fixed = None  # not needed below; we already converged
@@ -729,6 +792,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
             _apply_bcs(u)
             u_new[:] = u
             delta = _jacobi_sweep(u, u_new, fixed, rhs, float(tension), float(omega),
+                                  float(alpha2), float(alpha4),
                                   ny_full, nx_full)
             u, u_new = u_new, u
             last_delta = float(delta)
