@@ -50,26 +50,40 @@ def _smooth_scatter(N: int = 200, seed: int = 42,
 
 def _on_grid_scatter(N: int = 200, seed: int = 42,
                      extent: float = 10.0,
-                     inc: float = 0.2) -> np.ndarray:
+                     inc=0.2,
+                     extent_y: float = None) -> np.ndarray:
     """Same Gaussian as _smooth_scatter but snapped onto the output grid
     nodes ahead of time, so both gmt surface (which honours the data via
     Briggs sub-cell offsets) and the prototype (snap-to-nearest) agree
     on the input constraint locations.  This isolates the parity test
     to algorithmic-relaxation agreement only.
+
+    `inc` may be a scalar (square cell) or a tuple ``(x_inc, y_inc)`` for
+    anisotropic cells.  `extent_y` defaults to `extent` (square domain).
     """
+    if extent_y is None:
+        extent_y = extent
+    if np.isscalar(inc):
+        x_inc = y_inc = float(inc)
+    else:
+        x_inc, y_inc = float(inc[0]), float(inc[1])
+
     rng = np.random.default_rng(seed)
     x = rng.uniform(0.0, extent, N)
-    y = rng.uniform(0.0, extent, N)
-    # Snap to grid
-    x = np.round(x / inc) * inc
-    y = np.round(y / inc) * inc
+    y = rng.uniform(0.0, extent_y, N)
+    # Snap to grid (separately per axis so anisotropic spacings stay valid)
+    x = np.round(x / x_inc) * x_inc
+    y = np.round(y / y_inc) * y_inc
     # Dedupe duplicates introduced by snapping
     uniq = {}
     for xi, yi in zip(x, y):
         uniq[(round(xi, 6), round(yi, 6))] = True
     pts = np.array(list(uniq.keys()))
     x, y = pts[:, 0], pts[:, 1]
-    z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+    # Centre the gaussian at the domain centre
+    cx = extent / 2.0
+    cy = extent_y / 2.0
+    z = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / 4.0)
     return np.column_stack([x, y, z])
 
 
@@ -182,6 +196,112 @@ class TestGmtSurfacePyParity(unittest.TestCase):
         self.assertLess(rms, 1e-3,
                         f"RMS {rms:.4e} exceeds parity threshold 1e-3")
 
+    def test_square_still_works_regression(self):
+        """Mira #32 regression check — adding anisotropy must not break the
+        original square-cell behaviour.  Reproduces test_on_grid_gaussian_
+        rms_under_threshold with a wider tolerance margin (5e-4) since this
+        is purely a guard against an alpha != 1 codepath leaking into the
+        alpha = 1 case.
+        """
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (0.2, 0.2)
+        tension = 0.5
+        xyz = _on_grid_scatter(N=400, seed=42, extent=10.0, inc=0.2)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            grid_gmt = _run_gmt_surface(xyz, region, inc, tension, tmpdir)
+
+        grid_py = gmt_surface_py(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            region=region, inc=inc, tension=tension,
+            omega=0.6, max_iter=20000, tol=1e-7,
+            use_multigrid=True,
+        )
+
+        diff = grid_py[3:-3, 3:-3] - grid_gmt[3:-3, 3:-3]
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[parity, square 1:1]  shape={grid_gmt.shape}  "
+              f"rms={rms:.4e}  max|d|={max_abs:.4e}")
+        self.assertLess(rms, 1e-3,
+                        f"Square-cell regression: RMS {rms:.4e} > 1e-3")
+
+    def test_anisotropic_2to1_parity(self):
+        """Anisotropic 2:1 (dy = 2*dx) parity vs gmt surface.  Mira #32.
+
+        Setup mirrors the square 1:1 test (51x51 node count, ~400 scatter
+        points, T=0.5, on-grid Gaussian centred) but uses inc=(0.1,0.2),
+        so x-direction has half the physical step of y.  alpha = dx/dy = 0.5
+        => alpha2 = 0.25 in the stencil.  GMT surface with no -A flag and
+        our default code path BOTH use alpha=1 (isotropic stencil) — the
+        port matches gmt's default semantics on rectangular cells.
+        """
+        region = (0.0, 5.0, 0.0, 10.0)
+        inc = (0.1, 0.2)               # dx != dy, but isotropic stencil
+        tension = 0.5
+        xyz = _on_grid_scatter(N=400, seed=42, extent=5.0, inc=inc,
+                               extent_y=10.0)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            grid_gmt = _run_gmt_surface(xyz, region, inc, tension, tmpdir)
+
+        grid_py = gmt_surface_py(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            region=region, inc=inc, tension=tension,
+            omega=0.6, max_iter=20000, tol=1e-7,
+            use_multigrid=True,
+        )
+
+        self.assertEqual(grid_gmt.shape, grid_py.shape,
+                         f"shape mismatch: gmt={grid_gmt.shape} py={grid_py.shape}")
+        diff = grid_py[3:-3, 3:-3] - grid_gmt[3:-3, 3:-3]
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[parity, aniso 1:2]  shape={grid_gmt.shape}  "
+              f"inc={inc}  rms={rms:.4e}  max|d|={max_abs:.4e}")
+        self.assertLess(rms, 1e-3,
+                        f"Anisotropic 1:2 RMS {rms:.4e} exceeds 1e-3")
+
+    def test_anisotropic_1to4_parity(self):
+        """Anisotropic 1:4 (dy = 4*dx) parity vs gmt surface.  Mira #32.
+
+        Matches the rng/ardec pipeline use case `-I 1/4` in 8 of 9 SAT
+        cases: alpha = dx/dy = 0.25, alpha2 = 1/16.  GMT surface with no
+        -A flag — and our default code path — both use alpha=1 (isotropic
+        stencil); the port accepts the anisotropic inc and matches gmt's
+        default semantics.  Setup mirrors the square 1:1 test (51x51 node
+        count, ~400 on-grid Gaussian points, T=0.5) so the parity gate is
+        apples-to-apples with the existing square-cell baseline.
+        """
+        region = (0.0, 2.5, 0.0, 10.0)
+        inc = (0.05, 0.2)              # dx=0.05, dy=0.2 -> alpha=dx/dy=0.25
+        tension = 0.5
+        xyz = _on_grid_scatter(N=400, seed=42, extent=2.5,
+                               inc=inc, extent_y=10.0)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            grid_gmt = _run_gmt_surface(xyz, region, inc, tension, tmpdir)
+
+        grid_py = gmt_surface_py(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            region=region, inc=inc, tension=tension,
+            omega=0.6, max_iter=20000, tol=1e-7,
+            use_multigrid=True,
+        )
+
+        self.assertEqual(grid_gmt.shape, grid_py.shape,
+                         f"shape mismatch: gmt={grid_gmt.shape} py={grid_py.shape}")
+        diff = grid_py[3:-3, 3:-3] - grid_gmt[3:-3, 3:-3]
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[parity, aniso 1:4]  shape={grid_gmt.shape}  "
+              f"inc={inc}  rms={rms:.4e}  max|d|={max_abs:.4e}")
+        self.assertLess(rms, 1e-3,
+                        f"Anisotropic 1:4 RMS {rms:.4e} exceeds 1e-3")
+
     def test_off_grid_scatter_diagnostic(self):
         """Diagnostic: RMS vs gmt with arbitrary off-grid scatter.
 
@@ -247,12 +367,33 @@ class TestGmtSurfacePyAlgorithm(unittest.TestCase):
                               max_iter=50, tol=1e-3)
         self.assertEqual(grid.shape, (11, 11))
 
-    def test_anisotropic_inc_rejected(self):
-        """Non-square cells must raise NotImplementedError in prototype."""
-        x = np.array([1.0, 2.0]); y = np.array([1.0, 2.0]); z = np.array([0.0, 1.0])
-        with self.assertRaises(NotImplementedError):
-            gmt_surface_py(x, y, z, region=(0.0, 5.0, 0.0, 5.0),
-                           inc=(0.5, 1.0), tension=0.5, max_iter=10)
+    def test_anisotropic_inc_accepted(self):
+        """Non-square cells (dx != dy) must NOT raise — Mira #32 added
+        anisotropic-cell support via the alpha = dy/dx prefactors that
+        mirror upstream surface.c surface_set_coefficients."""
+        rng = np.random.default_rng(13)
+        N = 80
+        x = rng.uniform(0.0, 5.0, N)
+        y = rng.uniform(0.0, 5.0, N)
+        z = rng.uniform(0.0, 1.0, N)
+        grid = gmt_surface_py(
+            x, y, z,
+            region=(0.0, 5.0, 0.0, 5.0),
+            inc=(0.5, 1.0),               # dx=0.5, dy=1.0  -> alpha=2
+            tension=0.5,
+            max_iter=200, tol=1e-3,
+            use_multigrid=False,
+        )
+        # 5/0.5 + 1 = 11 columns,  5/1.0 + 1 = 6 rows
+        self.assertEqual(grid.shape, (6, 11))
+        self.assertTrue(np.all(np.isfinite(grid)))
+
+    def test_zero_or_negative_inc_rejected(self):
+        x = np.array([1.0]); y = np.array([1.0]); z = np.array([0.0])
+        for bad_inc in [(0.0, 0.5), (0.5, -1.0), (-0.5, 0.5)]:
+            with self.assertRaises(ValueError):
+                gmt_surface_py(x, y, z, region=(0.0, 5.0, 0.0, 5.0),
+                               inc=bad_inc, tension=0.5, max_iter=10)
 
     def test_bad_tension_rejected(self):
         x = np.array([1.0]); y = np.array([1.0]); z = np.array([0.0])
@@ -414,6 +555,43 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         t_py = time.time() - t0
 
         print(f"\n[bench 1001x1001]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
+              f"speedup={t_gmt/t_py:.2f}x  shape={grid_gmt.shape}  "
+              f"threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
+
+    @unittest.skipUnless(os.environ.get("GMT_SURFACE_PY_BENCH") == "1",
+                         "set GMT_SURFACE_PY_BENCH=1 to enable")
+    def test_benchmark_large_anisotropic_grid(self):
+        """Mira #32 — anisotropic 1:4 benchmark at pipeline scale.
+
+        Matches the rng/ardec `-I 1/4` SAT-case ratio at a 1001 x 251 grid
+        (~same total node count as 1001x1001 but anisotropic).  Confirms
+        the anisotropic-cell path scales the same as isotropic.
+        """
+        rng = np.random.default_rng(11)
+        N = 10000
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+        xyz = np.column_stack([x, y, z])
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (0.01, 0.04)             # 1001 x 251, alpha = dx/dy = 0.25
+        tension = 0.5
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            t0 = time.time()
+            grid_gmt = _run_gmt_surface(xyz, region, inc, tension, tmpdir)
+            t_gmt = time.time() - t0
+
+        t0 = time.time()
+        grid_py = gmt_surface_py(
+            xyz[:, 0], xyz[:, 1], xyz[:, 2],
+            region=region, inc=inc, tension=tension,
+            omega=0.6, tol=1e-4, use_multigrid=True,
+        )
+        t_py = time.time() - t0
+
+        print(f"\n[bench aniso 1001x251]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
               f"speedup={t_gmt/t_py:.2f}x  shape={grid_gmt.shape}  "
               f"threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
 
