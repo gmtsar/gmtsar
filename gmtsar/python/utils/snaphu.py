@@ -1,15 +1,222 @@
 #! /usr/bin/env python3
 """
-# snaphu.py is part of GMTSAR. 
+# snaphu.py is part of GMTSAR.
 # This Python script is migrated from snaphu.csh by Dunyu Liu on 20231109.
-# snaphu.csh was originally written by X on X. 
-
+# snaphu.csh was originally written by X on X.
+#
 # Purpose: to unwrap the phase.
+#
+# Module surface:
+#   snaphu()                  — legacy CLI wrapper (preserved unchanged).
+#   snaphu_unwrap(...)        — native Python entry mirroring snaphu.csh.
+#   snaphu_interp_unwrap(...) — native Python entry mirroring snaphu_interp.csh.
+#
+# Both *_unwrap functions are thin orchestrators around the third-party
+# `snaphu` C binary (Chen & Zebker 2000). They mirror their csh wrappers
+# step-for-step — same gmt grdmath / grd2xyz / xyz2grd / snaphu invocations,
+# same intermediate filenames, same cleanup. Byte-identical output to the
+# csh side is the success criterion (the unwrap.grd / conncomp.grd / unwrap.pdf
+# triple).
 """
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+
+# ---------------------------------------------------------------------------
+# Native Python entry points (called from utils/p2p_stages.py)
+# ---------------------------------------------------------------------------
+#
+# These mirror snaphu.csh / snaphu_interp.csh. They operate in cwd (which must
+# contain mask.grd, corr.grd, phasefilt.grd, just like the csh wrappers
+# expect). They produce the same outputs (unwrap.grd, conncomp.grd, unwrap.pdf)
+# in cwd.
+#
+# Difference between the two:
+#   snaphu_unwrap         — direct: phase_patch.grd → grd2xyz → snaphu
+#   snaphu_interp_unwrap  — fills low-coherence holes via `nearest_grid` first
+#                           (helps snaphu over big vacant areas), and the
+#                           landmask resample path uses -R<grid_info> instead
+#                           of -R<phase_patch.grd> for the no-region branch.
+
+
+def snaphu_unwrap(threshold_snaphu, defomax, region=None):
+    """Single-tile snaphu unwrap. Mirrors gmtsar/csh/snaphu.csh.
+
+    Args:
+        threshold_snaphu : correlation threshold (csh arg $1). Pixels with
+            corr < threshold are masked out (set to 0 in corr_tmp.grd → NaN
+            in mask2_patch.grd). Use a float-castable value (e.g. .14).
+        defomax          : maximum phase discontinuity in cycles (csh arg $2).
+            0 → continuous-phase unwrap (-s, smooth); >0 → enables phase jumps
+            (-d, defomax mode) with DEFOMAX_CYCLE patched into a local
+            snaphu.conf.brief copy.
+        region           : optional `<rng0>/<rngf>/<azi0>/<azif>` GMT -R region
+            (csh arg $3). None → operate on the full grids.
+
+    Returns:
+        absolute path to the unwrap.grd produced in cwd.
+    """
+    return _snaphu_run(interp=0, threshold=str(threshold_snaphu),
+                       defomax=str(defomax), region=region)
+
+
+def snaphu_interp_unwrap(threshold_snaphu, defomax, region=None):
+    """Interpolated snaphu unwrap. Mirrors gmtsar/csh/snaphu_interp.csh.
+
+    Same args / return as snaphu_unwrap. Adds a `nearest_grid` step that
+    fills holes in phase_patch.grd before snaphu sees it, and uses the
+    grdinfo-derived increments (not the grid handle) for the no-region
+    landmask resample — preserving the one byte-level difference from
+    snaphu.csh.
+    """
+    return _snaphu_run(interp=1, threshold=str(threshold_snaphu),
+                       defomax=str(defomax), region=region)
+
+
+def _snaphu_run(interp, threshold, defomax, region):
+    """Shared core for snaphu_unwrap / snaphu_interp_unwrap.
+
+    The two csh wrappers diverge in exactly three spots:
+      (1) interpolation: snaphu_interp.csh runs `nearest_grid phase_tmp.grd ...`
+          to fill low-coherence holes; snaphu.csh does not.
+      (2) no-region landmask resample: snaphu.csh uses
+          `-Rphase_patch.grd`, snaphu_interp.csh uses the grdinfo-derived `-I`
+          increments instead.
+      (3) cleanup tail: snaphu_interp.csh renames phase_patch.grd to
+          phasefilt_interp.grd; snaphu.csh leaves it.
+    Everything else is identical.
+
+    Side effects: writes/removes intermediate grids in cwd (mask_patch.grd,
+    corr_patch.grd, phase_patch.grd, mask2_patch.grd, corr_tmp.grd,
+    phase.in, corr.in, unwrap.out, conncomp.out, tmp.grd, unwrap.grd,
+    conncomp.grd, unwrap_grad.grd, unwrap.cpt, unwrap.ps, unwrap.pdf).
+    """
+    V = '-V'
+
+    # --- prepare files (csh: gmt grdcut/ln -s mask/corr/phase) ----------
+    if region is not None:
+        run(f'gmt grdcut mask.grd -R{region} -Gmask_patch.grd')
+        run(f'gmt grdcut corr.grd -R{region} -Gcorr_patch.grd')
+        run(f'gmt grdcut phasefilt.grd -R{region} -Gphase_patch.grd')
+    else:
+        file_shuttle('mask.grd', 'mask_patch.grd', 'link')
+        file_shuttle('corr.grd', 'corr_patch.grd', 'link')
+        file_shuttle('phasefilt.grd', 'phase_patch.grd', 'link')
+
+    # --- landmask --------------------------------------------------------
+    if check_file_report('landmask_ra.grd') is True:
+        if region is not None:
+            par_tmp = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
+                                       False, 0, -100000)
+            run(f'gmt grdsample landmask_ra.grd -R{region} {par_tmp} '
+                f'-Glandmask_ra_patch.grd')
+        else:
+            # Divergence (2): snaphu.csh uses -Rphase_patch.grd; snaphu_interp.csh
+            # uses the grdinfo-derived `-I dx/dy` instead. Preserve both.
+            if interp == 0:
+                run('gmt grdsample landmask_ra.grd -Rphase_patch.grd '
+                    '-Glandmask_ra_patch.grd')
+            else:
+                par = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
+                                       False, 0, -100000)
+                run(f'gmt grdsample landmask_ra.grd {par} '
+                    f'-Glandmask_ra_patch.grd')
+        run(f'gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = '
+            f'phase_patch.grd {V}')
+
+    # --- user-defined mask ----------------------------------------------
+    if check_file_report('mask_def.grd') is True:
+        if region is not None:
+            run(f'gmt grdcut mask_def.grd -R{region} -Gmask_def_patch.grd')
+        else:
+            file_shuttle('mask_def.grd', 'mask_def_patch.grd', 'cp')
+        run(f'gmt grdmath corr_patch.grd mask_def_patch.grd MUL = '
+            f'corr_patch.grd {V}')
+
+    # --- correlation threshold + mask composition -----------------------
+    run(f'gmt grdmath corr_patch.grd {threshold} GE 0 NAN mask_patch.grd '
+        f'MUL = mask2_patch.grd')
+    run('gmt grdmath corr_patch.grd 0. XOR 1. MIN  = corr_patch.grd')
+    run('gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd')
+
+    # --- phase -> xyz (with optional nearest_grid fill for interp) ------
+    if interp == 0:
+        run('gmt grd2xyz phase_patch.grd -ZTLf -do0 > phase.in')
+    else:
+        run('gmt grdmath mask2_patch.grd phase_patch.grd MUL = phase_tmp.grd')
+        run('nearest_grid phase_tmp.grd tmp.grd 300')
+        file_shuttle('tmp.grd', 'phase_tmp.grd', 'mv')
+        run('gmt grd2xyz phase_tmp.grd -ZTLf -do0 > phase.in')
+
+    run('gmt grd2xyz corr_tmp.grd -ZTLf  -do0 > corr.in')
+
+    # --- snaphu ----------------------------------------------------------
+    sharedir = resolve_sharedir()
+    par_tmp = catch_output_cmd(["gmt", "grdinfo", "-C", "phase_patch.grd"],
+                               True, 10, -100000)
+
+    if float(defomax) == 0:
+        run(f'snaphu phase.in {par_tmp} '
+            f'-f {sharedir}/snaphu/config/snaphu.conf.brief '
+            f'-c corr.in -o unwrap.out -v -s -g conncomp.out')
+    else:
+        file_shuttle(f'{sharedir}/snaphu/config/snaphu.conf.brief',
+                     'snaphu.conf.brief', 'cp')
+        replace_strings('snaphu.conf.brief',
+                        'DEFOMAX_CYCLE', f'DEFOMAX_CYCLE {defomax}')
+        run(f'snaphu phase.in {par_tmp} -f snaphu.conf.brief '
+            f'-c corr.in -o unwrap.out -v -d -g conncomp.out')
+
+    # --- snaphu xyz -> grd ----------------------------------------------
+    par1 = catch_output_cmd(["gmt", "grdinfo", "-I-", "phase_patch.grd"],
+                            False, 0, -100000)
+    par2 = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
+                            False, 0, -100000)
+    run(f'gmt xyz2grd unwrap.out -ZTLf -r {par1} {par2} -Gtmp.grd')
+    run(f'gmt xyz2grd conncomp.out -ZTLu -r {par1} {par2} -Gconncomp.grd')
+    run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
+    file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
+
+    # --- post-mask -------------------------------------------------------
+    if check_file_report('landmask_ra.grd') is True:
+        run(f'gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd {V}')
+        file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
+    if check_file_report('mask_def.grd') is True:
+        run(f'gmt grdmath unwrap.grd mask_def_patch.grd MUL = tmp.grd {V}')
+        file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
+
+    # --- plot ------------------------------------------------------------
+    run('gmt grdgradient unwrap.grd -Nt.9 -A0. -Gunwrap_grad.grd')
+    tmp = catch_output_cmd(["gmt", "grdinfo", "-C", "-L2", "unwrap.grd"],
+                           True, -999, -100000)
+    limitU = round(float(tmp[11]) + float(tmp[12]) * 2., 1)
+    limitL = round(float(tmp[11]) - float(tmp[12]) * 2., 1)
+    run(f'gmt makecpt -Cseis -I -Z -T"{limitL}"/"{limitU}"/1 -D > unwrap.cpt')
+    run('gmt grdimage unwrap.grd -Iunwrap_grad.grd -Cunwrap.cpt -JX6.5i '
+        '-Bxaf+lRange -Byaf+lAzimuth -BWSen -X1.3i -Y3i -P -K > unwrap.ps')
+    run('gmt psscale -Runwrap.grd -J -DJTC+w5/0.2+h+e -Cunwrap.cpt '
+        '-Bxaf+l"Unwrapped phase" -By+lrad -O >> unwrap.ps')
+    run('gmt psconvert -Tf -P -A -Z unwrap.ps')
+
+    # --- cleanup ---------------------------------------------------------
+    run('rm -f tmp.grd corr_tmp.grd unwrap.out tmp2.grd unwrap_grad.grd '
+        'conncomp.out')
+    run('rm -f phase.in corr.in')
+    if interp == 1:
+        run('rm -f phase_tmp.grd')
+        # Divergence (3): snaphu_interp.csh renames phase_patch.grd to
+        # phasefilt_interp.grd at this point. snaphu.csh does not.
+        file_shuttle('phase_patch.grd', 'phasefilt_interp.grd', 'mv')
+
+    if region is not None:
+        file_shuttle('corr_patch.grd', 'corr_cut.grd', 'mv')
+    run('rm -f mask_patch.grd mask3.grd mask3.out')
+    run('rm -f corr_cut.grd corr_patch.grd')
+
+    return os.path.abspath('unwrap.grd')
+
 
 def snaphu():
     
