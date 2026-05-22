@@ -8,9 +8,32 @@
 # Purpose: to make topography for interferograms. The USGS elevations are height above WGS84 so this is OK.
 """
 
-import sys, os, subprocess
+import sys, os, subprocess, mmap as _mmap
 import numpy as _np
 from gmtsar_lib import *
+
+
+def _advise_sequential(arr):
+    """Hint the kernel that this memmap will be read sequentially.
+
+    Mira #35 / #37: under NFS, np.memmap default access is per-4 KB-page
+    demand-fault, which triggers a separate NFS RPC for each page.
+    MADV_SEQUENTIAL tells the kernel to read-ahead in larger chunks.
+    Linux-only; falls back silently on macOS/BSD.
+    """
+    try:
+        m = arr.base
+        while m is not None and not isinstance(m, _mmap.mmap):
+            m = getattr(m, "base", None)
+        if m is None:
+            return
+        madvise = getattr(m, "madvise", None)
+        advice = getattr(_mmap, "MADV_SEQUENTIAL", None)
+        if madvise is None or advice is None:
+            return
+        madvise(advice)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 # Tier-1 in-process replacements for cheap `gmt` subprocesses
 # (see utils/gmt_inproc.py and PLAN.md §9). Wired into the
@@ -116,6 +139,7 @@ def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
         n_rows = sz // (5 * 8)
         in_mm = _np.memmap(trans_dat, dtype=_np.float64, mode="r",
                            shape=(n_rows, 5))
+        _advise_sequential(in_mm)  # Mira #37: avoid NFS per-page fault storms
         xyz = _np.ascontiguousarray(in_mm[:, :3])
         # blockmedian returns (M, 3) float64; tobytes is the 3-double
         # binary stream `gmt blockmedian -bo3d` writes.

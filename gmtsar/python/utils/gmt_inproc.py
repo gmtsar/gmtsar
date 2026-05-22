@@ -51,11 +51,35 @@ Mira-discipline notes
 """
 from __future__ import annotations
 
+import mmap
 import os
 import sys
 from typing import Sequence
 
 import numpy as np
+
+
+def _advise_sequential(arr):
+    """Hint the kernel that this memmap will be read sequentially.
+
+    Mira #35 / #37: under NFS, np.memmap default access is per-4 KB-page
+    demand-fault, which triggers a separate NFS RPC for each page.
+    MADV_SEQUENTIAL tells the kernel to read-ahead in larger chunks.
+    Linux-only; falls back silently on macOS/BSD.
+    """
+    try:
+        m = arr.base
+        while m is not None and not isinstance(m, mmap.mmap):
+            m = getattr(m, "base", None)
+        if m is None:
+            return
+        madvise = getattr(m, "madvise", None)
+        advice = getattr(mmap, "MADV_SEQUENTIAL", None)
+        if madvise is None or advice is None:
+            return
+        madvise(advice)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 try:
     import netCDF4 as _nc4  # type: ignore
@@ -224,6 +248,7 @@ def gmtconvert_select_cols_bin(in_path: str, ncol_in: int,
     # the simplest fast path is row-stride mmap → index columns.
     in_mm = np.memmap(in_path, dtype=np.float64, mode="r",
                       shape=(n_rows, ncol_in))
+    _advise_sequential(in_mm)  # Mira #37: avoid NFS per-page fault storms
     out = np.ascontiguousarray(in_mm[:, cols_arr])
     out.tofile(out_path)
     return out.nbytes
