@@ -14,3 +14,4 @@ utils/.DS_Store
 # Produced locally by tests/freeze_reference.py; not shipped via git.
 # Future: distribute as a GitHub Release asset + fetch_reference.sh.
 tests/reference/
+gmtsar/python/bin_py/tests/data/
