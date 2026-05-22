@@ -199,6 +199,89 @@ chain (Phase 2 of this plan) and `snaphu*.csh` (Phase 4).
 **Effort estimate:** 1-2 weeks (1 Mira-port mission + parity validation
 sweep + Frame-level profile aggregation).
 
+## 9. GMT subprocess → in-process port roadmap
+
+The full strict-single-thread sweep (2026-05-21, 21/21 PASS after Mira #15-#17
+fixes) shows the Python pipeline is bit-identical to csh but ~1× speed at
+serial. The 50% pipeline cost concentrated in `dem2topo_ra` is mostly
+**single-thread GMT subprocesses** that the Python framework calls but
+doesn't replace. The path to real speedup goes through replacing those
+subprocess calls with in-process numpy / numba / GPU.
+
+### Replacement value matrix
+
+| GMT command | numpy | numba JIT | numba prange | GPU | Best stop |
+|---|---|---|---|---|---|
+| `grdmath` simple (ADD/MUL/FLIPUD) | ✅ instant | — | — | — | **numpy** (SIMD-vectorized already) |
+| `grd2xyz` / `xyz2grd` | ✅ instant | — | — | — | **numpy** (I/O-bound) |
+| `grdcut` | ✅ instant | — | — | — | **numpy** (lazy slice) |
+| `gmtconvert` (column reorder) | ✅ instant | — | — | — | **numpy** |
+| `blockmedian` | 1× | 2-3× | 4-7× | 10-30× | numba prange viable |
+| `grdsample` (bilinear) | 1× | 1.5× | 3-5× | 20-50× | numpy for small / GPU for big |
+| `grdtrack -nl` | 1× (done by Mira #11) | 2× | 5-10× | 30-100× | numpy now, GPU for batch |
+| **`gmt surface`** (continuous-curvature spline) | ⚠ 1× (slow PDE) | 5-10× | **20-40×** | **100-500×** | **GPU is the natural ceiling** |
+
+### Why `gmt surface` is the keystone
+
+It's a multigrid PDE relaxation: 9-point stencil sweep, embarrassingly parallel
+per-cell within a Jacobi iteration. Appears 3× per case (raln, ralt, topo_ra).
+On NISAR it's ~50 s per call. Porting to `numba @njit(parallel=True) + prange`
+should yield ~5-10× speedup on 8 cores; GPU (`@cuda.jit` or `cupy`) goes 100×.
+
+Until `gmt surface` is replaced, the pipeline is fundamentally bottlenecked at
+~50 s/case on dem2topo_ra regardless of how much we parallelize the Numba ports.
+
+### Why other commands aren't worth deeper porting
+
+- `grdmath ADD/MUL/SUB/FLIPUD` etc. are at memory bandwidth via numpy. Numba
+  can't beat numpy on SIMD-vectorized array ops; gain is zero.
+- `grd2xyz` and `xyz2grd` are pure I/O — savings come from killing the
+  subprocess + ASCII round-trip, not from compute parallelism.
+- `grdcut` is O(1) lazy slicing in xarray; no compute to parallelize.
+
+Conclusion: for these commands, **stop at numpy**. Don't waste numba effort.
+
+### Roadmap (ordered by ROI)
+
+**Tier 1 — bulk easy wins (1 week, no Numba/GPU)**
+- Replace `grd2xyz`, `xyz2grd`, `grdcut`, `grdmath`, `gmtconvert` with
+  numpy/xarray calls in `dem2topo_ra` and `geocode`.
+- Saves ~5-15 s/case on overhead + ASCII round-trips.
+- Risk: low (each replacement is a numerical no-op).
+
+**Tier 2 — medium kernels (2-3 weeks, numba prange)**
+- Port `blockmedian`, `grdsample`, `grdtrack` to numba parallel kernels.
+- Saves ~5-10 s/case in compute.
+- Risk: medium (parity tests against gmt versions on real data).
+
+**Tier 3 — gmt surface in numba (1-2 months)**
+- Implement multigrid continuous-curvature spline solver in
+  `@njit(parallel=True)` with prange over rows. Reference: GMT's
+  `src/surface.c` (Smith & Wessel 1990 algorithm).
+- Saves ~30-60 s/case (3× surface calls per pipeline).
+- Risk: high (algorithm verification — must match gmt surface within
+  iteration-count tolerance).
+
+**Tier 4 — GPU (3-6 months, optional)**
+- Port the heavy kernels (`surface`, `blockmedian`, `grdtrack`) to
+  cupy / `@cuda.jit`.
+- Saves another 5-50× on kernel work alone.
+- ROI condition: only worthwhile if (a) machine has GPU, (b) data is
+  large enough to amortize transfer cost (NISAR-scale yes, RS2-scale
+  no), (c) running many cases (sweep / SBAS workloads).
+- Risk: medium (cuda numerics ≠ CPU numerics for floats).
+
+### Honest end-game
+
+After Tier 3 is done, dem2topo_ra wall time drops from ~50 s to ~10-15 s.
+Pipeline-level speedup vs current strict-serial Python: **2-3×** on big cases.
+Pipeline-level vs csh: **3-5× faster** at single-thread, **8-15× faster**
+at NUMBA_NUM_THREADS=8.
+
+Tier 4 (GPU) is mostly for production SBAS / batch processing, not
+single-pair P2P. Single-case use will hit Amdahl's law on the C bits
+(`intf`, `filter`, `snaphu`) that aren't being ported.
+
 ## 8. Open questions
 
 - **SBAS test fixture:** does `topex.ucsd.edu/gmtsar/tar/` host a multi-pair
