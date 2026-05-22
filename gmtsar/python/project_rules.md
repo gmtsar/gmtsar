@@ -160,3 +160,42 @@ This rule sits on top of rule 0 (pass all tests) but specifically scopes
 the merge decision: pre-merge passing is the gate, not post-merge
 debugging. We do not merge with the intent of "I'll fix the regression
 in a follow-up commit" — that's how cascading bugs land in master.
+
+## 9. py side MUST NOT modify the csh oracle
+
+The csh oracle at `work/csh_test/<case>/` is the immutable ground-truth
+reference. The py side (anything under `work/python_test/<case>/`) is the
+unit under test. They are isolated trees.
+
+**Forbidden — every one of these breaks the parity test:**
+
+- Any py recipe writing to `work/csh_test/...` (directly or via symlink).
+- Any sweep that wipes `work/python_test/<case>/` but leaves intermediate
+  files (PRM, r.grd, SLC) inside `work/csh_test/<case>/` partially
+  refreshed from a different code version. The "stale oracle" failure
+  Mira #18 root-caused on NISAR was a real instance of this — somewhere
+  during xcorr_py iteration, a partial step touched csh_test's
+  intermediates without re-running the full csh recipe to re-derive the
+  downstream `.SLCresamp` files.
+- Manual debugging that runs C binaries (xcorr, fitoffset, resamp) inside
+  `csh_test/<case>/raw/` or `csh_test/<case>/SLC/`. That partially refreshes
+  the oracle and leaves it internally inconsistent.
+
+**Enforcement:**
+
+- Rule 8's sentinel (`.oracle_built` with `tarball_md5 + fwk_sha`) catches
+  the case where the tarball or framework changed since oracle build, but
+  it does NOT catch a partial mid-run write that leaves the same tarball
+  and intermediate files but inconsistent downstream outputs.
+- All py work must live under `work/python_test/...`. The py recipes that
+  ship in `gmtsar/python/utils/` and `gmtsar/python/bin_py/` only ever
+  reference paths under `python_test/<case>/`. If a future Mira mission
+  needs to read from csh_test (e.g., for comparison), it must be a
+  READ-ONLY access — no writes.
+- The sweep harness `tests/sweep.sh` and `tests/case_runner.sh` must not
+  pass `csh_test/<case>` paths as output args to py recipes. The py side
+  is `pyDir`; the csh side is `cshDir`; they never alias.
+
+**When in doubt: delete the affected `csh_test/<case>/` and let
+`case_runner.sh` rebuild from scratch.** Rule 8's sentinel will then
+record a fresh `.oracle_built` and future invocations will trust it.
