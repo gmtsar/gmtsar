@@ -199,6 +199,73 @@ chain (Phase 2 of this plan) and `snaphu*.csh` (Phase 4).
 **Effort estimate:** 1-2 weeks (1 Mira-port mission + parity validation
 sweep + Frame-level profile aggregation).
 
+## 9a. Status snapshot 2026-05-22 (post-v2.0.0)
+
+After v2.0.0 tag at `94ff0b8`, status of every workstream:
+
+**Python ports in production (PATH-wired):**
+- xcorr_py (batched FFT, 1.61× vs csh on RS2)
+- SAT_llt2rat_py_v2 (Numba JIT cache=True)
+- resamp_py_v2 (Numba JIT cache + MADV_SEQUENTIAL fix)
+- proj_ra2ll_fast (numpy bilinear)
+- SAT_baseline_py (byte-id on 5 datasets)
+
+**Python ports committed but NOT wired:**
+- phasediff_py (Mira #28; NotImplementedError for >1000m baseline)
+- conv_py + _gmt_native_bf.py (Mira #28; 1.7-3.4× slower than OMP-C)
+- make_los_py (Mira #27; byte-id vs gmt grdmath, 6 tests)
+- utils/vector.py (Mira #34; 8 @njit primitives, 29 tests)
+
+**GMT replacements — wired:**
+- `gmt grdmath FLIPUD` → numpy + gmt_grd_io.write_gmt_grd (Mira #30, 4.6× per call)
+- `gmt gmtconvert -bi5d -bo3d` → numpy memmap slice (Mira #19)
+- `gmt grdtrack -nl` (bilinear) → proj_ra2ll_lib (Mira #11)
+
+**GMT replacements — parity-tested but NOT wired:**
+- `gmt blockmedian` → numba prange byte-id (Mira #25); kept off — at 1 pt/bin
+  density in dem2topo_ra, numba is 4× SLOWER than gmt. Useful at higher density.
+- `gmt surface` → FMG + anisotropic (Miras #20/#26/#33); rms 3.4e-4 iso,
+  6.7e-4 aniso 1:4; needs pixel-reg + Briggs before safe wire-in
+- `gmt grd2xyz -s` → numpy (Mira #19); blocked by %lf ASCII pipe requirement
+  for SAT_llt2rat_py parity
+
+**GMT subprocesses NOT YET replaced (next mission targets):**
+- `gmt grdmath ADD/MUL/SUB/NEG/ABS` chain (10-15 sites in dem2topo_ra + geocode)
+- `gmt grdcut -R...` (rare RR branch, geocode)
+- `gmt xyz2grd` (dem2topo_ra)
+- `gmt grdsample`, `gmt grdimage`, `gmt psconvert`, `gmt grd2cpt`,
+  `gmt makecpt` (visualization, low priority)
+
+**Foundations + perf:**
+- `utils/gmt_grd_io.py` — GMT-compatible netCDF writer (Mira #23, 16 tests)
+- `utils/vector.py` — @njit single-thread primitives (Mira #34, 29 tests)
+- `tools/perf_snapshot.py` — rule-7 snapshot CLI (Mira #24)
+- numba 0.65.1 installed in production conda env
+- MADV_SEQUENTIAL on resamp_py memmap (Mira #35) — expected stripmap perf flip
+- Numba v2 JIT cache: resamp_py_v2 + SAT_llt2rat_py_v2
+- S1 TOPS phase_profile aggregation (Mira #21)
+
+**Project rules + harness:**
+- Rule 8: merge only when tests pass + env-gated wires need path-exercising smoke
+- Rule 9: py side MUST NOT modify the csh oracle
+- case_runner.sh sentinel — `.oracle_built` invalidates stale oracles
+  (framework SHA + tarball md5)
+
+## 9b. Next mission queue (post-v2.0.0, ordered by ROI)
+
+| # | Mission | Tier | Expected savings |
+|---|---|---|---|
+| 36 | Wire gmt grdmath chain (ADD/MUL/SUB/NEG/ABS) via gmt_grd_io into dem2topo_ra + geocode | 1 | 5-10 s/case |
+| 37 | madvise(MADV_SEQUENTIAL) on remaining np.memmap sites: xcorr_py, proj_ra2ll_fast, SAT_baseline_py | optimization | few s/case under contention |
+| 38 | gmt_surface_py: native pixel-reg mode + Briggs sub-cell constraints | 3 | unblocks ~25-50 s/case when wired |
+| 39 | Wire make_los_py (geocode.csh:77, :139) + phasediff_py (intf.csh, RS2-short-baseline) | 1 | ~5 s/case |
+| 40 | Refactor _jit_kernels_sat.py and SAT_baseline_py to import from utils/vector.py | cleanup | ~300 lines consolidated; no perf delta |
+| 41 | Port align_tops.csh to Python (removes 6 csh call sites from p2p_stages.py) | 3 | enables S1 TOPS Phase 3 |
+| 42 | Port intf + filter binaries (finish Mira #28's work; long-baseline + OMP perf) | C-binary | ~3-5 s/case |
+| 43 | Port snaphu.csh + snaphu_interp.csh wrappers | 3 | cleanup |
+| 44 | In-memory chain in dem2topo_ra (no intermediate .grd writes between gmt cmds) | medium | 5-10 s/case |
+| 45 | Port pre_proc per SAT family (huge — S1 TOPS first) | Phase 6 | months each |
+
 ## 9. GMT subprocess → in-process port roadmap
 
 The full strict-single-thread sweep (2026-05-21, 21/21 PASS after Mira #15-#17
