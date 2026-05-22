@@ -194,6 +194,13 @@ def grdmath(args: str) -> int:
     then fail with "grid files not of same size". Keep clib.Session as
     the default; revisit the fast-path once we have a writer that emits
     GMT-compatible netcdf.
+
+    Update 2026-05-21: a GMT-compatible writer DOES now exist —
+    `utils.gmt_grd_io.write_gmt_grd`. Future fast paths for
+    simple-RPN grdmath ops (FLIPUD, MUL, ADD, SUB, DIV) can use that
+    writer to emit downstream-compatible .grd files. The fast-path in
+    `_try_xarray_grdmath` below is the natural place to wire it in.
+    See PLAN.md §9 "GMT netCDF attribute spec".
     """
     return _clib_call("grdmath", args)
 

@@ -108,7 +108,14 @@ def _bounds_of_temp_rat(path: str) -> tuple[int, int, int, int]:
 def _grdmath_flipud(src: str, dst: str) -> None:
     """A FLIPUD = B  via gmt_compat.grdmath (clib.Session call, no fork).
     Writing via xarray produced a netcdf flavor GMT couldn't parse on read;
-    routing through libgmt preserves the canonical GMT grid header."""
+    routing through libgmt preserves the canonical GMT grid header.
+
+    Update 2026-05-21: `utils.gmt_grd_io.write_gmt_grd` now provides a
+    pure-Python GMT-compatible writer. This function can be re-ported as
+    an in-process numpy flip + write_gmt_grd call (no gmt subprocess and
+    no pygmt.clib) once the dem2topo_ra Tier-1 refactor lands. See
+    `bin_py/tests/test_gmt_grd_io.py::test_grdmath_flipud` for the parity
+    test pattern."""
     grdmath(f"{src} FLIPUD = {dst}")
 
 
