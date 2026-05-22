@@ -46,6 +46,14 @@ RULES: list[tuple[str, str | list[str]]] = [
     (r'utils/align_tops',           ['S1A_SLC_TOPS_COVE', 'S1A_SLC_TOPS_Greece',
                                      'S1A_SLC_TOPS_LA', 'S1_Larsen_C',
                                      'S1_Ridgecrest_EQ']),
+    # Sentinel-1 TOPS final-stage merge/unwrap/geocode. Same case set as
+    # align_tops since both are S1-TOPS-only. (Note: threshold_snaphu=0
+    # for every TOPS case in tests/configs/, so the unwrap branch is NOT
+    # exercised — keep an eye on that gap.)
+    (r'utils/merge_unwrap_geocode_tops', ['S1A_SLC_TOPS_COVE',
+                                          'S1A_SLC_TOPS_Greece',
+                                          'S1A_SLC_TOPS_LA', 'S1_Larsen_C',
+                                          'S1_Ridgecrest_EQ']),
     # conv_py — used in older ALOS raw-mode pipeline.
     (r'bin_py/conv_py',             ['ALOS_haiti']),
     # GMT surface Python port — currently exercised only by CSK RAW.
