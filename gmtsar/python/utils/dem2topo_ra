@@ -65,6 +65,136 @@ except ImportError as _e:
           "using gmt subprocess.", file=sys.stderr)
     _HAVE_GMT_GRD_IO = False
 
+# Mira #31 (2026-05-22): in-process `gmt surface` replacement via
+# utils/gmt_surface_py.py (Full Multigrid, Numba-accelerated).
+# Wired ONLY for the `pixel.grd` calls when:
+#   - cells are square (dx == dy), AND
+#   - GMTSAR_SURFACE_INPROC != "0".
+# `gmt_surface_py` is currently restricted to square cells and gridline
+# registration. dem2topo_ra calls `gmt surface ... -r` (pixel reg) which
+# we emulate by shifting region by inc/2 and writing the output grid
+# with node_offset=1. The 8 of 9 --fast test cases use ANISOTROPIC
+# inc (`-I rng/2` or `-I rng/4` with rng != 2 or 4 respectively)
+# and FALL THROUGH to the gmt subprocess unchanged. Only CSK_RAW_Hawaii
+# (rng=4, I=4/4 square) exercises the new path on the --fast set.
+# Disable globally by setting GMTSAR_SURFACE_INPROC=0.
+try:
+    from gmt_surface_py import gmt_surface_py as _gmt_surface_py
+    _HAVE_GMT_SURFACE_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_surface_py import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GMT_SURFACE_PY = False
+
+
+def _surface_inproc_enabled() -> bool:
+    return os.environ.get("GMTSAR_SURFACE_INPROC", "1") != "0"
+
+
+def _surface_inproc_pixel(temp_rat_path: str, region: str,
+                          x_inc: int, y_inc: int,
+                          tension: float, out_grd: str,
+                          V: str) -> bool:
+    """In-process `gmt surface temp.rat -R<region> -I<x_inc>/<y_inc> -bi3d
+    -T<tension> -N1000 -G<out_grd> -r` replacement.
+
+    `temp.rat` is a 3-double binary file (x, y, z), the output of
+    `gmt blockmedian -bo3d` upstream. Region is "x0/x1/y0/y1" (pixel
+    reg semantics: spans the pixel-edge box, so the kept grid has
+    (x1-x0)/x_inc × (y1-y0)/y_inc cells with centres at
+    x0+x_inc/2, x0+3*x_inc/2, ... and likewise for y).
+
+    Returns True if the in-process path ran (out_grd written); False if
+    the gate rejected (caller must fall back to gmt subprocess).
+
+    Gate (all must hold):
+      - GMTSAR_SURFACE_INPROC != "0"
+      - gmt_surface_py + gmt_grd_io importable
+      - x_inc == y_inc (gmt_surface_py prototype is square-cell only)
+    """
+    if not (_HAVE_GMT_SURFACE_PY and _HAVE_GMT_GRD_IO):
+        return False
+    if not _surface_inproc_enabled():
+        return False
+    if int(x_inc) != int(y_inc):
+        # Anisotropic cell — gmt_surface_py raises NotImplementedError.
+        return False
+
+    # Parse region "x0/x1/y0/y1"
+    try:
+        x0_s, x1_s, y0_s, y1_s = str(region).split("/")
+        x0, x1, y0, y1 = float(x0_s), float(x1_s), float(y0_s), float(y1_s)
+    except (ValueError, AttributeError):
+        return False
+    if x1 <= x0 or y1 <= y0:
+        return False
+
+    # Load temp.rat (3 doubles per record: x, y, z)
+    try:
+        sz = os.path.getsize(temp_rat_path)
+        if sz == 0 or sz % (3 * 8) != 0:
+            return False
+        n_rows = sz // (3 * 8)
+        mm = _np.memmap(temp_rat_path, dtype=_np.float64, mode="r",
+                        shape=(n_rows, 3))
+        x = _np.ascontiguousarray(mm[:, 0])
+        y = _np.ascontiguousarray(mm[:, 1])
+        z = _np.ascontiguousarray(mm[:, 2])
+    except Exception as exc:
+        print(f"DEM2TOPO_RA: WARN: surface_inproc temp.rat read failed "
+              f"({exc!r}); falling back to gmt subprocess.", file=sys.stderr)
+        return False
+
+    # Pixel-registration emulation: gmt_surface_py uses gridline reg, so
+    # build an equivalent gridline region whose nodes are the pixel-
+    # centre coordinates of the requested pixel-reg grid.
+    dx = float(x_inc)
+    dy = float(y_inc)
+    # Pixel-reg cell count along each axis
+    nx_pix = int(round((x1 - x0) / dx))
+    ny_pix = int(round((y1 - y0) / dy))
+    if nx_pix < 5 or ny_pix < 5:
+        # gmt_surface_py needs >= 5 in each dim for the 12-point stencil
+        return False
+    # Gridline region whose nodes coincide with the pixel-reg centres
+    gx0 = x0 + dx / 2.0
+    gx1 = x0 + (nx_pix - 0.5) * dx
+    gy0 = y0 + dy / 2.0
+    gy1 = y0 + (ny_pix - 0.5) * dy
+
+    try:
+        data = _gmt_surface_py(
+            x, y, z,
+            region=(gx0, gx1, gy0, gy1),
+            inc=(dx, dy),
+            tension=float(tension),
+        )
+    except NotImplementedError:
+        # Defensive — should not trigger (already gated square above).
+        return False
+    except Exception as exc:
+        print(f"DEM2TOPO_RA: WARN: gmt_surface_py kernel failed "
+              f"({exc!r}); falling back to gmt subprocess.", file=sys.stderr)
+        return False
+
+    # Output grid: pixel-registered, x at centres, y at centres
+    x_centres = _np.arange(nx_pix, dtype=_np.float64) * dx + gx0
+    y_centres = _np.arange(ny_pix, dtype=_np.float64) * dy + gy0
+    try:
+        _write_gmt_grd(
+            out_grd, data, x_centres, y_centres,
+            node_offset=1, geographic=False,
+            history=(f"gmt surface {temp_rat_path} -R{region} "
+                     f"-I{int(x_inc)}/{int(y_inc)} -bi3d -T{tension} "
+                     f"-N1000 -G{out_grd} -r "
+                     "[gmt_surface_py in-process; Mira #31]"),
+        )
+    except Exception as exc:
+        print(f"DEM2TOPO_RA: WARN: gmt_surface_py write_gmt_grd failed "
+              f"({exc!r}); falling back to gmt subprocess.", file=sys.stderr)
+        return False
+    return True
+
 
 def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
                                 az_step: int, V: str, out_path: str) -> None:
@@ -330,8 +460,18 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
-                run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
+                # Mira #31 wire-in: in-process gmt_surface_py (FMG) when
+                # the cell is square; falls through to gmt subprocess
+                # otherwise (anisotropic rng/2 cells, etc.). Set
+                # GMTSAR_SURFACE_INPROC=0 to force the subprocess path.
+                if not _surface_inproc_pixel("temp.rat", str(region),
+                                             int(rng), 2, tension,
+                                             "pixel.grd", str(V)):
+                    run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
             else:
+                # RR override path — keep subprocess (RR region differs
+                # from the natural region; the wire-in helper expects
+                # a clean "x0/x1/y0/y1" string and we follow csh exactly here).
                 run("gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
                 run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
@@ -379,8 +519,16 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
-                run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
+                # Mira #31 wire-in: in-process gmt_surface_py (FMG) when
+                # the cell is square (rng==4 → I=4/4); falls through to
+                # gmt subprocess otherwise. Set GMTSAR_SURFACE_INPROC=0
+                # to force the subprocess path.
+                if not _surface_inproc_pixel("temp.rat", str(region),
+                                             int(rng), 4, tension,
+                                             "pixel.grd", str(V)):
+                    run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
             else:
+                # RR override path — keep subprocess (see comment above).
                 run("gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
                 run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
