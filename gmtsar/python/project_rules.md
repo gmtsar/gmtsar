@@ -211,3 +211,56 @@ unit under test. They are isolated trees.
 **When in doubt: delete the affected `csh_test/<case>/` and let
 `case_runner.sh` rebuild from scratch.** Rule 8's sentinel will then
 record a fresh `.oracle_built` and future invocations will trust it.
+
+## 10. Don't reinvent the wheel — port the C algorithm verbatim FIRST
+
+For any port of an upstream C/csh tool that has a public source reference
+(GMT's `surface.c`, gmtsar's `xcorr.c`, etc.), the FIRST implementation
+must be a line-by-line port of the algorithm choices the C code makes.
+No "I'll use a simpler scheme first and optimize later" — that's how
+algorithmic-complexity bugs ship.
+
+**Concrete examples that violated this rule:**
+
+- `gmt_surface_py` initial port (Miras #20, #26): chose Jacobi smoother
+  because "easier to parallelize." gmt's surface.c uses Gauss-Seidel SOR
+  with omega ≈ 1.97. Jacobi vs GS-SOR is not a constant-factor
+  difference — it's a complexity-class difference for biharmonic PDEs
+  (O(N²) vs O(N^1.5) iterations). This bit us when strict-single-thread
+  was enforced: Jacobi on 6600×4800 grid took 11+ minutes vs gmt's 50s
+  C reference. Mira #50 fixed by porting GS-SOR verbatim from surface.c.
+
+- Multigrid scheme detour: Mira #26 tried classical V-cycle, hit
+  operator-scaling divergence, switched to FMG. gmt's V-cycle works
+  because it has properly scaled coarse-grid operators we never got
+  right. Reading gmt's `surface_iterate()` flow before trying our own
+  multigrid scheme would have avoided the detour entirely.
+
+**The rule:**
+
+For a port mission, the workflow is:
+
+1. **Read every C/csh source file** the binary depends on. Header files,
+   linked .c files, macros, constants. Document choices the C code
+   makes (smoother type, convergence criterion, BC handling, etc.).
+2. **Port verbatim** — same algorithm, same constants, same iteration
+   structure. No substitutions for "ease" or "Pythonic-ness".
+3. **Get bit-faithful parity FIRST** on real data.
+4. **THEN** consider optimization — but only ones the C couldn't do
+   (numpy SIMD, Numba JIT, batched FFT, memmap, etc.).
+
+If the C source is genuinely opaque (closed-source binary), document
+what could be observed (CLI args, file formats, timing) and port from
+behavior — but flag the gap explicitly.
+
+**Mira's existing Rule #1 ("bit-faithful first, optimize later")
+already implied this — but it didn't catch the Mira #20 prototype
+shortcut. Rule 10 makes the algorithm-choice constraint explicit.**
+
+**Side benefit:** porting the C algorithm verbatim makes the parity
+oracle natural — diff our Python output against the C reference on the
+same input, byte-by-byte. No "I think this should give the same answer
+within tolerance" hand-waving.
+
+When in doubt: read the C source. The C author already solved the
+hard problem. Don't re-derive it.
