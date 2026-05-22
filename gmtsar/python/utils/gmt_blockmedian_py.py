@@ -65,7 +65,7 @@ except ImportError:  # pragma: no cover
 # Numba kernel — per-bin median
 # ---------------------------------------------------------------------------
 
-@njit(parallel=True, fastmath=False, cache=True)
+@njit(parallel=False, fastmath=False, cache=True)
 def _per_bin_median(sorted_x, sorted_y, sorted_z,
                     bin_starts, bin_ends, out_x, out_y, out_z):
     """For each non-empty bin, write median(x), median(y), median(z).
