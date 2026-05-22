@@ -30,8 +30,29 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Source of truth for primitives: utils/vector.py (Mira #34). Importing the
+# constants from there eliminates duplicated inline definitions and locks the
+# values to the test_vector.py suite. JIT kernels stay inline (cache=False) —
+# they live in this file rather than utils.vector so the cache name matches
+# the `sat_llt2rat_py_mod` SourceFileLoader context the unit-test harness uses.
+# ---------------------------------------------------------------------------
+_HERE = Path(__file__).resolve().parent if "__file__" in globals() \
+        else Path(os.path.abspath(sys.argv[0]) if sys.argv else os.getcwd()).resolve().parent
+_PY_ROOT = _HERE.parent
+if str(_PY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PY_ROOT))
+from utils.vector import (                                       # noqa: E402
+    SOL,                          # 299792456.0 m/s (gmtsar.h)
+    PI as _PI_TRUNC,              # 3.14159265358979 (llt2xyz.h:61)
+    DEG_TO_RAD as _DEG_TO_RAD,    # 2*PI/360 from truncated PI (llt2xyz.h:65)
+    R_GOLD as _R_GOLD,            # 0.61803399 (SAT_llt2rat.c #define R)
+    C_GOLD as _C_GOLD,            # 0.382      (SAT_llt2rat.c #define C)
+)
 
 # ---------------------------------------------------------- Numba (optional) ---
 # Numba is an OPTIONAL accelerator. Setting SAT_LLT2RAT_PY_NUMBA=0 disables it
@@ -53,18 +74,11 @@ else:
         njit = None
 
 
-SOL = 299792456.0   # speed of light, m/s — MATCHES C `#define SOL` in
-                    # gmtsar.h (NOT the true physical 299792458). 2 m/s off,
-                    # but bit-faithful parity with C requires this exact value.
-                    # Affects dr = 0.5*SOL/fs → ~2e-5 px range_pix systematic offset.
-# C uses TRUNCATED golden-ratio constants (R + C = 0.99996601, NOT 1.0):
-#   #define R 0.61803399
-#   #define C 0.382
-# These two values get baked into goldop (search step sizes) and main()
-# (midi computation), so for bit-perfect parity we use the SAME truncated
-# values, NOT the mathematically correct (1 - C_GOLD) etc.
-R_GOLD_C = 0.61803399          # C #define R
-C_GOLD = 0.382                  # C #define C
+# Truncated SOL / R_GOLD / C_GOLD now imported from utils.vector (Mira #34).
+# Aliases preserved under the legacy local names so the rest of the file (and
+# any importer) sees them unchanged.
+R_GOLD_C = _R_GOLD     # 0.61803399 (SAT_llt2rat.c #define R)
+C_GOLD = _C_GOLD       # 0.382      (SAT_llt2rat.c #define C)
 
 
 # ---------------------------------------------------------- C1 read PRM/LED ---
@@ -162,15 +176,12 @@ def plh2xyz(lat: np.ndarray, lon: np.ndarray, h: np.ndarray,
     back through goldop's dist² compare at the rng-vs-tm minimum and
     flipped 20-376 (depending on Hermite path) edge-case branches.
     """
-    # GMTSAR uses TRUNCATED pi: `#define pi 3.14159265358979` (llt2xyz.h
-    # line 63) — 14 digits, NOT math.pi's 15 digits. That gives
-    # `deg_to_rad = 2*pi/360 = 0.017453292519943278` vs numpy's
-    # 0.017453292519943295. The 1-ULP diff propagates to ~5e-9 rad at
+    # GMTSAR uses TRUNCATED pi: `#define pi 3.14159265358979` (llt2xyz.h:61)
+    # — 14 digits, NOT math.pi's 15 digits. `_DEG_TO_RAD` is imported from
+    # utils.vector and derived from the truncated PI (llt2xyz.h:65 formula:
+    # `deg_to_rad = 2*pi/360`). The 1-ULP diff propagates to ~5e-9 rad at
     # mid-latitudes → ~1.5e-8 m in xyz → flipped goldop branches on
     # 20+ edge-case targets near the rng-vs-tm minimum.
-    _PI_GMTSAR = 3.14159265358979
-    _DEG_TO_RAD = 2.0 * _PI_GMTSAR / 360.0
-
     flatfn = (2.0 - flattening) * flattening
     funsq = (1.0 - flattening) * (1.0 - flattening)
     lat_r = lat * _DEG_TO_RAD
