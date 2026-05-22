@@ -8,6 +8,25 @@ filtering. Iono path only — not exercised by the standard test suite.
 Usage:  estimate_ionospheric_phase intf_high intf_low intf_orig
                                    intf_to_be_corrected [xratio yratio]
 Output: ph_iono.grd, ph_iono_orig.grd, ph_corrected.grd in cwd.
+
+Parity discipline (Mira #46 follow-up, 2026-05-22):
+- This wrapper preserves byte-identity to the csh oracle by delegating
+  every numerical primitive (grdmath, grdfilter, grdsample, surface,
+  grd2xyz, nearest_grid) to the same GMT/GMTSAR subprocesses the csh
+  script calls. The "native Python" goal is achieved at the
+  ORCHESTRATION layer (Python control flow, CLI parsing, env logic)
+  but NOT at the numerical-kernel layer.
+- `scipy.ndimage.gaussian_filter` was investigated as a substitute for
+  the one `gmt grdfilter -Fg` call (line near the bottom of this file)
+  and rejected — max relative divergence ~0.7-1% on representative
+  smooth iono-like input vs gmt grdfilter's circular truncated
+  Gaussian with boundary renormalization. Substituting would break
+  the byte-identical-to-csh contract. The opt-in path
+  `GMTSAR_IONO_GAUSS_PY=1` enables scipy.ndimage for performance
+  investigation only; default OFF preserves parity.
+- The full pipeline is NOT covered by the regression sweep
+  (correct_iono=0 in every test case config). Any change to this
+  file requires manual iono-enabled smoke before merging.
 """
 import glob
 import os
@@ -20,6 +39,50 @@ from gmtsar_lib import run, grep_value
 def _capture(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
                           check=False).stdout.decode('utf-8').strip()
+
+
+def _scipy_gauss_filter(in_grd, out_grd, filtx, filty, inc_x, inc_y):
+    """Opt-in scipy.ndimage Gaussian-filter replacement for `gmt grdfilter
+    -Fg<filtx>/<filty> -Dp -Ni -I<inc_x>/<inc_y>`.
+
+    PARITY GAP — DO NOT use as default. scipy.ndimage uses a separable
+    rectangular Gaussian kernel; gmt grdfilter uses a circular Gaussian
+    kernel truncated at full diameter (= 6·sigma) with per-cell weight
+    renormalization over the unmasked pixels in the window. The two
+    differ by up to ~1% relative on smooth input. This path exists for
+    future performance investigation; ship a parity-validated custom
+    circular-Gaussian implementation before promoting to default.
+
+    Resampling -I<inc_x>/<inc_y> is honoured by simple stride subsampling
+    of the filtered grid (gmt grdfilter does a more careful weighted
+    average at coarsened cell centres — another parity divergence).
+    """
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_grd_io import read_gmt_grd, write_gmt_grd
+
+    z, x, y, info = read_gmt_grd(in_grd)
+    # GMT: -Fg<W> → full filter diameter W = 6·sigma → sigma = W/6.
+    sigma_x = float(filtx) / 6.0
+    sigma_y = float(filty) / 6.0
+    # NaN-aware Gaussian via Nansum / Norm normalization. Without this,
+    # NaN propagates and produces NaN holes around any masked pixel.
+    mask = np.isfinite(z).astype(np.float32)
+    z_filled = np.where(np.isfinite(z), z, 0.0).astype(np.float32)
+    num = gaussian_filter(z_filled,  sigma=(sigma_y, sigma_x),
+                          mode="reflect", truncate=3.0)
+    den = gaussian_filter(mask,      sigma=(sigma_y, sigma_x),
+                          mode="reflect", truncate=3.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(den > 1e-6, num / den, np.nan).astype(np.float32)
+    # Subsample to the coarsened grid via stride (lossy parity vs gmt -I).
+    inc_x = max(1, int(inc_x))
+    inc_y = max(1, int(inc_y))
+    out_sub = out[::inc_y, ::inc_x]
+    x_sub   = x[::inc_x]
+    y_sub   = y[::inc_y]
+    write_gmt_grd(out_grd, out_sub, x_sub, y_sub, node_offset=info["node_offset"])
 
 
 def estimate_ionospheric_phase():
@@ -158,8 +221,21 @@ def estimate_ionospheric_phase():
         f"-Gtmp_filt.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
     run(f"gmt grd2xyz tmp_filt.grd -s | gmt surface {RR} {II} -Gtmp.grd -T0.1")
     run("mv tmp.grd tmp_filt.grd")
-    run(f"gmt grdfilter tmp_filt.grd -Dp -Fg{filtx}/{filty} "
-        f"-Gtmp.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
+    # ------------------------------------------------------------------
+    # Gauss low-pass step (the one csh -Fg call in the entire pipeline).
+    # Default: delegate to `gmt grdfilter -Fg` for byte-identical parity
+    # with the csh oracle. Opt-in scipy.ndimage path documented as
+    # NOT bit-equivalent (max ~1% relative on smooth input — investigated
+    # 2026-05-22 by Mira on synthetic + iono-shaped data). Useful for
+    # future performance investigation; never default-ON without a
+    # parity-validated GMT-circular-Gaussian kernel implementation.
+    # ------------------------------------------------------------------
+    if os.environ.get("GMTSAR_IONO_GAUSS_PY", "0") != "0":
+        _scipy_gauss_filter("tmp_filt.grd", "tmp.grd",
+                            filtx, filty, filt_incx, filt_incy)
+    else:
+        run(f"gmt grdfilter tmp_filt.grd -Dp -Fg{filtx}/{filty} "
+            f"-Gtmp.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
     run("mv tmp.grd tmp_filt.grd")
     run(f"gmt grd2xyz tmp_filt.grd -s | gmt surface {RR} {II} -Gtmp.grd -T0.1")
     run("mv tmp.grd tmp_filt.grd")
