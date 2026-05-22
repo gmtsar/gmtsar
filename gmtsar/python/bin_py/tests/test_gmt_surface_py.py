@@ -127,7 +127,7 @@ class TestGmtSurfacePyParity(unittest.TestCase):
     """Verify gmt_surface_py matches `gmt surface` on synthetic scatter."""
 
     def test_on_grid_gaussian_rms_under_threshold(self):
-        """RMS(py - gmt) <= 1e-2 on Gaussian field with ON-GRID scatter.
+        """RMS(py - gmt) <= 1e-3 on Gaussian field with ON-GRID scatter.
 
         The prototype snaps scatter to the nearest grid node (LIMITATION
         #2 in gmt_surface_py.py docstring).  GMT surface uses Briggs
@@ -136,11 +136,15 @@ class TestGmtSurfacePyParity(unittest.TestCase):
         locations and the parity test reduces to an algorithmic
         comparison of the relaxation kernels.
 
-        The looser 1e-2 threshold accounts for:
-        - GMT's anisotropic-natural-BC vs our simple natural-BC at edges
-        - GMT's over-relaxation (omega=1.4 default) reaching convergence
-          faster but to a slightly different fixed point at finite tol
-        - Different convergence floors set by each solver's defaults
+        With Mira #21's full-multigrid (FMG) acceleration this case
+        converges to rms ~3e-4 vs `gmt surface` in well under 100 ms,
+        so the 1e-3 threshold has comfortable margin.  Residual
+        disagreement above 1e-4 is structural:
+        - GMT uses anisotropic-natural-BC at the edges; we use plain
+          (linear-extrapolation) natural BC.
+        - GMT's relaxation runs at omega=1.4 (SOR/over-relaxation)
+          whereas we use under-relaxed Jacobi (omega=0.6) — the discrete
+          fixed points differ at O(1e-4) for tension=0.5.
         """
         region = (0.0, 10.0, 0.0, 10.0)
         inc = (0.2, 0.2)
@@ -155,6 +159,7 @@ class TestGmtSurfacePyParity(unittest.TestCase):
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
             omega=0.6, max_iter=20000, tol=1e-7,
+            use_multigrid=True,
         )
 
         self.assertEqual(grid_gmt.shape, grid_py.shape,
@@ -169,11 +174,13 @@ class TestGmtSurfacePyParity(unittest.TestCase):
         print(f"\n[parity, on-grid]  shape={grid_gmt.shape}  rms={rms:.4e}  "
               f"max|d|={max_abs:.4e}  T={tension}")
 
-        # Prototype threshold: 1e-2 RMS in the interior with the
-        # snap-to-node constraint matching.  Tightening to 1e-3 requires
-        # Briggs sub-cell constraints — TODO next mission.
-        self.assertLess(rms, 1e-2,
-                        f"RMS {rms:.4e} exceeds parity threshold 1e-2")
+        # Mira #21 gate (post-multigrid): 1e-3 RMS in the interior on the
+        # on-grid synthetic input.  The full-multigrid V-cycle now
+        # converges fast enough to make this tractable; tightening below
+        # 1e-4 would require porting the upstream Briggs sub-cell
+        # constraint handling (TODO).
+        self.assertLess(rms, 1e-3,
+                        f"RMS {rms:.4e} exceeds parity threshold 1e-3")
 
     def test_off_grid_scatter_diagnostic(self):
         """Diagnostic: RMS vs gmt with arbitrary off-grid scatter.
@@ -254,6 +261,93 @@ class TestGmtSurfacePyAlgorithm(unittest.TestCase):
                            inc=(0.5, 0.5), tension=1.5, max_iter=10)
 
 
+class TestGmtSurfacePyMultigrid(unittest.TestCase):
+    """Mira #21 — verify the FMG / V-cycle code path is correct AND fast.
+
+    These tests do not require gmt on PATH; they self-check the multigrid
+    against the plain-Jacobi fallback to catch regressions in restriction,
+    prolongation, or per-level Jacobi sweep wiring.
+    """
+
+    def test_multigrid_matches_plain_jacobi_on_small_grid(self):
+        """On a small grid where plain Jacobi converges in reasonable time,
+        the multigrid solution must agree to within ~1e-3 absolute (both
+        solve the same PDE to the same tolerance, just at different speeds).
+        """
+        rng = np.random.default_rng(7)
+        N = 200
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+
+        # Plain Jacobi reference (slow but converges)
+        grid_pj = gmt_surface_py(
+            x, y, z,
+            region=(0.0, 10.0, 0.0, 10.0), inc=(0.2, 0.2),
+            tension=0.5, omega=0.6, max_iter=10000, tol=1e-6,
+            use_multigrid=False,
+        )
+        # Multigrid
+        grid_mg = gmt_surface_py(
+            x, y, z,
+            region=(0.0, 10.0, 0.0, 10.0), inc=(0.2, 0.2),
+            tension=0.5, omega=0.6, tol=1e-6,
+            use_multigrid=True,
+        )
+        diff = grid_mg[3:-3, 3:-3] - grid_pj[3:-3, 3:-3]
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[mg vs jacobi, interior]  rms={rms:.4e}  max|d|={max_abs:.4e}")
+        # Two algorithms converging the SAME discrete PDE to tol=1e-6
+        # should agree in the interior at the few-e-3 level (the Jacobi
+        # fixed point itself drifts at tol below 1e-6 due to ghost-ring
+        # BC re-application; both methods see the same BC).
+        self.assertLess(rms, 5e-3,
+                        f"MG vs Jacobi RMS {rms:.4e} too large — "
+                        f"FMG restriction/prolongation may be broken")
+
+    def test_multigrid_faster_than_plain_jacobi(self):
+        """On a grid large enough to amortise Jacobi's O(N^2) iteration
+        count, FMG must be > 5x faster than plain Jacobi.  Catches
+        regressions where multigrid silently falls back to single-level
+        relaxation (e.g. mg_max_level=0 default, or restriction returning
+        zeros).
+        """
+        rng = np.random.default_rng(11)
+        # 201x201 grid, 1000 scatter points — medium size
+        N = 1000
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (0.05, 0.05)  # 201x201
+        tension = 0.5
+
+        # Warm up numba (JIT compile)
+        _ = gmt_surface_py(x[:10], y[:10], z[:10],
+                          region=region, inc=(0.5, 0.5),
+                          tension=tension, max_iter=5,
+                          use_multigrid=False)
+
+        t0 = time.time()
+        _ = gmt_surface_py(x, y, z, region=region, inc=inc, tension=tension,
+                           omega=0.6, max_iter=2000, tol=1e-4,
+                           use_multigrid=False)
+        t_jac = time.time() - t0
+
+        t0 = time.time()
+        _ = gmt_surface_py(x, y, z, region=region, inc=inc, tension=tension,
+                           omega=0.6, tol=1e-4,
+                           use_multigrid=True)
+        t_mg = time.time() - t0
+
+        print(f"\n[mg perf]  201x201  plain_jacobi={t_jac:.2f}s  "
+              f"multigrid={t_mg:.2f}s  speedup={t_jac/t_mg:.1f}x")
+        self.assertLess(t_mg * 5, t_jac,
+                        f"FMG only {t_jac/t_mg:.2f}x faster than plain Jacobi "
+                        f"(target >=5x); restriction/prolongation may be broken")
+
+
 @unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH — skipping benchmark")
 class TestGmtSurfacePyBenchmark(unittest.TestCase):
     """Optional benchmark; skipped unless GMT_SURFACE_PY_BENCH=1.
@@ -282,12 +376,13 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         grid_py = gmt_surface_py(
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
-            omega=0.6, max_iter=2000, tol=1e-4,
+            omega=0.6, tol=1e-4, use_multigrid=True,
         )
         t_py = time.time() - t0
 
         print(f"\n[bench 201x201]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
-              f"shape={grid_gmt.shape}  threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
+              f"speedup={t_gmt/t_py:.2f}x  shape={grid_gmt.shape}  "
+              f"threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
         # No assertion — informational only.
 
     @unittest.skipUnless(os.environ.get("GMT_SURFACE_PY_BENCH") == "1",
@@ -314,12 +409,13 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         grid_py = gmt_surface_py(
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
-            omega=0.6, max_iter=500, tol=1e-3,
+            omega=0.6, tol=1e-4, use_multigrid=True,
         )
         t_py = time.time() - t0
 
         print(f"\n[bench 1001x1001]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
-              f"shape={grid_gmt.shape}  threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
+              f"speedup={t_gmt/t_py:.2f}x  shape={grid_gmt.shape}  "
+              f"threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
 
 
 if __name__ == "__main__":

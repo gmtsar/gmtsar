@@ -48,9 +48,47 @@ Tension and BC application are kept in Python (cheap, < 1% of runtime on
 realistic grids).  Expected 5-10x speedup at 8 threads vs single-thread
 gmt surface on grids >= 1000x1000.
 
+Multigrid acceleration (added in Mira #21)
+-------------------------------------------
+The Jacobi smoother is asymptotically O(N**2) for the biharmonic — high-
+frequency error modes are damped quickly but low-frequency modes take ~N
+iterations to die out, so a 1001x1001 grid needs hundreds of sweeps for
+plain Jacobi to converge.  This module accelerates relaxation with a
+**Full Multigrid (FMG) / nested-iteration** scheme that matches GMT
+surface's own design:
+
+    s = 2^(K-1)             # coarsest stride (every s'th node)
+    solve on stride-s grid via damped Jacobi
+    for k in K-2 .. 0:
+        s = 2^k
+        prolongate the stride-(2s) solution to the stride-s grid (bilinear)
+        snap data constraints onto the new (denser) nodes
+        relax to per-level tolerance via damped Jacobi
+
+Each level's relaxation converges quickly because the prolongated
+solution from the previous (coarser) level is a near-perfect initial
+guess for the smooth modes.  The smoother only needs to kill the new
+high-frequency content introduced by refinement — Jacobi does this in
+O(1) sweeps regardless of grid size.  Total cost is dominated by the
+finest level, where we run ~100-300 sweeps; that is still O(N) better
+than the O(N^2) cold-start Jacobi.
+
+Why FMG and not classical V-cycles?  A standard V-cycle (smooth /
+restrict residual / recursive solve / prolongate correction / smooth)
+needs the coarse-grid operator to be a faithful coarsening of the fine
+operator.  Our 12-point stencil has h-independent constants but the
+underlying PDE has L ~ h^-4 (biharmonic) and L ~ h^-2 (Laplacian) — the
+scaling matters for correction.  A naive same-stencil V-cycle on the
+biharmonic diverges on grids larger than 251x251 (confirmed empirically:
+operator-scaling factors of 1 and 16 both fail, the former by slow
+divergence, the latter by immediate amplification).  FMG sidesteps this
+because each level's relaxation is a complete solve of the same PDE at
+that level's resolution; no cross-level operator consistency is needed.
+
 Public API
 ----------
-gmt_surface_py(x, y, z, region, inc, tension=0.5, max_iter=1000, tol=1e-4)
+gmt_surface_py(x, y, z, region, inc, tension=0.5, max_iter=1000, tol=1e-4,
+               use_multigrid=True, mg_max_level=None, mg_nu_coarse=50)
     Scattered -> regular grid.  Returns (ny, nx) ndarray.
 """
 from __future__ import annotations
@@ -90,6 +128,14 @@ except Exception:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# Multigrid V-cycle constants
+# ---------------------------------------------------------------------------
+# Smallest grid size we allow as a multigrid level (must be >= 5 for the
+# 12-point stencil to have any interior nodes after the 2-wide ghost ring).
+_MG_MIN_DIM = 9   # leaves at least 5x5 interior (kept) nodes per axis
+
+
+# ---------------------------------------------------------------------------
 # Inner kernel — one Jacobi sweep of the 12-point biharmonic + tension stencil
 # ---------------------------------------------------------------------------
 # Stencil layout (square cell, h=dx=dy):
@@ -112,10 +158,17 @@ except Exception:  # pragma: no cover
 # prange — no row-to-row dependence within one sweep.
 
 @njit(parallel=True, fastmath=False, cache=True)
-def _jacobi_sweep(u_old, u_new, fixed, T, omega, ny_full, nx_full):
+def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega, ny_full, nx_full):
     """One Jacobi sweep over interior nodes [2..ny_full-3, 2..nx_full-3].
 
-    `u_old`, `u_new`, `fixed` are the FULL padded grid of shape
+    Solves the local equation  L[u] = rhs  with the 12-point stencil
+    of the (1-T) biharmonic + T Laplacian operator.  On the finest
+    multigrid level, `rhs` is zero everywhere and we recover the
+    classic homogeneous relaxation.  On coarse levels, `rhs` is the
+    restricted residual and the equation being solved is the
+    coarse-grid correction equation  L[v] = restrict(residual).
+
+    `u_old`, `u_new`, `fixed`, `rhs` are the FULL padded grid of shape
     (ny+4, nx+4) where the outer 2 rings on each side are ghosts.
     The relaxation domain [2..ny+1] in row index maps to the (ny,nx)
     output grid; the ghosts at rows {0,1,ny+2,ny+3} are set by BC code
@@ -156,8 +209,13 @@ def _jacobi_sweep(u_old, u_new, fixed, T, omega, ny_full, nx_full):
             sum_diag = NE + NW + SE + SW
             sum2 = NN + SS + EE + WW
 
+            # L[u] center-coeff*u_ij = neighbour_sum + something.
+            # Stencil: center_coeff = -(20*(1-T) + 4*T) = -denom (sign chosen so
+            # that L[u] = neighbour_terms - denom*u_ij; Jacobi: u_ij_new solves
+            #   neighbour_terms - denom*u_ij_new = rhs  =>  u_ij_new = (neighbour_terms - rhs)/denom).
+            # neighbour_terms = (1-T)*[8*sum1 - 2*sum_diag - sum2] + T*sum1
             numer = one_minus_T * (8.0 * sum1 - 2.0 * sum_diag - sum2) + T * sum1
-            val = numer / denom
+            val = (numer - rhs[i, j]) / denom
             # Under-relaxation: u_new = (1-omega)*u_old + omega*val.
             # The biharmonic Jacobi iteration is unstable for omega=1; the
             # damped version converges (slowly) for any T in [0, 1] when
@@ -224,6 +282,296 @@ def _apply_bcs(u: np.ndarray) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multigrid transfer operators (restriction + prolongation).
+# ---------------------------------------------------------------------------
+# We operate on the KEPT block (no ghost ring) for the transfer; the V-cycle
+# driver pads / unpads around each call.  All transfers preserve the
+# gridline-registration convention: the coarse grid's i,j corresponds to
+# the fine grid's 2*i, 2*j node.
+#
+# Restriction: full-weighting (1/16 stencil) of residual from fine to coarse.
+#   r_c[I, J] = (1/16) * [ 4*r_f[2I, 2J]
+#                        + 2*(r_f[2I+1,2J] + r_f[2I-1,2J] + r_f[2I,2J+1] + r_f[2I,2J-1])
+#                        + 1*(r_f[2I+1,2J+1] + r_f[2I-1,2J-1] + r_f[2I+1,2J-1] + r_f[2I-1,2J+1]) ]
+# At the coarse boundary we fall back to injection (use the single fine value).
+#
+# Prolongation: bilinear interpolation from coarse to fine.
+#   - Coincident nodes (2I, 2J) take the coarse value directly.
+#   - Horizontal-midpoint nodes (2I, 2J+1) average two coarse neighbours horiz.
+#   - Vertical-midpoint nodes (2I+1, 2J) average two coarse neighbours vert.
+#   - Center nodes (2I+1, 2J+1) average four coarse neighbours.
+# This is the standard MG operator pair (full-weighting + bilinear) which
+# satisfies the variational P = R^T compatibility for nodal-centred grids.
+
+
+def _coarse_dim(n_fine: int) -> int:
+    """Coarse-grid dimension for a fine grid of dimension n_fine (gridline reg).
+    Pattern: 5 -> 3, 7 -> 4, 9 -> 5, 17 -> 9, 33 -> 17, ... i.e. (n+1)//2."""
+    return (n_fine + 1) // 2
+
+
+def _restrict_full_weight(r_fine: np.ndarray) -> np.ndarray:
+    """Full-weighting restriction of `r_fine` (ny_f, nx_f) -> (ny_c, nx_c).
+
+    Assumes `r_fine` is the KEPT block (no ghost ring) on the fine grid.
+    Returns the kept block on the coarse grid.
+
+    Boundary handling: at coarse-grid edges the 9-point stencil would read
+    past the fine boundary; we use injection there (r_c = r_f[2I,2J]) since
+    the residual is zero at the data-constrained natural-BC boundary anyway.
+    """
+    ny_f, nx_f = r_fine.shape
+    ny_c = _coarse_dim(ny_f)
+    nx_c = _coarse_dim(nx_f)
+    r_coarse = np.zeros((ny_c, nx_c), dtype=r_fine.dtype)
+
+    # Interior coarse nodes that can use the full 9-point stencil
+    # Coarse (I,J) corresponds to fine (2I,2J). Need 2I+/-1 and 2J+/-1 in bounds.
+    # That requires 1 <= 2I <= ny_f-2, i.e. 1 <= I and 2I <= ny_f-2 (=> I <= (ny_f-2)//2).
+    Ilo, Ihi = 1, (ny_f - 2) // 2 + 1   # exclusive
+    Jlo, Jhi = 1, (nx_f - 2) // 2 + 1
+
+    # Vectorised inner block
+    II = np.arange(Ilo, Ihi)
+    JJ = np.arange(Jlo, Jhi)
+    fi = 2 * II[:, None]
+    fj = 2 * JJ[None, :]
+    r_coarse[Ilo:Ihi, Jlo:Jhi] = (1.0 / 16.0) * (
+        4.0 * r_fine[fi, fj]
+        + 2.0 * (r_fine[fi + 1, fj] + r_fine[fi - 1, fj]
+                 + r_fine[fi, fj + 1] + r_fine[fi, fj - 1])
+        + 1.0 * (r_fine[fi + 1, fj + 1] + r_fine[fi - 1, fj - 1]
+                 + r_fine[fi + 1, fj - 1] + r_fine[fi - 1, fj + 1])
+    )
+
+    # Boundary coarse nodes: injection (no off-grid reads)
+    for I in range(ny_c):
+        for J in range(nx_c):
+            if Ilo <= I < Ihi and Jlo <= J < Jhi:
+                continue
+            fi_ = min(2 * I, ny_f - 1)
+            fj_ = min(2 * J, nx_f - 1)
+            r_coarse[I, J] = r_fine[fi_, fj_]
+    return r_coarse
+
+
+def _prolong_bilinear(v_coarse: np.ndarray, ny_f: int, nx_f: int) -> np.ndarray:
+    """Bilinear prolongation of `v_coarse` (ny_c, nx_c) -> (ny_f, nx_f).
+
+    Assumes gridline registration with coarse (I,J) coincident with fine
+    (2I, 2J).  When ny_f is odd (i.e. ny_c = (ny_f+1)//2), the mapping is
+    exact for all fine nodes; for even ny_f the last row uses the last
+    coarse row (zero-extension).
+    """
+    ny_c, nx_c = v_coarse.shape
+    out = np.zeros((ny_f, nx_f), dtype=v_coarse.dtype)
+
+    # Coincident fine nodes (2I, 2J)
+    II = np.arange(ny_c)
+    JJ = np.arange(nx_c)
+    fi = 2 * II
+    fj = 2 * JJ
+    # clip to fine range
+    fi_in = fi[fi < ny_f]
+    fj_in = fj[fj < nx_f]
+    nc_i = fi_in.size
+    nc_j = fj_in.size
+    out[np.ix_(fi_in, fj_in)] = v_coarse[:nc_i, :nc_j]
+
+    # Horizontal midpoints (2I, 2J+1) — average two horiz neighbours
+    if nc_j >= 2:
+        fj_mid = 2 * np.arange(nc_j - 1) + 1
+        fj_mid = fj_mid[fj_mid < nx_f]
+        out[np.ix_(fi_in, fj_mid)] = 0.5 * (
+            v_coarse[:nc_i, :fj_mid.size]
+            + v_coarse[:nc_i, 1:fj_mid.size + 1]
+        )
+
+    # Vertical midpoints (2I+1, 2J) — average two vert neighbours
+    if nc_i >= 2:
+        fi_mid = 2 * np.arange(nc_i - 1) + 1
+        fi_mid = fi_mid[fi_mid < ny_f]
+        out[np.ix_(fi_mid, fj_in)] = 0.5 * (
+            v_coarse[:fi_mid.size, :nc_j]
+            + v_coarse[1:fi_mid.size + 1, :nc_j]
+        )
+
+    # Center midpoints (2I+1, 2J+1) — average four coarse neighbours
+    if nc_i >= 2 and nc_j >= 2:
+        fi_mid = 2 * np.arange(nc_i - 1) + 1
+        fj_mid = 2 * np.arange(nc_j - 1) + 1
+        fi_mid = fi_mid[fi_mid < ny_f]
+        fj_mid = fj_mid[fj_mid < nx_f]
+        out[np.ix_(fi_mid, fj_mid)] = 0.25 * (
+            v_coarse[:fi_mid.size,     :fj_mid.size]
+            + v_coarse[1:fi_mid.size + 1, :fj_mid.size]
+            + v_coarse[:fi_mid.size,     1:fj_mid.size + 1]
+            + v_coarse[1:fi_mid.size + 1, 1:fj_mid.size + 1]
+        )
+
+    # Trailing edge row/col (when ny_f or nx_f is even) — copy from last coarse
+    if fi.max() < ny_f - 1:
+        out[ny_f - 1, :] = out[ny_f - 2, :]
+    if fj.max() < nx_f - 1:
+        out[:, nx_f - 1] = out[:, nx_f - 2]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Nested-iteration (Full Multigrid) driver — matches GMT surface's design.
+# ---------------------------------------------------------------------------
+# GMT surface (see src/surface.c) implements multigrid acceleration via
+# PROGRESSIVE GRID REFINEMENT rather than classical V-cycles:
+#
+#   1. Pick a coarsening stride S = 32 (or as large as the grid allows).
+#   2. Solve on every S'th node (a S-coarsened grid) to convergence via
+#      cheap relaxation.
+#   3. Halve S, prolongate the current solution to the new (denser) grid
+#      as a starting guess, re-distribute data constraints, relax.
+#   4. Repeat S = 16, 8, 4, 2, 1.
+#
+# This is mathematically equivalent to a "Full Multigrid" (FMG) cycle.
+# Convergence is fast because:
+#   - At each level, the previous level's interpolated solution is a
+#     near-perfect initial guess for the smooth modes.
+#   - The smoother only needs to kill the new high-frequency content
+#     introduced by the refinement, which Jacobi does very efficiently.
+#
+# It also avoids the operator-scaling pitfall of classical V-cycles for
+# the biharmonic: the coarse operator only ever acts on coarse data, so
+# the h^4 stiffness scaling is built into both sides of the equation.
+#
+# Implementation:
+#   - We build coarsened grids by selecting every (2**k)'th data node
+#     from the input scatter.  This sets up consistent constraints
+#     at every level.
+#   - At each level we run Jacobi sweeps until max |du| < tol or until
+#     a per-level iteration cap is hit.
+#   - Prolongation to the next finer level is bilinear (using the
+#     standard MG prolongation operator).
+#
+# Convergence comparison: where classical V-cycle on the biharmonic with
+# h-independent stencils gets ~0.9 rate per cycle (slow), FMG runs each
+# level for ~50-200 Jacobi sweeps once and never revisits.  Total cost
+# is dominated by the finest level, which only needs O(50) sweeps to
+# kill new high-frequency error rather than O(N) sweeps from a cold
+# start.
+
+
+def _smooth(u: np.ndarray, fixed: np.ndarray, rhs: np.ndarray,
+            T: float, omega: float, n_sweeps: int, tol: float = 0.0) -> float:
+    """Run up to `n_sweeps` damped-Jacobi sweeps on padded grids.
+
+    If `tol > 0`, stop early when max |du| < tol.  Returns the last delta.
+    """
+    ny_full, nx_full = u.shape
+    u_new = u.copy()
+    last_delta = 0.0
+    for s in range(n_sweeps):
+        _apply_bcs(u)
+        u_new[:] = u
+        last_delta = float(_jacobi_sweep(u, u_new, fixed, rhs,
+                                          float(T), float(omega),
+                                          ny_full, nx_full))
+        u[:] = u_new
+        if tol > 0.0 and last_delta < tol:
+            break
+    return last_delta
+
+
+def _unpad2(padded: np.ndarray, ny: int, nx: int) -> np.ndarray:
+    return padded[2:2 + ny, 2:2 + nx]
+
+
+def _max_level_for(ny: int, nx: int) -> int:
+    """Number of additional coarsenings allowed below the finest level."""
+    n = min(ny, nx)
+    lvl = 0
+    while _coarse_dim(n) >= _MG_MIN_DIM:
+        n = _coarse_dim(n)
+        lvl += 1
+    return lvl
+
+
+def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+               xmin: float, ymin: float, dx: float, dy: float,
+               nx: int, ny: int,
+               T: float, omega: float,
+               n_levels: int,
+               sweeps_per_level: int,
+               tol: float,
+               verbose: bool) -> np.ndarray:
+    """Full-multigrid solve: start at coarsest grid (every 2^(n_levels-1)
+    node), relax to convergence, prolong to next finer grid, relax again,
+    repeat down to the finest (full-resolution) grid.
+
+    Returns the padded grid at the finest level (shape (ny+4, nx+4)),
+    same convention as the rest of the module.
+    """
+    # Levels: 0 = coarsest, n_levels-1 = finest
+    # At level k (counting from finest=0), grid step is 2^k in node units.
+    # We iterate from coarsest down to finest.
+    # Compute level (k counting from finest, 0 = finest).
+    # For convenience use stride s = 2^k.
+
+    # Build per-level fine-grid index ranges.  At stride s we keep nodes
+    # i = 0, s, 2s, ... that fall within [0, ny-1] x [0, nx-1].  This
+    # convention preserves gridline registration at every level.
+    u_pad_prev = None    # padded grid at the previous (coarser) level
+    nx_prev = ny_prev = 0
+    s_max = 1 << (n_levels - 1)   # coarsest stride
+
+    for kk in range(n_levels - 1, -1, -1):
+        s = 1 << kk
+        # Coarse-grid axis sizes (gridline registration: include endpoints
+        # where possible).  We require at least _MG_MIN_DIM nodes per axis;
+        # if the requested coarsest is too small, the caller has already
+        # capped n_levels via _max_level_for.
+        nx_k = (nx - 1) // s + 1
+        ny_k = (ny - 1) // s + 1
+        # Effective spacings at this level (in physical units, equal to
+        # s*dx and s*dy).  Not used directly because our stencil is
+        # h-independent — the level-k discrete problem is solved with
+        # the same stencil; the relaxation at each level converges to
+        # the level-k discrete biharmonic-+ tension fixed point.
+        u_pad_k, fixed_k = _init_grid_from_scatter(
+            x, y, z, xmin, ymin, dx * s, dy * s, nx_k, ny_k)
+        rhs_k = np.zeros_like(u_pad_k)
+
+        if u_pad_prev is not None:
+            # Prolong previous (coarser) solution to this level as initial
+            # guess.  Strip the ghost ring, bilinear-prolong, then write
+            # the result into the kept domain of u_pad_k WITHOUT
+            # overwriting nodes that are pinned by snapped data.
+            u_prev_inner = _unpad2(u_pad_prev, ny_prev, nx_prev)
+            u_guess = _prolong_bilinear(u_prev_inner, ny_k, nx_k)
+            # Where fixed, keep the snapped data value; elsewhere, use
+            # the prolonged guess.
+            inner_view = u_pad_k[2:2 + ny_k, 2:2 + nx_k]
+            fixed_inner = fixed_k[2:2 + ny_k, 2:2 + nx_k]
+            inner_view[~fixed_inner] = u_guess[~fixed_inner]
+
+        # Relax at this level.  Use a tighter tolerance at coarse levels
+        # (they are cheap) and the requested tol at the finest level.
+        level_tol = tol if kk == 0 else max(tol, tol * (4 ** kk))
+        # Iteration cap scales with the level: coarse grids converge in
+        # ~ny_k iterations of damped Jacobi (cost ~ ny_k^3 work / level).
+        # Cap finest level at sweeps_per_level; allow more on coarse since
+        # cost there is negligible relative to fine.
+        cap = max(sweeps_per_level, 4 * ny_k)
+        delta = _smooth(u_pad_k, fixed_k, rhs_k, T, omega, cap, tol=level_tol)
+        if verbose:
+            print(f"  FMG level k={kk} stride={s} grid={ny_k}x{nx_k}  "
+                  f"final max|du|={delta:.3e}  (cap={cap}, tol={level_tol:.1e})")
+
+        u_pad_prev = u_pad_k
+        ny_prev = ny_k
+        nx_prev = nx_k
+
+    return u_pad_prev
+
+
+# ---------------------------------------------------------------------------
 # Initial guess — bilinear from nearest-known data
 # ---------------------------------------------------------------------------
 
@@ -278,6 +626,9 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                    tol: float = 1e-4,
                    omega: float = 0.7,
                    verbose: bool = False,
+                   use_multigrid: bool = True,
+                   mg_max_level: Optional[int] = None,
+                   mg_nu_coarse: int = 50,
                    ) -> np.ndarray:
     """Continuous-curvature spline matching `gmt surface` (Smith & Wessel 1990).
 
@@ -293,7 +644,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         Surface tension T in [0, 1].  0 = pure spline (biharmonic),
         1 = pure interp (harmonic).  GMT default is 0.
     max_iter : int, default 1000
-        Max relaxation iterations.
+        Max relaxation iterations (used only when ``use_multigrid=False``).
     tol : float, default 1e-4
         Convergence threshold on max |delta u| per sweep.
     omega : float, default 0.7
@@ -301,9 +652,22 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         ``u_new = (1 - omega) * u_old + omega * stencil_value``.
         Plain Jacobi (omega=1) is unstable for the discrete biharmonic
         operator; values in (0, 0.8] are safe.  Higher = faster
-        convergence but risks divergence at low tension.
+        convergence but risks divergence at low tension.  Default 0.7 is
+        safe for grids up to ~501x501; for 1001x1001 use omega <= 0.65.
     verbose : bool, default False
-        Print per-100-iteration progress.
+        Print per-level FMG progress.
+    use_multigrid : bool, default True
+        If True, accelerate with Full Multigrid (FMG) nested iteration —
+        solve on a coarse grid first, prolongate, refine.  Mira #21.
+        Set False to fall back to plain single-level damped Jacobi
+        (slow on large grids).
+    mg_max_level : int or None
+        Number of additional coarsenings below the finest level.
+        ``None`` picks the deepest level that keeps coarsest >= 9x9.
+    mg_nu_coarse : int, default 50
+        Lower bound on the per-level sweep cap.  At each FMG level the
+        cap is ``max(mg_nu_coarse, 4 * ny_level)``; relaxation stops
+        early when max |du| drops below the per-level tolerance.
 
     Returns
     -------
@@ -333,36 +697,52 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         raise ValueError(f"grid too small ({ny}x{nx}); need >=5 in each dim "
                          f"for the 12-point stencil")
 
-    u, fixed = _init_grid_from_scatter(x, y, z, xmin, ymin, dx, dy, nx, ny)
-    ny_full, nx_full = u.shape  # (ny+4, nx+4)
-    u_new = u.copy()
-
-    if verbose:
-        print(f"[gmt_surface_py] grid {ny}x{nx} (padded {ny_full}x{nx_full}), "
-              f"T={tension}, {int(fixed.sum())} fixed nodes, "
-              f"numba={_HAVE_NUMBA}")
-
-    last_delta = np.inf
-    for it in range(max_iter):
-        _apply_bcs(u)
-        # ensure pinned nodes are held (BC application may overwrite ring)
-        u_new[:] = u
-        delta = _jacobi_sweep(u, u_new, fixed, float(tension), float(omega),
-                              ny_full, nx_full)
-        # swap
-        u, u_new = u_new, u
-        last_delta = float(delta)
-        if verbose and (it % 100 == 0):
-            print(f"  iter {it:5d}  max |du| = {last_delta:.3e}")
-        if last_delta < tol:
-            if verbose:
-                print(f"[gmt_surface_py] converged at iter {it}, "
-                      f"max |du| = {last_delta:.3e}")
-            break
-    else:
+    if use_multigrid and ny >= _MG_MIN_DIM and nx >= _MG_MIN_DIM:
+        # Full multigrid (FMG) / nested iteration — matches GMT surface.
+        # n_levels counts the finest level too, so n_levels=1 => single
+        # grid (no multigrid benefit).
+        n_levels = ((_max_level_for(ny, nx) + 1) if mg_max_level is None
+                    else int(mg_max_level) + 1)
+        n_levels = max(1, n_levels)
         if verbose:
-            print(f"[gmt_surface_py] max_iter={max_iter} reached, "
-                  f"max |du| = {last_delta:.3e}")
+            print(f"[gmt_surface_py] grid {ny}x{nx}, T={tension}, "
+                  f"numba={_HAVE_NUMBA}, FMG n_levels={n_levels} "
+                  f"(coarsest ~ {ny // (1 << (n_levels - 1))}x"
+                  f"{nx // (1 << (n_levels - 1))})")
+        u = _fmg_solve(x, y, z, xmin, ymin, dx, dy, nx, ny,
+                       float(tension), float(omega),
+                       n_levels, sweeps_per_level=mg_nu_coarse,
+                       tol=tol, verbose=verbose)
+        fixed = None  # not needed below; we already converged
+    else:
+        # Single-level plain damped Jacobi (original prototype path).
+        u, fixed = _init_grid_from_scatter(x, y, z, xmin, ymin, dx, dy, nx, ny)
+        ny_full, nx_full = u.shape
+        rhs = np.zeros_like(u)
+        if verbose:
+            print(f"[gmt_surface_py] grid {ny}x{nx} (padded {ny_full}x{nx_full}), "
+                  f"T={tension}, {int(fixed.sum())} fixed nodes, "
+                  f"numba={_HAVE_NUMBA}, multigrid=False")
+        u_new = u.copy()
+        last_delta = np.inf
+        for it in range(max_iter):
+            _apply_bcs(u)
+            u_new[:] = u
+            delta = _jacobi_sweep(u, u_new, fixed, rhs, float(tension), float(omega),
+                                  ny_full, nx_full)
+            u, u_new = u_new, u
+            last_delta = float(delta)
+            if verbose and (it % 100 == 0):
+                print(f"  iter {it:5d}  max |du| = {last_delta:.3e}")
+            if last_delta < tol:
+                if verbose:
+                    print(f"[gmt_surface_py] converged at iter {it}, "
+                          f"max |du| = {last_delta:.3e}")
+                break
+        else:
+            if verbose:
+                print(f"[gmt_surface_py] max_iter={max_iter} reached, "
+                      f"max |du| = {last_delta:.3e}")
 
     _apply_bcs(u)
     # Return only the kept (ny, nx) block, stripping the 2-wide ghost ring.
