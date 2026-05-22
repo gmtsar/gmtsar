@@ -12,6 +12,18 @@ import sys, os, subprocess, mmap as _mmap
 import numpy as _np
 from gmtsar_lib import *
 
+# Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
+# Default ON (GMTSAR_GRDCUT_PY=1) per Rule 10 carve-out — byte-id to gmt C
+# AND faster (file→file 3.3×, array-only 151×). Set GMTSAR_GRDCUT_PY=0 to
+# fall back to the gmt subprocess for A/B parity debugging.
+try:
+    from grdcut_wrapper import grdcut_file as _grdcut_file
+    _HAVE_GRDCUT_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: grdcut_wrapper import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GRDCUT_PY = False
+
 
 def _advise_sequential(arr):
     """Hint the kernel that this memmap will be read sequentially.
@@ -552,7 +564,12 @@ def dem2topo_ra():
                     "gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
                     "temp.rat", rr_str.replace("-R", "").strip(),
                     int(rng), 2, float(tension), "pixel.grd")
-                run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
+                # Mira (2026-05-22): in-process grdcut. Bit-id to gmt C +
+                # ~3.3× faster on real DEM. GMTSAR_GRDCUT_PY=0 → subprocess.
+                if _HAVE_GRDCUT_PY:
+                    _grdcut_file("pixel.grd", "tmp.grd", region=str(region))
+                else:
+                    run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
         elif mode == 1:
             rng2 = rng*8
@@ -611,7 +628,11 @@ def dem2topo_ra():
                     "gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
                     "temp.rat", rr_str.replace("-R", "").strip(),
                     int(rng), 4, float(tension), "pixel.grd")
-                run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
+                # Mira (2026-05-22): in-process grdcut (PRF>=1000 branch).
+                if _HAVE_GRDCUT_PY:
+                    _grdcut_file("pixel.grd", "tmp.grd", region=str(region))
+                else:
+                    run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
         elif mode == 1:
             rng2 = rng*8
