@@ -133,20 +133,80 @@ def _bilinear_lookup(values: np.ndarray, vx: np.ndarray, vy: np.ndarray,
     return out.astype(np.float32)
 
 
+def _run_surface_inproc_5col(trans_dat: str, region_str: str, col_z: int,
+                              inc_x: float, inc_y: float, tension: float,
+                              out_path: str) -> None:
+    """In-process replacement for
+        gmt surface <trans_dat> -i0,1,<col_z> -bi5d -R... -I -T -G<out>.
+
+    Reads `trans_dat` as 5-column binary float64; uses columns 0 (x),
+    1 (y), and `col_z` (z), feeds the scatter into `gmt_surface_py`
+    with gridline registration (matches the legacy invocation which
+    omits -r), then writes the output via `gmt_grd_io.write_gmt_grd`.
+    """
+    # Lazy import — pay numba JIT cost only when GMTSAR_SURFACE_INPROC=1.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_surface_py import gmt_surface_py
+    from gmt_grd_io import write_gmt_grd
+
+    # Parse region "-R x0/x1/y0/y1"
+    rs = region_str.replace("-R", "").strip()
+    parts = rs.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"bad region '{region_str}' for in-proc surface")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    data = np.fromfile(trans_dat, dtype=np.float64)
+    if data.size % 5 != 0:
+        raise ValueError(f"{trans_dat}: size {data.size} not div by 5 doubles")
+    data = data.reshape(-1, 5)
+    x = data[:, 0]
+    y = data[:, 1]
+    z = data[:, col_z]
+    grid = gmt_surface_py(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(float(inc_x), float(inc_y)),
+        tension=float(tension),
+        max_iter=2000, tol=1e-4,
+        omega=0.5,
+        use_multigrid=True,
+        pixel_reg=False,
+    )
+    ny, nx = grid.shape
+    x_coord = x0 + np.arange(nx) * float(inc_x)
+    y_coord = y0 + np.arange(ny) * float(inc_y)
+    write_gmt_grd(out_path, grid, x_coord, y_coord, node_offset=0,
+                  history=f"gmt_surface_py (-T{tension}) "
+                          f"-I{inc_x}/{inc_y}  (col {col_z})")
+
+
 def _ensure_raln_ralt(trans_dat: str, region: str, verbose: bool = False) -> None:
     """Run `gmt surface` once to produce raln.grd / ralt.grd if missing.
 
-    This is the same call the original proj_ra2ll makes for the first file.
-    Kept as a subprocess — we don't reimplement gmt surface's
-    continuous-curvature splines in numpy.
+    Default: the legacy subprocess.  When GMTSAR_SURFACE_INPROC=1 is
+    set, replaces both calls with an in-process gmt_surface_py +
+    write_gmt_grd pair (Mira #41 wire-in).  Both raln (col 3 = lon)
+    and ralt (col 4 = lat) are computed from the same 5-col trans.dat
+    binary input.
     """
     Vflag = "-V" if verbose else ""
+    inproc = os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
     if not os.path.isfile("raln.grd"):
-        cmd = f"gmt surface {trans_dat} -i0,1,3 -bi5d {region} -I16/32 -T.50 -Graln.grd {Vflag}"
-        subprocess.run(cmd, shell=True, check=False)
+        if inproc:
+            _run_surface_inproc_5col(trans_dat, region, col_z=3,
+                                      inc_x=16.0, inc_y=32.0, tension=0.5,
+                                      out_path="raln.grd")
+        else:
+            cmd = f"gmt surface {trans_dat} -i0,1,3 -bi5d {region} -I16/32 -T.50 -Graln.grd {Vflag}"
+            subprocess.run(cmd, shell=True, check=False)
     if not os.path.isfile("ralt.grd"):
-        cmd = f"gmt surface {trans_dat} -i0,1,4 -bi5d {region} -I16/32 -T.50 -Gralt.grd {Vflag}"
-        subprocess.run(cmd, shell=True, check=False)
+        if inproc:
+            _run_surface_inproc_5col(trans_dat, region, col_z=4,
+                                      inc_x=16.0, inc_y=32.0, tension=0.5,
+                                      out_path="ralt.grd")
+        else:
+            cmd = f"gmt surface {trans_dat} -i0,1,4 -bi5d {region} -I16/32 -T.50 -Gralt.grd {Vflag}"
+            subprocess.run(cmd, shell=True, check=False)
 
 
 def _region_from_corr_extent(z, x_coord, y_coord) -> str:

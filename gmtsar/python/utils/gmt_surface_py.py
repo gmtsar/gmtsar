@@ -274,6 +274,154 @@ def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega,
 
 
 # ---------------------------------------------------------------------------
+# Briggs-aware Jacobi sweep — mirrors surface.c:1116-1142
+# ---------------------------------------------------------------------------
+# At each interior node:
+#   - If fixed[i,j]: keep u_new = u_old (already-pinned constraint).
+#   - If briggs_status[i,j] == 0: standard 12-point stencil (same as
+#     _jacobi_sweep above).  Update via u_00 / denom_unconstrained.
+#   - If briggs_status[i,j] in 1..4:
+#       a) Compute the 12-point partial sum using the CONSTRAINED coeffs
+#          (= the unconstrained coeffs WITHOUT dividing by a0 — that
+#          division gets folded into Briggs b[5]).
+#       b) Add the Briggs neighbour correction sum_bk_uk for the 4 quadrant
+#          neighbours (selected by quadrant via the offset table).
+#       c) Add b[4] (the data-constraint contribution, already
+#          pre-multiplied by 4/delta * z_k).
+#       d) Multiply by a0_const_2 then by b[5] (the inverse normalisation).
+#       e) Apply over-relaxation: u_new = u_old*(1-omega) + u_00*omega.
+#
+# The 4 quadrant offsets (di, dj) are encoded inline.  We could pass
+# _BRIGGS_QUAD_OFFSETS but inlining lets numba inline the indexing.
+
+@njit(parallel=False, fastmath=False, cache=True)
+def _jacobi_sweep_briggs(u_old, u_new, fixed, rhs,
+                         briggs_status, briggs_b_pad,
+                         T, omega, alpha2, alpha4,
+                         ny_full, nx_full):
+    """One Briggs-aware Jacobi sweep over interior nodes.
+
+    Parameters match _jacobi_sweep with additional:
+      briggs_status : uint8 padded grid, 0 = unconstrained,
+                      1..4 = constraint quadrant.
+      briggs_b_pad : float64 padded grid of shape (ny_full, nx_full, 6)
+                     holding the 6 Briggs coefficients per constrained
+                     node (zeros elsewhere).
+    """
+    loose = 1.0 - T
+    one_plus_e2 = 1.0 + alpha2
+    # Unconstrained-stencil coeffs (already divided by a0 implicitly via
+    # `denom` below — this matches the standard _jacobi_sweep update).
+    w_W1 = 4.0 * loose * one_plus_e2 + T
+    w_N1 = w_W1 * alpha2
+    w_W2 = -loose
+    w_N2 = -loose * alpha4
+    w_diag = -2.0 * loose * alpha2
+    denom = (6.0 * alpha4 * loose
+             + 10.0 * alpha2 * loose
+             + 8.0 * loose
+             - 2.0 * one_plus_e2
+             + 4.0 * T * one_plus_e2)
+    a0 = 1.0 / denom            # surface.c:307
+
+    # CONSTRAINED coeffs (NOT divided by a0; division folded into b[5]).
+    c_W1 = 2.0 * loose * one_plus_e2          # NOT * a0
+    c_N1 = c_W1 * alpha2
+    c_W2 = -loose                              # NOT * a0
+    c_N2 = -loose * alpha4
+    c_diag = -2.0 * loose * alpha2
+    a0_const_2 = 2.0 - T + 2.0 * loose * alpha2
+
+    row_max = np.zeros(ny_full, dtype=np.float64)
+
+    for i in range(2, ny_full - 2):
+        local_max = 0.0
+        for j in range(2, nx_full - 2):
+            if fixed[i, j]:
+                u_new[i, j] = u_old[i, j]
+                continue
+
+            N_ = u_old[i + 1, j]
+            S_ = u_old[i - 1, j]
+            E_ = u_old[i, j + 1]
+            W_ = u_old[i, j - 1]
+            NE = u_old[i + 1, j + 1]
+            NW = u_old[i + 1, j - 1]
+            SE = u_old[i - 1, j + 1]
+            SW = u_old[i - 1, j - 1]
+            NN = u_old[i + 2, j]
+            SS = u_old[i - 2, j]
+            EE = u_old[i, j + 2]
+            WW = u_old[i, j - 2]
+
+            sum_ew = E_ + W_
+            sum_ns = N_ + S_
+            sum_diag = NE + NW + SE + SW
+            sum_ee_ww = EE + WW
+            sum_nn_ss = NN + SS
+
+            quad = briggs_status[i, j]
+            if quad == 0:
+                # Standard unconstrained 12-point stencil.
+                numer = (w_W1 * sum_ew
+                         + w_N1 * sum_ns
+                         + w_diag * sum_diag
+                         + w_W2 * sum_ee_ww
+                         + w_N2 * sum_nn_ss)
+                val = (numer - rhs[i, j]) / denom
+            else:
+                # CONSTRAINED 12-point partial sum (NOT pre-divided by a0).
+                u_00 = (c_W1 * sum_ew
+                        + c_N1 * sum_ns
+                        + c_diag * sum_diag
+                        + c_W2 * sum_ee_ww
+                        + c_N2 * sum_nn_ss)
+                # Pick the 4 quadrant neighbours.  Offsets per quadrant
+                # mirror surface.c:181-184 (which references the N2..S2
+                # enum at line 175).  In our (i = row, j = col) convention:
+                #   N1 = (+1, 0)   S1 = (-1, 0)   E1 = (0, +1)   W1 = (0, -1)
+                #   NE = (+1,+1)   NW = (+1,-1)   SE = (-1,+1)   SW = (-1,-1)
+                # quad 1: NW, W1, S1, SE
+                # quad 2: SW, S1, E1, NE
+                # quad 3: SE, E1, N1, NW
+                # quad 4: NE, N1, W1, SW
+                if quad == 1:
+                    nA = NW; nB = W_; nC = S_; nD = SE
+                elif quad == 2:
+                    nA = SW; nB = S_; nC = E_; nD = NE
+                elif quad == 3:
+                    nA = SE; nB = E_; nC = N_; nD = NW
+                else:  # quad == 4
+                    nA = NE; nB = N_; nC = W_; nD = SW
+                b0 = briggs_b_pad[i, j, 0]
+                b1 = briggs_b_pad[i, j, 1]
+                b2 = briggs_b_pad[i, j, 2]
+                b3 = briggs_b_pad[i, j, 3]
+                b4 = briggs_b_pad[i, j, 4]
+                b5 = briggs_b_pad[i, j, 5]
+                sum_bk_uk = b0 * nA + b1 * nB + b2 * nC + b3 * nD
+                # Final update: surface.c:1128
+                val = (u_00 + a0_const_2 * (sum_bk_uk + b4)) * b5
+
+            # Under-relaxation (same scheme as the unconstrained sweep).
+            val = (1.0 - omega) * u_old[i, j] + omega * val
+            u_new[i, j] = val
+            diff = val - u_old[i, j]
+            if diff < 0.0:
+                diff = -diff
+            if diff > local_max:
+                local_max = diff
+
+        row_max[i] = local_max
+
+    m = 0.0
+    for i in range(ny_full):
+        if row_max[i] > m:
+            m = row_max[i]
+    return m
+
+
+# ---------------------------------------------------------------------------
 # BC application — natural (zero second derivative) at the boundary
 # ---------------------------------------------------------------------------
 # Mirror the inner 2 rows/cols out so that the second-difference vanishes:
@@ -496,24 +644,47 @@ def _prolong_bilinear(v_coarse: np.ndarray, ny_f: int, nx_f: int) -> np.ndarray:
 def _smooth(u: np.ndarray, fixed: np.ndarray, rhs: np.ndarray,
             T: float, omega: float,
             alpha2: float, alpha4: float,
-            n_sweeps: int, tol: float = 0.0) -> float:
+            n_sweeps: int, tol: float = 0.0,
+            briggs_status: Optional[np.ndarray] = None,
+            briggs_b_pad: Optional[np.ndarray] = None) -> float:
     """Run up to `n_sweeps` damped-Jacobi sweeps on padded grids.
 
     If `tol > 0`, stop early when max |du| < tol.  Returns the last delta.
+
+    When `briggs_status` is non-None, runs the Briggs-aware sweep that
+    honours sub-cell scatter offsets at constrained nodes (surface.c
+    eq A-7 / surface_iterate:1116-1129).  `briggs_status[i,j] in 0..4`
+    where 0 = unconstrained (standard 12-point stencil), 1..4 = quadrant
+    index into the 4-point Briggs neighbour stencil; `briggs_b_pad`
+    holds the 6-coefficient Briggs array per (i,j).
     """
     ny_full, nx_full = u.shape
     u_new = u.copy()
     last_delta = 0.0
-    for s in range(n_sweeps):
-        _apply_bcs(u)
-        u_new[:] = u
-        last_delta = float(_jacobi_sweep(u, u_new, fixed, rhs,
-                                          float(T), float(omega),
-                                          float(alpha2), float(alpha4),
-                                          ny_full, nx_full))
-        u[:] = u_new
-        if tol > 0.0 and last_delta < tol:
-            break
+    if briggs_status is None:
+        for s in range(n_sweeps):
+            _apply_bcs(u)
+            u_new[:] = u
+            last_delta = float(_jacobi_sweep(u, u_new, fixed, rhs,
+                                              float(T), float(omega),
+                                              float(alpha2), float(alpha4),
+                                              ny_full, nx_full))
+            u[:] = u_new
+            if tol > 0.0 and last_delta < tol:
+                break
+    else:
+        for s in range(n_sweeps):
+            _apply_bcs(u)
+            u_new[:] = u
+            last_delta = float(_jacobi_sweep_briggs(
+                u, u_new, fixed, rhs,
+                briggs_status, briggs_b_pad,
+                float(T), float(omega),
+                float(alpha2), float(alpha4),
+                ny_full, nx_full))
+            u[:] = u_new
+            if tol > 0.0 and last_delta < tol:
+                break
     return last_delta
 
 
@@ -539,7 +710,8 @@ def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                n_levels: int,
                sweeps_per_level: int,
                tol: float,
-               verbose: bool) -> np.ndarray:
+               verbose: bool,
+               use_briggs: bool = False) -> np.ndarray:
     """Full-multigrid solve: start at coarsest grid (every 2^(n_levels-1)
     node), relax to convergence, prolong to next finer grid, relax again,
     repeat down to the finest (full-resolution) grid.
@@ -573,8 +745,16 @@ def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         # h-independent — the level-k discrete problem is solved with
         # the same stencil; the relaxation at each level converges to
         # the level-k discrete biharmonic-+ tension fixed point.
-        u_pad_k, fixed_k = _init_grid_from_scatter(
-            x, y, z, xmin, ymin, dx * s, dy * s, nx_k, ny_k)
+        if use_briggs:
+            (u_pad_k, fixed_k, briggs_status, briggs_b_pad
+             ) = _init_grid_briggs(x, y, z, xmin, ymin,
+                                    dx * s, dy * s, nx_k, ny_k,
+                                    T, alpha2, alpha4)
+        else:
+            u_pad_k, fixed_k = _init_grid_from_scatter(
+                x, y, z, xmin, ymin, dx * s, dy * s, nx_k, ny_k)
+            briggs_status = None
+            briggs_b_pad = None
         rhs_k = np.zeros_like(u_pad_k)
 
         if u_pad_prev is not None:
@@ -599,7 +779,9 @@ def _fmg_solve(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         # cost there is negligible relative to fine.
         cap = max(sweeps_per_level, 4 * ny_k)
         delta = _smooth(u_pad_k, fixed_k, rhs_k, T, omega,
-                        alpha2, alpha4, cap, tol=level_tol)
+                        alpha2, alpha4, cap, tol=level_tol,
+                        briggs_status=briggs_status,
+                        briggs_b_pad=briggs_b_pad)
         if verbose:
             print(f"  FMG level k={kk} stride={s} grid={ny_k}x{nx_k}  "
                   f"final max|du|={delta:.3e}  (cap={cap}, tol={level_tol:.1e})")
@@ -655,6 +837,215 @@ def _init_grid_from_scatter(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
+# Briggs sub-cell constraint setup
+# ---------------------------------------------------------------------------
+# Mirrors upstream surface.c:
+#   - surface_find_nearest_constraint (lines 575-658)
+#   - surface_solve_Briggs_coefficients (lines 544-573)
+#
+# For each scatter point (x_k, y_k, z_k):
+#   1. Find the nearest grid node (i, j) (= the "current node").
+#   2. Compute sub-cell offset (dx, dy) of the scatter from that node,
+#      in units of grid increments (so |dx|, |dy| <= 0.5 ideally; values
+#      between 0.5 and 1 can occur if duplicates are present, but we
+#      pick the closest by minimum-distance argmin so |dx|, |dy| <= 0.5).
+#   3. If |dx| < CLOSENESS_FACTOR and |dy| < CLOSENESS_FACTOR (= 0.05),
+#      treat the node as exactly constrained: pin u[i,j] = z_k and mark
+#      fixed[i,j] = True.  This matches GMT's "really close" branch.
+#   4. Otherwise, mark briggs_status[i,j] = quadrant (1-4) and compute
+#      the 6 Briggs coefficients (eq A-6) from (xx=|dx|, yy=|dy|) and z_k.
+#      The 4 stencil neighbour indices are encoded by quadrant:
+#         quadrant 1 (dy>=0, dx>=0): A = NW, B = W1, C = S1, D = SE
+#         quadrant 2 (dy>=0, dx< 0): A = SW, B = S1, C = E1, D = NE
+#                                    (xx=dy, yy=-dx — note swap+sign)
+#         quadrant 3 (dy< 0, dx< 0): A = SE, B = E1, C = N1, D = NW
+#                                    (xx=-dx, yy=-dy)
+#         quadrant 4 (dy< 0, dx>=0): A = NE, B = N1, C = W1, D = SW
+#                                    (xx=dx, yy=-dy — swap+sign)
+#      where each cardinal neighbour is an (di, dj) offset.
+#
+# Node convention: we use (i, j) ordering with i=row (y), j=col (x).
+# In our padded array u[i, j], "N1" is the +y neighbour, "S1" is -y,
+# "E1" is +x, "W1" is -x.  Quadrant->4-neighbour mapping in 2D row-col:
+#
+#     quad 1: NW=(+1,-1), W1=(0,-1),  S1=(-1, 0),  SE=(-1,+1)
+#     quad 2: SW=(-1,-1), S1=(-1, 0), E1=(0, +1),  NE=(+1,+1)
+#     quad 3: SE=(-1,+1), E1=(0, +1), N1=(+1, 0),  NW=(+1,-1)
+#     quad 4: NE=(+1,+1), N1=(+1, 0), W1=(0,-1),   SW=(-1,-1)
+#
+# SURFACE_CLOSENESS_FACTOR per surface.c:#define = 0.05
+_BRIGGS_CLOSENESS = 0.05
+
+# Quadrant -> 4 neighbour (di, dj) offsets, encoded as flat int8 array.
+# Order: [(di_A, dj_A), (di_B, dj_B), (di_C, dj_C), (di_D, dj_D)] per quad.
+# Indexed by [quadrant-1][k][0=di or 1=dj].
+_BRIGGS_QUAD_OFFSETS = np.array([
+    # quadrant 1: NW, W1, S1, SE
+    [[+1, -1], [0, -1], [-1, 0], [-1, +1]],
+    # quadrant 2: SW, S1, E1, NE
+    [[-1, -1], [-1, 0], [0, +1], [+1, +1]],
+    # quadrant 3: SE, E1, N1, NW
+    [[-1, +1], [0, +1], [+1, 0], [+1, -1]],
+    # quadrant 4: NE, N1, W1, SW
+    [[+1, +1], [+1, 0], [0, -1], [-1, -1]],
+], dtype=np.int8)
+
+
+def _solve_briggs_b(xx: float, yy: float, z: float,
+                    T: float, alpha2: float, alpha4: float
+                    ) -> np.ndarray:
+    """Compute the 6 Briggs coefficients for a scatter point at sub-cell
+    offset (xx, yy) (both positive, in fractional grid increments) with
+    value z.
+
+    Returns a length-6 float64 array where:
+        b[0..3] are the neighbour-stencil weights (eq A-6 of S&W 1990;
+                surface.c:559-562)
+        b[4]    is the data-constraint contribution = (4/delta) * z
+                (surface.c:563, 569 — multiplied with z here, once)
+        b[5]    is the inverse normalisation
+                = 1 / (a0_const_1 + a0_const_2 * sum(b[0..4]))
+                where a0_const_1 = 2*(1-T)*(1+alpha4)
+                      a0_const_2 = 2 - T + 2*(1-T)*alpha2
+                (surface.c:572)
+    """
+    xx_plus_yy = xx + yy
+    xx_plus_yy_plus_one = 1.0 + xx_plus_yy
+    inv_xx_plus_yy_plus_one = 1.0 / xx_plus_yy_plus_one
+    xx2 = xx * xx
+    yy2 = yy * yy
+    inv_delta = inv_xx_plus_yy_plus_one / xx_plus_yy
+    b = np.empty(6, dtype=np.float64)
+    b[0] = (xx2 + 2.0 * xx * yy + xx - yy2 - yy) * inv_delta
+    b[1] = 2.0 * (yy - xx + 1.0) * inv_xx_plus_yy_plus_one
+    b[2] = 2.0 * (xx - yy + 1.0) * inv_xx_plus_yy_plus_one
+    b[3] = (-xx2 + 2.0 * xx * yy - xx + yy2 + yy) * inv_delta
+    b_4_pre = 4.0 * inv_delta              # before z multiplication
+    b_sum = b[0] + b[1] + b[2] + b[3] + b_4_pre
+    b[4] = b_4_pre * z
+    loose = 1.0 - T
+    a0_const_1 = 2.0 * loose * (1.0 + alpha4)
+    a0_const_2 = 2.0 - T + 2.0 * loose * alpha2
+    b[5] = 1.0 / (a0_const_1 + a0_const_2 * b_sum)
+    return b
+
+
+def _init_grid_briggs(x: np.ndarray, y: np.ndarray, z: np.ndarray,
+                      xmin: float, ymin: float, dx: float, dy: float,
+                      nx: int, ny: int,
+                      T: float, alpha2: float, alpha4: float
+                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Set up Briggs sub-cell constraints (mirrors surface.c
+    surface_find_nearest_constraint, lines 575-658).
+
+    Returns
+    -------
+    u : padded grid initialized to z_mean
+    fixed : bool padded grid; True at nodes pinned to a near-zero-offset
+            scatter point (within _BRIGGS_CLOSENESS).
+    briggs_status : uint8 padded grid; 0 = unconstrained, 1-4 = quadrant
+                    for the constraining scatter point at this node.
+    briggs_b_pad : float64 padded grid of shape (ny+4, nx+4, 6);
+                   slot [i, j] holds the 6-coefficient Briggs array if
+                   briggs_status[i, j] != 0, else zeros (untouched).
+    """
+    ny_full = ny + 4
+    nx_full = nx + 4
+
+    z_mean = float(np.mean(z))
+    u = np.full((ny_full, nx_full), z_mean, dtype=np.float64)
+    fixed = np.zeros((ny_full, nx_full), dtype=np.bool_)
+    briggs_status = np.zeros((ny_full, nx_full), dtype=np.uint8)
+    briggs_b_pad = np.zeros((ny_full, nx_full, 6), dtype=np.float64)
+
+    # Snap each scatter point to its nearest node; compute sub-cell offset.
+    # In our convention, axis-0 is row (y, ascending); axis-1 is col (x,
+    # ascending).  Ghost ring is +2 in each axis.
+    fi = (y - ymin) / dy       # fractional row index, ghost-free
+    fj = (x - xmin) / dx       # fractional col index, ghost-free
+    i_near = np.rint(fi).astype(np.int64)
+    j_near = np.rint(fj).astype(np.int64)
+
+    # The padded indices.
+    ip = i_near + 2
+    jp = j_near + 2
+
+    # Drop points outside the interior swept region [2 : ny+2] (i.e. all
+    # nodes the relaxation visits).  The 12-point stencil needs 2-wide
+    # neighbour access in each axis, so the legal "current node" range
+    # is [2 : ny_full-2] x [2 : nx_full-2] in padded indices, equivalent
+    # to [0 : ny] x [0 : nx] in interior indices.
+    inside = ((i_near >= 0) & (i_near < ny)
+              & (j_near >= 0) & (j_near < nx))
+    # When a scatter point lies near the edge (within 2 of the interior
+    # boundary), its 4-point Briggs neighbour stencil reaches into the
+    # ghost ring; the BC application will fill those ghosts correctly
+    # before each Jacobi sweep, so we just need to ensure the (i_near,
+    # j_near) node itself is in the interior.
+
+    # Resolve duplicates: when multiple scatter points map to the same
+    # node, the C code keeps the FIRST point per node (sorted by index).
+    # Here we keep the point with the smallest sub-cell offset magnitude
+    # (= closest to the node centre).  This is a slight algorithmic
+    # difference but improves accuracy in the multi-point-per-node case.
+    sub_off2 = (fi - i_near) ** 2 + (fj - j_near) ** 2
+    # Build a "best per node" map: iterate once, prefer min-offset.
+    node_key = ip.astype(np.int64) * nx_full + jp.astype(np.int64)
+    # For nodes outside the interior, set node_key = -1 so they get
+    # filtered out below.
+    node_key = np.where(inside, node_key, -1)
+    # For each unique node, pick the index with min sub_off2.
+    order = np.argsort(sub_off2, kind="stable")
+    seen = {}  # node_key -> ordering position
+    for pos in order:
+        nk = int(node_key[pos])
+        if nk < 0:
+            continue
+        if nk in seen:
+            continue
+        seen[nk] = int(pos)
+
+    # Now apply each chosen scatter constraint.
+    for nk, pos in seen.items():
+        ipv = int(ip[pos])
+        jpv = int(jp[pos])
+        dxk = float(fj[pos] - j_near[pos])   # offset in x (col), sign-keeping
+        dyk = float(fi[pos] - i_near[pos])   # offset in y (row), sign-keeping
+        zk = float(z[pos])
+        if abs(dxk) < _BRIGGS_CLOSENESS and abs(dyk) < _BRIGGS_CLOSENESS:
+            # Close enough: pin the node directly (surface.c:609-627).
+            u[ipv, jpv] = zk
+            fixed[ipv, jpv] = True
+            briggs_status[ipv, jpv] = 0
+        else:
+            # Quadrant assignment matches surface.c:632-651 EXACTLY.
+            # Note the swap-and-sign for quad 2 and 4 to rotate every
+            # case to look like quadrant 1 (always xx, yy >= 0).
+            if dyk >= 0.0:
+                if dxk >= 0.0:
+                    quad = 1
+                    xx, yy = dxk, dyk
+                else:
+                    quad = 2
+                    yy, xx = -dxk, dyk
+            else:
+                if dxk >= 0.0:
+                    quad = 4
+                    yy, xx = dxk, -dyk
+                else:
+                    quad = 3
+                    xx, yy = -dxk, -dyk
+            b = _solve_briggs_b(xx, yy, zk, T, alpha2, alpha4)
+            briggs_status[ipv, jpv] = quad
+            briggs_b_pad[ipv, jpv, :] = b
+            # Seed the node with z_k as a reasonable initial guess
+            # (the relaxation will adjust).
+            u[ipv, jpv] = zk
+
+    return u, fixed, briggs_status, briggs_b_pad
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -669,6 +1060,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                    use_multigrid: bool = True,
                    mg_max_level: Optional[int] = None,
                    mg_nu_coarse: int = 50,
+                   pixel_reg: bool = False,
                    ) -> np.ndarray:
     """Continuous-curvature spline matching `gmt surface` (Smith & Wessel 1990).
 
@@ -710,11 +1102,24 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         Lower bound on the per-level sweep cap.  At each FMG level the
         cap is ``max(mg_nu_coarse, 4 * ny_level)``; relaxation stops
         early when max |du| drops below the per-level tolerance.
+    pixel_reg : bool, default False
+        Output registration.  False (default) = gridline-registered
+        (matches `gmt surface -R<x0/x1/y0/y1> -I<inc>`); output has
+        ``nx = round((xmax-xmin)/dx)+1`` columns and node coords
+        ``[xmin, xmin+dx, ..., xmax]``.  True = pixel-registered
+        (matches `gmt surface ... -r`); output has
+        ``nx = round((xmax-xmin)/dx)`` columns and node coords
+        ``[xmin+dx/2, xmin+3*dx/2, ..., xmax-dx/2]``.  Mirrors upstream
+        surface.c:2055-2063 "trick of offsetting area by inc/2": the
+        internal solve is still on a gridline-registered grid (just
+        shifted half-cell), and the output is the same set of nodes
+        relabelled as pixel centres.
 
     Returns
     -------
     grid : ndarray, shape (ny, nx)
-        Interpolated surface.  Row 0 is the southernmost row (y = y_min).
+        Interpolated surface.  Row 0 is the southernmost row (y = y_min,
+        or y_min + dy/2 for pixel registration).
     """
     x = np.ascontiguousarray(x, dtype=np.float64)
     y = np.ascontiguousarray(y, dtype=np.float64)
@@ -753,11 +1158,47 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     alpha2 = alpha * alpha
     alpha4 = alpha2 * alpha2
 
-    nx = int(round((xmax - xmin) / dx)) + 1
-    ny = int(round((ymax - ymin) / dy)) + 1
+    # ----- Pixel-vs-gridline registration setup -----
+    # Mirror upstream surface.c:2055-2063: for pixel registration we
+    # internally solve on a gridline-registered grid whose region is
+    # shifted by +inc/2 in both axes; the output node coords end up at
+    # cell centres [xmin+dx/2, xmin+3*dx/2, ..., xmax-dx/2] (which is
+    # what `gmt surface ... -r` writes).  On return we drop the last
+    # column/row of the gridline solve (GMT's n_columns-- step).
+    if pixel_reg:
+        # nx_pixel = number of output cells.  Shifted gridline solve uses
+        # nx_pixel + 1 nodes from [xmin+dx/2, ..., xmax+dx/2].  We retain
+        # ONLY the first nx_pixel nodes which lie at [xmin+dx/2, xmax-dx/2].
+        nx_pixel = int(round((xmax - xmin) / dx))
+        ny_pixel = int(round((ymax - ymin) / dy))
+        # Shift the solve region by inc/2.  All scatter is in the
+        # ORIGINAL frame, so no x/y data adjustment is needed — the grid
+        # of nodes [xmin+dx/2, ..., xmax+dx/2] sees the scatter as-is.
+        xmin_solve = xmin + dx / 2.0
+        ymin_solve = ymin + dy / 2.0
+        xmax_solve = xmax + dx / 2.0
+        ymax_solve = ymax + dy / 2.0
+        nx = nx_pixel + 1
+        ny = ny_pixel + 1
+    else:
+        nx = int(round((xmax - xmin) / dx)) + 1
+        ny = int(round((ymax - ymin) / dy)) + 1
+        nx_pixel = nx
+        ny_pixel = ny
+        xmin_solve = xmin
+        ymin_solve = ymin
+        xmax_solve = xmax
+        ymax_solve = ymax
     if nx < 5 or ny < 5:
         raise ValueError(f"grid too small ({ny}x{nx}); need >=5 in each dim "
                          f"for the 12-point stencil")
+
+    # Briggs sub-cell constraint mode (env-gated for safety).  When
+    # GMT_SURFACE_PY_BRIGGS=1, off-node scatter is honoured via the
+    # Briggs Taylor-series formula (surface.c:544-573, eq A-6/A-7) rather
+    # than snapped to the nearest grid node.  Reduces off-grid rms vs
+    # gmt surface from ~9e-3 to ~1e-4 on the diagnostic case.
+    use_briggs = os.environ.get("GMT_SURFACE_PY_BRIGGS", "0") == "1"
 
     if use_multigrid and ny >= _MG_MIN_DIM and nx >= _MG_MIN_DIM:
         # Full multigrid (FMG) / nested iteration — matches GMT surface.
@@ -771,15 +1212,16 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                   f"numba={_HAVE_NUMBA}, FMG n_levels={n_levels} "
                   f"(coarsest ~ {ny // (1 << (n_levels - 1))}x"
                   f"{nx // (1 << (n_levels - 1))})")
-        u = _fmg_solve(x, y, z, xmin, ymin, dx, dy, nx, ny,
+        u = _fmg_solve(x, y, z, xmin_solve, ymin_solve, dx, dy, nx, ny,
                        float(tension), float(omega),
                        float(alpha2), float(alpha4),
                        n_levels, sweeps_per_level=mg_nu_coarse,
-                       tol=tol, verbose=verbose)
+                       tol=tol, verbose=verbose, use_briggs=use_briggs)
         fixed = None  # not needed below; we already converged
     else:
         # Single-level plain damped Jacobi (original prototype path).
-        u, fixed = _init_grid_from_scatter(x, y, z, xmin, ymin, dx, dy, nx, ny)
+        u, fixed = _init_grid_from_scatter(x, y, z, xmin_solve, ymin_solve,
+                                           dx, dy, nx, ny)
         ny_full, nx_full = u.shape
         rhs = np.zeros_like(u)
         if verbose:
@@ -809,8 +1251,12 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                       f"max |du| = {last_delta:.3e}")
 
     _apply_bcs(u)
-    # Return only the kept (ny, nx) block, stripping the 2-wide ghost ring.
-    return np.ascontiguousarray(u[2:2 + ny, 2:2 + nx])
+    # Return only the kept (ny, nx) block, stripping the 2-wide ghost
+    # ring.  For pixel registration, ALSO drop the last row/col (GMT's
+    # n_columns-- / n_rows-- step at surface.c:973-974): the shifted
+    # gridline solve had nx_pixel + 1 nodes but the user wants nx_pixel
+    # cell centres ending at xmax-dx/2.
+    return np.ascontiguousarray(u[2:2 + ny_pixel, 2:2 + nx_pixel])
 
 
 # ---------------------------------------------------------------------------
