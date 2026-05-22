@@ -21,6 +21,11 @@ skip_master semantics (driven by argv positions 2 and 4):
   - master_orb=="0", aligned_orb!="0": skip_master=1 (process aligned only)
   - master_orb!="0", aligned_orb=="0": skip_master=2 (process master only)
   - both non-zero:                     skip_master=0 (process both)
+
+Env-gated fallback:
+  GMTSAR_ALIGN_TOPS_PY=0 → exec the original csh align_tops.csh on PATH.
+  Default: use the Python path. Lets us revert the wire-in at runtime
+  without rebuilding bin/ symlinks.
 """
 import os
 import re
@@ -28,6 +33,20 @@ import subprocess
 import sys
 
 from gmtsar_lib import run, check_file_report, replace_strings
+
+
+def _maybe_exec_csh_fallback() -> None:
+    """If GMTSAR_ALIGN_TOPS_PY=0, exec align_tops.csh and never return.
+
+    The Python port is symlinked into bin/ as `align_tops`; the original csh
+    is at bin/align_tops.csh. This lets users / sweeps revert the wire-in by
+    a single env-var flip without unbuilding the install tree.
+    """
+    if os.environ.get("GMTSAR_ALIGN_TOPS_PY", "1") != "0":
+        return
+    # Replace this process with the csh binary, preserving all argv.
+    csh_bin = "align_tops.csh"
+    os.execvp(csh_bin, [csh_bin, *sys.argv[1:]])
 
 
 def _grep_field3(path, key):
@@ -55,6 +74,7 @@ def _frame_prefix(input_name):
 
 
 def align_tops():
+    _maybe_exec_csh_fallback()  # GMTSAR_ALIGN_TOPS_PY=0 → exec csh, never return
     if len(sys.argv) not in (6, 7):
         sys.exit(
             "Usage: align_tops master_prefix master_orb aligned_prefix "
@@ -208,11 +228,13 @@ def align_tops():
     run(f"mv -f {spre}.PRMresamp {spre}.PRM")
 
     offset_file = "offset.dat" if -1000 < tmp_da < 1000 else "offset2.dat"
-    # Use csh wrapper (not C binary): wrapper emits PRM key=value lines on stdout
-    # which we append to the aligned PRM. The C `fitoffset` has a different
-    # signature (takes PRM file as 4th arg + modifies in-place); calling C with
-    # csh-style args (3 + redirect) captures the usage error instead of fit
-    # results — surfaced by Wei's audit 2026-05-22.
+    # Use fitoffset.csh wrapper (not the C `fitoffset` binary): wrapper emits
+    # PRM key=value lines on stdout which we append to the aligned PRM. The C
+    # `fitoffset` has a different signature (takes PRM file as 4th arg +
+    # modifies in-place); calling C with csh-style args (3 + redirect)
+    # captures the usage error instead of fit results.
+    # Surfaced by Wei's audit 2026-05-22 and guarded by csh-vs-py parity on
+    # Greece F2 (test_align_tops.py TestAlignTopsCshParity).
     run(f"fitoffset.csh 3 3 {offset_file} >> {spre}.PRM")
 
     # Re-extract LED and recompute calc_dop_orb
