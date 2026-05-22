@@ -70,7 +70,7 @@ CASES = {
     'S1A_SLC_TOPS_LA':          {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~2 h
     'S1_Larsen_C':              {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~1.5 h
     'ALOS2_SCAN_SSAF':          {'satellite': 'ALOS2_SCAN', 'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ScanSAR heavier
-    'S1A_SLC_TOPS_Greece':      {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~1 h
+    'S1A_SLC_TOPS_Greece':      {'satellite': 'S1_TOPS',    'ext': 'tar.gz', 'tiers': {'fast', 'full'},        'enabled': True},     # ~1 h — smallest S1 TOPS case, in --fast for align_tops + merge_unwrap_geocode_tops coverage (v2.1.12)
     'ALOS2_Brazil':             {'satellite': 'ALOS2',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~50 min
 
     # ---- mediums (~15-30 min) ----
