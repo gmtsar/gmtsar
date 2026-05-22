@@ -233,16 +233,43 @@ log "hw+sw snapshot → $PERF_FILE"
 #                      preserved as the immutable reference. ~1/2 the wall
 #                      time of the hard force. Use for iterating on
 #                      python-side code without rebuilding the csh oracle.
+#   SWEEP_FORCE=stage  stage-cache wipe: remove only the .stage_done_* sentinels
+#                      under python_test/<c>/ (does NOT touch outputs). Forces
+#                      every stage to re-execute on next run while preserving
+#                      the prior outputs as a post-mortem anchor. Useful when
+#                      debugging stage_cache.py or when a stale-cache hit is
+#                      suspected. No-op if GMTSAR_STAGE_CACHE=0 (default).
 # Modes use rename-then-delete to survive NFS .nfs* lock files (parent of
 # /tmp/<stale> directory is renamed atomically; the actual rm runs in the
 # background and tolerates lingering handles).
+#
+# SWEEP_FORCE=stage adds a third mode: wipe ONLY the per-stage cache sentinels
+# (.stage_done_*) under python_test/<c>/, NOT the case outputs. Forces every
+# stage to re-run on the next sweep but preserves the outputs from the
+# previous run as a comparison anchor. Use when iterating on stage_cache.py
+# itself or when you suspect a stale cache hit.
 if [ -n "${SWEEP_FORCE:-}" ]; then
     case "${SWEEP_FORCE}" in
-        py|PY|python)   wipe_csh=0 ;;
-        *)              wipe_csh=1 ;;
+        py|PY|python)   wipe_csh=0; wipe_mode=py ;;
+        stage|STAGE)    wipe_csh=0; wipe_mode=stage ;;
+        *)              wipe_csh=1; wipe_mode=hard ;;
     esac
     ts=$(date +%s%N)
     for c in $cases; do
+        if [ "$wipe_mode" = "stage" ]; then
+            # Only purge .stage_done_* sentinels under python_test/<c>/; leave
+            # everything else intact so the prior outputs remain available for
+            # post-mortem comparison if the new run regresses.
+            pyDir="$WORK/python_test/$c"
+            if [ -d "$pyDir" ]; then
+                n=$(find "$pyDir" -maxdepth 3 -name ".stage_done_*" -print 2>/dev/null | wc -l)
+                find "$pyDir" -maxdepth 3 -name ".stage_done_*" -delete 2>/dev/null
+                log "WIPE $c (SWEEP_FORCE=stage — removed $n stage-cache sentinels under $pyDir; outputs preserved)"
+            else
+                log "WIPE $c (SWEEP_FORCE=stage — nothing to do, no $pyDir)"
+            fi
+            continue
+        fi
         targets="$WORK/python_test/$c"
         [ "$wipe_csh" = 1 ] && targets="$WORK/csh_test/$c $targets"
         for d in $targets; do
