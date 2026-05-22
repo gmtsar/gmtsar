@@ -26,7 +26,7 @@ def Error_Message():
 
 def extractSatBaselineOutputToPrm(refPrm, repPrm):
     # csh command: SAT_baseline $1 $2 | tail -n9 >> $2
-    out = subprocess.run(['SAT_baseline', refPrm, repPrm], stdout=subprocess.PIPE)
+    out = subprocess.run(['SAT_baseline_py', refPrm, repPrm], stdout=subprocess.PIPE)
     output = out.stdout.decode('utf-8').split('\n')[-10:]
     print('INTF: SAT_baseline $1 $2 output is ', out)
     print('INTF: tail -n9 the above output is ', output)
@@ -35,7 +35,7 @@ def extractSatBaselineOutputToPrm(refPrm, repPrm):
         f.write('\n'.join(output))
         
     # csh command: SAT_baseline $1 $1 | grep height >> $1
-    out = subprocess.run(['SAT_baseline', refPrm, refPrm], stdout=subprocess.PIPE)
+    out = subprocess.run(['SAT_baseline_py', refPrm, refPrm], stdout=subprocess.PIPE)
     output = out.stdout.decode('utf-8')
     output = '\n'.join(line for line in output.split('\n') if 'height' in line)
     with open(refPrm, 'a') as f:

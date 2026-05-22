@@ -314,7 +314,7 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
 
         if skip_master in (0, 1):
             file_shuttle(f"{aligned}.PRM", f"{aligned}.PRM0", 'cp')
-            run(f"SAT_baseline {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
+            run(f"SAT_baseline_py {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
             _xcorr_and_fitoffset(SAT, master, aligned)
             _resamp_and_swap(master, aligned, SAT)
             
