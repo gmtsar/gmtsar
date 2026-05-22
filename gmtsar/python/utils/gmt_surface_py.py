@@ -157,7 +157,7 @@ _MG_MIN_DIM = 9   # leaves at least 5x5 interior (kept) nodes per axis
 # Jacobi (not Gauss-Seidel) is used because it parallelises cleanly with
 # prange — no row-to-row dependence within one sweep.
 
-@njit(parallel=True, fastmath=False, cache=True)
+@njit(parallel=False, fastmath=False, cache=True)
 def _jacobi_sweep(u_old, u_new, fixed, rhs, T, omega, ny_full, nx_full):
     """One Jacobi sweep over interior nodes [2..ny_full-3, 2..nx_full-3].
 
