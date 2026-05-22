@@ -155,6 +155,18 @@ Concretely:
 - If a merge candidate breaks even one case, it goes back to the
   consilium agent (or is reverted) — do not paper over with
   per-case threshold loosening.
+- **Env-gated wire-ins:** when a feature is wrapped in a runtime gate
+  (env var, capability check, file existence), the smoke test must
+  include at least one case that **exercises the new code path**,
+  not just any case. A case that falls through to the legacy path
+  via the gate proves nothing about the new path. Example failure
+  (gmt_surface_py wire-in 2026-05-22): the gate was `x_inc == y_inc`
+  (square cells). RS2 is anisotropic so the smoke RS2 ran the legacy
+  subprocess; the actual new FMG path was not validated. Wire-in
+  shipped, --fast later showed CSK_RAW (square cells) hit the new
+  path which was 13× slower (numba absent on prod env). Revert at
+  `98758b9`. Lesson logged in
+  `docs/SESSION_LOG_2026-05-21_night.md`.
 
 This rule sits on top of rule 0 (pass all tests) but specifically scopes
 the merge decision: pre-merge passing is the gate, not post-merge
