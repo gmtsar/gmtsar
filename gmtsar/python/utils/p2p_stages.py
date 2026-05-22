@@ -32,6 +32,18 @@ def _snaphu_py_enabled():
     return os.environ.get("GMTSAR_SNAPHU_PY", "1") != "0"
 
 
+def _iono_py_enabled():
+    """Python `estimate_ionospheric_phase` wrapper is ON by default.
+    `GMTSAR_IONO_PY=0` reverts to upstream `estimate_ionospheric_phase.csh`
+    for A/B parity debugging. The Python wrapper preserves byte-identity
+    to csh by delegating the math to the same `gmt grdmath/grdfilter/surface`
+    subprocess chain — see Mira parity-investigation note in
+    `utils/estimate_ionospheric_phase` for why `scipy.ndimage` was NOT
+    substituted for `gmt grdfilter -Fg`. The iono path is not exercised
+    by the regression test sweep (Rule 8.8 carve-out: documented gap)."""
+    return os.environ.get("GMTSAR_IONO_PY", "1") != "0"
+
+
 def _call_snaphu(threshold, defomax, near_interp):
     """Dispatch to native Python snaphu (default) or shell shim (env override).
     Either path is timed under the `snaphu` profiler bucket so phase timings
@@ -657,7 +669,14 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
 
     os.chdir('iono_correction')
     if iono_skip_est == 0:
-        run(f"estimate_ionospheric_phase ../intf_h ../intf_l ../intf_o "
+        # GMTSAR_IONO_PY=0 → upstream csh script (parity oracle fallback).
+        # Default = Python wrapper (byte-identical via gmt grdmath/grdfilter
+        # subprocess chain). The wrapper achieves "removes csh shell-out
+        # from p2p_stages.py" at the orchestration layer; full algorithmic
+        # native-Python port is blocked on parity-validated `gmt grdfilter
+        # -Fg` replacement — see Mira parity note in utils/estimate_ionospheric_phase.
+        iono_bin = "estimate_ionospheric_phase" if _iono_py_enabled() else "estimate_ionospheric_phase.csh"
+        run(f"{iono_bin} ../intf_h ../intf_l ../intf_o "
             f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
         os.chdir(f"../../intf/{intfSubDirName}")
         file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
