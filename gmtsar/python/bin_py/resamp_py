@@ -40,11 +40,44 @@ Scope: intrp in {1,2,3,4,5}. intrp=5 requires NetCDF .grd inputs.
 from __future__ import annotations
 
 import argparse
+import mmap
 import os
 import sys
 from typing import Dict
 
 import numpy as np
+
+
+def _advise_sequential(arr):
+    """Hint the kernel that this memmap will be read sequentially.
+
+    Under NFS, np.memmap default access is per-4 KB-page demand-fault, which
+    triggers a separate NFS RPC for each page (Mira #32: 1.15M minor faults on
+    CSK_RAW; 5x slowdown under parallel sweep contention). MADV_SEQUENTIAL
+    tells the kernel to read-ahead in larger chunks (matching C's mmap +
+    MAP_POPULATE / MADV_SEQUENTIAL usage in resamp.c — only 34K faults).
+
+    Linux-only; falls back silently on macOS/BSD or if MADV_SEQUENTIAL is
+    unavailable. `arr.base` is the underlying mmap.mmap object in current
+    numpy versions; older paths walk the .base chain.
+    """
+    try:
+        m = arr.base
+        # Walk to the bottom mmap.mmap object if there are intermediate views.
+        while m is not None and not isinstance(m, mmap.mmap):
+            m = getattr(m, "base", None)
+        if m is None:
+            return
+        madvise = getattr(m, "madvise", None)
+        advice = getattr(mmap, "MADV_SEQUENTIAL", None)
+        if madvise is None or advice is None:
+            return
+        madvise(advice)
+    except (AttributeError, OSError, ValueError):
+        # AttributeError: numpy version doesn't expose mmap object the same way
+        # OSError: kernel rejected the advise (older Linux, special FS)
+        # ValueError: mmap closed / zero-length
+        pass
 
 # ----- Optional Numba JIT --------------------------------------------------
 # Numba JIT'd inner-loop kernels close the bicubic/bisinc gap vs C.
@@ -1088,6 +1121,10 @@ def resamp(master_prm_path: str, aligned_prm_path: str,
         # mirror that with np.memmap of exact shape.
         sin_flat = np.memmap(slc_in_path, dtype=np.int16, mode="r",
                              shape=(ydims * 2 * xdims,), offset=0)
+        # Mira #35: MADV_SEQUENTIAL to avoid NFS per-page fault storms
+        # (1.15M -> ~34K minor faults; ~5x speedup under parallel sweep
+        # contention). Linux-only; harmless fallback on other platforms.
+        _advise_sequential(sin_flat)
 
     kernel = _dispatch_kernel(intrp)
 
