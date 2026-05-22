@@ -665,15 +665,22 @@ class TestGmtSurfacePyMultigrid(unittest.TestCase):
                         f"MG vs Jacobi RMS {rms:.4e} too large — "
                         f"FMG restriction/prolongation may be broken")
 
-    def test_multigrid_faster_than_plain_jacobi(self):
-        """On a grid large enough to amortise Jacobi's O(N^2) iteration
-        count, FMG must be > 5x faster than plain Jacobi.  Catches
-        regressions where multigrid silently falls back to single-level
-        relaxation (e.g. mg_max_level=0 default, or restriction returning
-        zeros).
+    def test_nested_iteration_completes_fast_on_medium_grid(self):
+        """The GS-SOR + stride-based nested iteration (mirrors surface.c's
+        smart_divide stride hierarchy) must solve a 201x201 grid in well
+        under a second on a modern CPU.  Catches regressions where the
+        nested-iteration scheduler degrades to single-stride (no coarse
+        warm-start), in which case GS-SOR alone needs O(N^1.5) sweeps and
+        wall time would balloon by an order of magnitude.
+
+        This test was previously a "FMG vs plain Jacobi" comparison.  The
+        current port (replacing Miras #20/#26/#33/#38) uses gmt's actual
+        GS-SOR + nested iteration unconditionally — the ``use_multigrid``
+        kwarg is silently accepted for back-compat but ignored.  So the
+        old apples-to-apples plain-Jacobi vs FMG ratio no longer applies;
+        the regression check shifts to absolute wall time.
         """
         rng = np.random.default_rng(11)
-        # 201x201 grid, 1000 scatter points — medium size
         N = 1000
         x = rng.uniform(0.0, 10.0, N)
         y = rng.uniform(0.0, 10.0, N)
@@ -682,36 +689,24 @@ class TestGmtSurfacePyMultigrid(unittest.TestCase):
         inc = (0.05, 0.05)  # 201x201
         tension = 0.5
 
-        # Warm up numba (JIT compile) — BOTH the plain-Jacobi inner
-        # kernel and the FMG path (which exercises restriction/
-        # prolongation), so that this test's wall-time ratio measures
-        # solver work, not first-call JIT compile cost.
-        _ = gmt_surface_py(x[:10], y[:10], z[:10],
-                          region=region, inc=(0.5, 0.5),
-                          tension=tension, max_iter=5,
-                          use_multigrid=False)
+        # Warm up numba (JIT compile) so the timing reflects solver work,
+        # not the first-call JIT.
         _ = gmt_surface_py(x[:50], y[:50], z[:50],
                           region=region, inc=(0.25, 0.25),
-                          tension=tension, max_iter=5,
-                          use_multigrid=True, mg_max_level=1)
+                          tension=tension, max_iter=5)
 
         t0 = time.time()
         _ = gmt_surface_py(x, y, z, region=region, inc=inc, tension=tension,
-                           omega=0.6, max_iter=2000, tol=1e-4,
-                           use_multigrid=False)
-        t_jac = time.time() - t0
+                           tol=1e-4)
+        t_solve = time.time() - t0
 
-        t0 = time.time()
-        _ = gmt_surface_py(x, y, z, region=region, inc=inc, tension=tension,
-                           omega=0.6, tol=1e-4,
-                           use_multigrid=True)
-        t_mg = time.time() - t0
-
-        print(f"\n[mg perf]  201x201  plain_jacobi={t_jac:.2f}s  "
-              f"multigrid={t_mg:.2f}s  speedup={t_jac/t_mg:.1f}x")
-        self.assertLess(t_mg * 5, t_jac,
-                        f"FMG only {t_jac/t_mg:.2f}x faster than plain Jacobi "
-                        f"(target >=5x); restriction/prolongation may be broken")
+        print(f"\n[nested-iter perf]  201x201  t={t_solve:.3f}s  "
+              f"(gmt surface ~0.1-0.3s on the same input)")
+        # 3 s is generous on a 201x201 grid — gmt itself solves in
+        # well under a second; a 10x py-vs-gmt slowdown still passes.
+        self.assertLess(t_solve, 3.0,
+                        f"201x201 took {t_solve:.2f}s — solver may have "
+                        f"degraded to single-stride GS-SOR (O(N^1.5))")
 
 
 @unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH — skipping benchmark")
