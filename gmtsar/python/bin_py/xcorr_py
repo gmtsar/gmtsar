@@ -35,12 +35,38 @@ Defaults: -freq, -nx 16, -ny 32, -xsearch 64, -ysearch 64,
 from __future__ import annotations
 
 import argparse
+import mmap
 import os
 import sys
 import time
 from dataclasses import dataclass, field
 
 import numpy as np
+
+
+def _advise_sequential(arr):
+    """Hint the kernel that this memmap will be read sequentially.
+
+    Mira #35 / #37: under NFS, np.memmap default access is per-4 KB-page
+    demand-fault, which triggers a separate NFS RPC for each page
+    (Mira #32: 1.15M minor faults; 5x slowdown under parallel sweep
+    contention). MADV_SEQUENTIAL tells the kernel to read-ahead in
+    larger chunks. Linux-only; falls back silently on macOS/BSD or if
+    MADV_SEQUENTIAL is unavailable.
+    """
+    try:
+        m = arr.base
+        while m is not None and not isinstance(m, mmap.mmap):
+            m = getattr(m, "base", None)
+        if m is None:
+            return
+        madvise = getattr(m, "madvise", None)
+        advice = getattr(mmap, "MADV_SEQUENTIAL", None)
+        if madvise is None or advice is None:
+            return
+        madvise(advice)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 try:
     from scipy.fft import fft2 as _fft2, ifft2 as _ifft2, fft as _fft1, ifft as _ifft1
@@ -177,8 +203,10 @@ def handle_prm(xc: XCorr, m_path: str, a_path: str) -> None:
     sz_a = os.path.getsize(xc.data2_path) // (xc.s_nx * 4)
     xc.mm1 = np.memmap(xc.data1_path, dtype=np.int16, mode="r",
                        shape=(sz_m, xc.m_nx, 2))
+    _advise_sequential(xc.mm1)  # Mira #37: avoid NFS per-page fault storms
     xc.mm2 = np.memmap(xc.data2_path, dtype=np.int16, mode="r",
                        shape=(sz_a, xc.s_nx, 2))
+    _advise_sequential(xc.mm2)  # Mira #37: avoid NFS per-page fault storms
 
     print(f" {xc.m_nx} {xc.m_ny} {xc.s_nx} {xc.s_ny} "
           f"{xc.x_offset} {xc.y_offset} {xc.astretcha:f}", file=sys.stderr)
