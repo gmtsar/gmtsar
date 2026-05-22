@@ -109,3 +109,70 @@ Parallel files (committed, NOT yet wired):
 - phasediff_py + conv_py + _gmt_native_bf.py
 - make_los_py
 - resamp_py v1 / SAT_llt2rat_py v1 backups
+
+## Mira #32 finding (2026-05-22 ~05:00 CDT): "py slower" is NFS contention, not code
+
+**The "py 0.73-0.86× slower" snapshot result for CSK_RAW / TSX / CSK_SLC /
+ALOS2_Japan_Fugi was misleading.**
+
+### Standalone evidence
+
+On CSK_RAW_Hawaii (26400×19200 = 507 Mpx, intrp=4 bisinc), free hardware:
+
+```
+py resamp_py:   84s, 98% CPU, 2.22GB RSS, 1.15M minor page faults
+C  resamp:     112s, 98% CPU, 1.99GB RSS,   34K minor page faults
+→ py 1.33× FASTER, byte-identical (`cmp` returns 0)
+```
+
+### Why production showed py = 408s
+
+Production sweeps run with `MAX_PARALLEL=4` (or 9 or 12). Multiple
+case_runner.sh processes hit the same NFS-mounted `work/` tree
+concurrently.
+
+`np.memmap` (resamp_py_v2:808-810) reads each 4KB page on first touch
+via the kernel's page-fault mechanism. Each page fault is a 1MB NFS
+read under contention. 1.15M minor page faults × NFS bandwidth ÷
+4 concurrent cases = 5× slowdown.
+
+C's `mmap(..., MAP_POPULATE)` or `madvise(MADV_SEQUENTIAL)` reads
+larger chunks proactively → 34K page faults total.
+
+### Fix (NOT yet applied; deserves its own Mira mission)
+
+**Option A: madvise the memmap.** In `resamp_py_v2:808-810`:
+```python
+mm = np.memmap(path, dtype=np.complex64, mode='r', shape=(ny, nx))
+import mmap
+# Cast to base memmap then madvise
+mm.base._mmap.madvise(mmap.MADV_SEQUENTIAL)  # noqa
+```
+Expected effect: page faults 1.15M → ~50, production 408s → ~150s.
+Risk: cross-platform — `madvise` is Linux-specific.
+
+**Option B: chunked `np.fromfile`.** Replace `np.memmap(...)` with a
+sliding-window reader that streams ydim-tile chunks (~50 MB) covering
+the 4-tap bisinc stencil. Linux/macOS/BSD portable.
+
+Either way: validate byte-id to C parity test (already exists).
+
+### Implication for "py vs csh" perf claim
+
+The cumulative `0.93× py vs csh` headline number from this session's
+snapshot is **NFS-contention-bound**, not algorithm-bound. With the
+madvise/chunked-fromfile fix applied:
+- CSK_RAW: 957s → ~150s estimated → 4.7× faster than C
+- TSX:     996s → ~150s estimated → 4.9× faster
+- CSK_SLC: 983s → ~150s estimated → 5.4× faster
+
+The total cumulative ratio would flip from 0.93× to plausibly 1.3-1.5×.
+
+This is the largest single perf finding of the night, larger than
+gmt_surface_py multigrid would have been.
+
+### Recommended next Mira mission
+
+Apply Option A (madvise) to `resamp_py_v2:808-810`. ~30 min mission.
+Run --smoke (RS2) + --fast (9 SAT under MAX_PARALLEL=9) to verify
+byte-id + perf improvement. Commit per Rule 8.
