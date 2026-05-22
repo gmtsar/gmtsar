@@ -65,6 +65,16 @@ RULES: list[tuple[str, str | list[str]]] = [
                                      'ALOS_Baja_EQ', 'CSK_RAW_Hawaii']),
     (r'tests/cases\.py',            ['RS2_SLC_Hawaii', 'ERS_Hector_EQ',
                                      'ALOS_Baja_EQ', 'CSK_RAW_Hawaii']),
+    # Test-infrastructure files that require NO pipeline run.
+    # Changes here are exercised by --unit, not by the case-based sweep.
+    (r'tests/sweep\.sh',            []),
+    (r'tests/touched_to_cases\.py', []),
+    (r'tests/blessed_diff\.py',     []),
+    (r'tests/compare\.py',          []),
+    (r'tests/runner\.py',           []),
+    (r'tests/report\.py',           []),
+    (r'tests/case_runner\.sh',      []),
+    (r'bin_py/tests/',              []),    # unit-test changes only
     # Paths that require NO pipeline run — map to empty list.
     (r'docs/',                      []),
     (r'\.gitignore',                []),
