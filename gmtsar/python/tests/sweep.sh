@@ -3,31 +3,168 @@
 # Designed for an unattended multi-hour run.
 #
 # Tier control (sets TEST_TIER, picked up by cases.py):
-#   bash sweep.sh                 # full sweep (~8 h)
+#   bash sweep.sh                 # full sweep (~3 h)
 #   bash sweep.sh --smoke         # 1 case (~3 min, pipeline alive check)
-#   bash sweep.sh --fast          # 4 small cases (~30 min, covers main paths)
+#   bash sweep.sh --fast          # 9 SAT families (~30-40 min)
+#   bash sweep.sh --unit          # pytest unit tests only (~3-5 min, no data needed)
+#   bash sweep.sh --sample [N]    # N random cases seeded from HEAD SHA (default 3)
+#   bash sweep.sh --smart_fast    # change-aware: run only cases touched by HEAD~1..HEAD
 #
 # Logs: gmtsar/python/work/sweep.log + per-case work/{python,csh}_test/<case>/log.txt
 
 set -u
 
+_SAMPLE_N=3   # default for --sample when N not supplied
+_MODE=''      # set by --unit / --sample / --smart_fast; empty = normal sweep
+
 case ${1:-} in
-    --smoke|smoke) export TEST_TIER=smoke ;;
-    --fast|fast)   export TEST_TIER=fast  ;;
-    --full|full|'') export TEST_TIER=full ;;
+    --smoke|smoke)       export TEST_TIER=smoke ;;
+    --fast|fast)         export TEST_TIER=fast  ;;
+    --full|full|'')      export TEST_TIER=full  ;;
+    --unit|unit)         _MODE=unit ;;
+    --sample|sample)
+        _MODE=sample
+        # Optional second arg is N
+        if [ -n "${2:-}" ] && echo "${2}" | grep -qE '^[0-9]+$'; then
+            _SAMPLE_N="${2}"
+        fi
+        ;;
+    --smart_fast|smart_fast) _MODE=smart_fast ;;
     -h|--help)
-        sed -n '2,11p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $1 (try --smoke / --fast / --full / --help)" >&2; exit 2 ;;
+        sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1 (try --smoke / --fast / --full / --unit / --sample [N] / --smart_fast / --help)" >&2; exit 2 ;;
 esac
 
 export GMTSAR=/home/staff/dliu/gmtsar
-export PATH=$GMTSAR/bin:$PATH
+# Prepend gmtsar bin AND the conda gmtsar env so `gmt` is on PATH for
+# subprocess calls inside the unit tests (required by test_dem2topo_ra
+# TestWiredFlipudParity fallback path and any test that shells out to gmt).
+export PATH=$GMTSAR/bin:/home/staff/dliu/anaconda3/envs/gmtsar/bin:$PATH
 PY=/home/staff/dliu/anaconda3/envs/gmtsar/bin/python3
 DATASET_DIR=$GMTSAR/gmtsar/python/work/dataset
 WORK=$GMTSAR/gmtsar/python/work
 LOG=$WORK/sweep.log
 TESTSYS=$GMTSAR/gmtsar/python/tests
 mkdir -p "$DATASET_DIR" "$WORK"
+
+# ── Tier 0: --unit ────────────────────────────────────────────────────────────
+# Runs pytest over bin_py/tests/ without any SAR data downloads.
+# Pytest is in anaconda_knox (which ships pytest 7.4.4); the gmtsar conda env
+# python3 is missing pytest.  We use the knox python3 for collection + run,
+# but the gmtsar PATH is already set above so gmt is reachable by subprocesses.
+_PYTEST=/home/staff/dliu/anaconda_knox/bin/python3
+_UNIT_TESTS=$GMTSAR/gmtsar/python/bin_py/tests
+
+if [ "${_MODE:-}" = "unit" ]; then
+    mkdir -p "$WORK"
+    SUMMARY_UNIT="$WORK/sweep_summary_unit.md"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === unit test run started ===" | tee -a "$LOG"
+    t0=$SECONDS
+    # Run pytest; capture output; tee to log so the unit run is auditable.
+    UNIT_LOG="$WORK/sweep_unit.log"
+    "$_PYTEST" -m pytest "$_UNIT_TESTS" -x --tb=short -q 2>&1 | tee "$UNIT_LOG"
+    pytest_rc=${PIPESTATUS[0]}
+    wall=$((SECONDS - t0))
+    # Parse pass/fail/skip counts from the last summary line ("X passed, Y skipped...").
+    summary_line=$(grep -E '^[0-9]+ (passed|failed)' "$UNIT_LOG" | tail -1)
+    passed=$(echo "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)
+    failed=$(echo "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)
+    skipped=$(echo "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)
+    {
+        echo "# Unit test summary"
+        echo ""
+        echo "_generated $(date)_"
+        echo ""
+        echo "| Metric | Value |"
+        echo "|---|---|"
+        echo "| wall time (s) | $wall |"
+        echo "| passed | ${passed:-0} |"
+        echo "| failed | ${failed:-0} |"
+        echo "| skipped | ${skipped:-0} |"
+        echo "| exit code | $pytest_rc |"
+        echo ""
+        echo "## pytest invocation"
+        echo ""
+        echo "\`\`\`"
+        echo "$_PYTEST -m pytest $_UNIT_TESTS -x --tb=short -q"
+        echo "\`\`\`"
+        echo ""
+        echo "## Full output"
+        echo ""
+        echo "\`\`\`"
+        cat "$UNIT_LOG"
+        echo "\`\`\`"
+    } > "$SUMMARY_UNIT"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] unit summary → $SUMMARY_UNIT (${wall}s, rc=$pytest_rc)" | tee -a "$LOG"
+    exit $pytest_rc
+fi
+
+# ── Tier 5: --sample N ────────────────────────────────────────────────────────
+# Pick _SAMPLE_N cases at random, seeded deterministically from HEAD SHA so the
+# selection is reproducible (same commit → same N cases every run).
+if [ "${_MODE:-}" = "sample" ]; then
+    HEAD_SHA=$(cd "$TESTSYS" && git rev-parse HEAD 2>/dev/null || echo "deadbeef")
+    export TEST_TIER=full   # let cases.py build the full 21-case pool first
+    # Ask cases.py for the full enabled list, then sample deterministically.
+    all_cases=$( cd "$TESTSYS" && "$PY" -c "
+from cases import caseNameList
+print(' '.join(caseNameList))
+" )
+    # Convert to array for indexed access.
+    read -ra _ALL_ARR <<< "$all_cases"
+    total=${#_ALL_ARR[@]}
+    if [ "$_SAMPLE_N" -ge "$total" ]; then
+        # Requesting more than available — just run all.
+        export TEST_CASES=$(echo "$all_cases" | tr ' ' ',')
+    else
+        # Deterministic Fisher-Yates using SHA-seeded arithmetic.
+        # Seed: take first 8 hex chars of SHA → decimal.
+        seed_hex="${HEAD_SHA:0:8}"
+        seed_dec=$(( 16#$seed_hex ))
+        # Pure-bash LCG (Numerical Recipes parameters): enough for N≤21.
+        lcg_state=$seed_dec
+        lcg_next() { lcg_state=$(( (lcg_state * 1664525 + 1013904223) & 0xFFFFFFFF )); echo $lcg_state; }
+        # Partial Fisher-Yates: pick _SAMPLE_N indices.
+        indices=( $(seq 0 $((total - 1))) )
+        picked=()
+        for i in $(seq 0 $((_SAMPLE_N - 1))); do
+            r=$(lcg_next)
+            rem=$(( total - i ))
+            j=$(( r % rem + i ))
+            # swap indices[i] and indices[j]
+            tmp=${indices[$i]}
+            indices[$i]=${indices[$j]}
+            indices[$j]=$tmp
+            picked+=( "${_ALL_ARR[${indices[$i]}]}" )
+        done
+        export TEST_CASES=$(IFS=,; echo "${picked[*]}")
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] --sample $_SAMPLE_N seed=$HEAD_SHA → cases: $TEST_CASES" | tee -a "$LOG"
+    # Fall through to the main sweep logic with TEST_CASES set.
+    unset _MODE
+fi
+
+# ── Tier 2: --smart_fast ─────────────────────────────────────────────────────
+# Map files changed in HEAD~1..HEAD to a case subset via touched_to_cases.py.
+if [ "${_MODE:-}" = "smart_fast" ]; then
+    export TEST_TIER=full   # pool for cases.py
+    changed_files=$(cd "$TESTSYS/.." && git diff HEAD~1..HEAD --name-only 2>/dev/null || echo "")
+    if [ -z "$changed_files" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: no diff HEAD~1..HEAD (initial commit?); running smoke tier" | tee -a "$LOG"
+        export TEST_TIER=smoke
+        unset _MODE
+    else
+        # stderr carries warnings (unrecognised paths etc.); only stdout is case list.
+        selected=$(cd "$TESTSYS/.." && "$PY" "$TESTSYS/touched_to_cases.py" <<< "$changed_files" 2>>"$LOG")
+        if [ -z "$selected" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: changed files map to 0 cases (docs/config only) — no pipeline run needed" | tee -a "$LOG"
+            exit 0
+        fi
+        export TEST_CASES="$selected"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: changed files → cases: $TEST_CASES" | tee -a "$LOG"
+        unset _MODE
+    fi
+fi
 
 # Derive case list + per-case (path, url) from cases.py in one shot — single
 # source of truth for archive extension (.tar.gz vs .tgz) and URL.
@@ -277,6 +414,22 @@ log "all case runs complete"
 # Final summary: per-case download / status / timings / SUCCESS|FAIL counts.
 "$PY" "$TESTSYS/report.py" >> "$LOG" 2>&1
 log "summary written to $WORK/sweep_summary.md"
+
+# Tier 3: blessed scorecard diff — compares python_test outputs against the
+# committed golden file in docs/blessed_scorecards/<latest_tag>/<case>.json.
+# Non-fatal: a blessed diff failure is surfaced in the log and the markdown
+# report, but does NOT override the sweep exit code (that is set by the case
+# runs via runner.py).  A dedicated --blessed-check CI job can gate on
+# blessed_diff.py directly if needed.
+BLESSED_DIFF_TOOL="$TESTSYS/blessed_diff.py"
+if [ -f "$BLESSED_DIFF_TOOL" ]; then
+    log "Running blessed scorecard diff..."
+    "$PY" "$BLESSED_DIFF_TOOL" >> "$LOG" 2>&1 \
+        && log "blessed diff PASS" \
+        || log "WARN: blessed diff reported regressions — see $WORK/blessed_diff_*.md"
+else
+    log "WARN: $BLESSED_DIFF_TOOL missing — skipping blessed scorecard diff"
+fi
 
 # project_rules.md #7 — every full sweep MUST emit a perf snapshot under
 # docs/perf_snapshots/ so the run is reproducible/auditable. Tier becomes a

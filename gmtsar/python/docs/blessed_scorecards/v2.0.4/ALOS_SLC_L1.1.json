@@ -1,0 +1,21 @@
+{
+  "case": "ALOS_SLC_L1.1",
+  "tag": "v2.0.4",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS_SLC_L1.1.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2010095_2010141/corr_ll.png": "440fe6a86a0f54046bf12f9afdf58edb",
+    "intf/2010095_2010141/display_amp_ll.png": "804d7e204af8057c92f9c60fddde9f49",
+    "intf/2010095_2010141/phasefilt_mask_ll.png": "f2856b2924e26f4e3ce4aa76d8aaea61",
+    "intf/2010095_2010141/corr_ll.grd": "10c5ef9ed85c1e8bad05e144476db008",
+    "intf/2010095_2010141/phasefilt.grd": "b95c210ec0c70e39dad188cae8149275",
+    "intf/2010095_2010141/filtcorr.grd": "d70b97da107c910de61a6b12950b9a0c"
+  }
+}
