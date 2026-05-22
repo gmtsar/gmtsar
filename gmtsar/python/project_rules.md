@@ -132,3 +132,31 @@ the same code against the same hardware must reproduce within ±10% wall
 time (NFS I/O variance dominant); larger deviations are a signal the
 underlying code or environment has drifted and must be investigated, not
 papered over.
+
+## 8. Merge only after a feature passes ALL tests
+
+No feature, optimization, or refactor merges into `master` until the full
+21-case sweep (or the relevant subset of cases the feature touches)
+produces **all-PASS** scorecards.
+
+Concretely:
+
+- A consilium-agent worktree branch is reviewed but NOT merged until
+  the user has seen a strict-single-thread sweep snapshot showing the
+  feature does not regress any of the currently-passing cases.
+- "Looks good in isolated test" is necessary but not sufficient.
+  Isolated kernel parity does not guarantee in-sweep parity — see the
+  NISAR Mira #15 → #17 → #18 saga where each isolated fix verified but
+  in-sweep behaviour kept diverging.
+- The merge candidate must pass at least the 3-case fast tier
+  (RS2_SLC_Hawaii + NISAR_Ethiopia + ALOS_SLC_L1.1) before any
+  optimization-targeted feature can be evaluated; for a refactor or
+  GMT-port change, all 21 cases must pass.
+- If a merge candidate breaks even one case, it goes back to the
+  consilium agent (or is reverted) — do not paper over with
+  per-case threshold loosening.
+
+This rule sits on top of rule 0 (pass all tests) but specifically scopes
+the merge decision: pre-merge passing is the gate, not post-merge
+debugging. We do not merge with the intent of "I'll fix the regression
+in a follow-up commit" — that's how cascading bugs land in master.
