@@ -22,6 +22,7 @@
 import sys, os, re, configparser
 import subprocess, glob, shutil
 from gmtsar_lib import *
+from grdsample_wrapper import grdsample as _grdsample_inproc
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,20 @@ def snaphu_interp_unwrap(threshold_snaphu, defomax, region=None):
                        defomax=str(defomax), region=region)
 
 
+def _phase_patch_inc():
+    """Return (x_inc, y_inc, node_offset) of phase_patch.grd in cwd.
+
+    Mirrors `gmt grdinfo -I phase_patch.grd` for the wire-in path. Used
+    by the landmask resample sites that previously read the gmt subprocess
+    output and embedded it as a CLI string.
+    """
+    from gmt_grd_io import read_gmt_grd
+    _d, x, y, info = read_gmt_grd('phase_patch.grd')
+    dx = float(x[1] - x[0]) if len(x) > 1 else 0.0
+    dy = float(y[1] - y[0]) if len(y) > 1 else 0.0
+    return dx, dy, int(info.get('node_offset', 0))
+
+
 def _snaphu_run(interp, threshold, defomax, region):
     """Shared core for snaphu_unwrap / snaphu_interp_unwrap.
 
@@ -107,22 +122,32 @@ def _snaphu_run(interp, threshold, defomax, region):
 
     # --- landmask --------------------------------------------------------
     if check_file_report('landmask_ra.grd') is True:
+        # GMTSAR_GRDSAMPLE_PY=1 opts into the in-process port (Mira #54
+        # wire-in). Default OFF: byte-id parity verified, but the
+        # NaN-heavy 4×4 bicubic workload on real landmask grids is
+        # ~2.7× slower than gmt C. See utils/grdsample_wrapper.py
+        # docstring for full rationale; opt-in retained for the iono
+        # path (smaller, NaN-free, 1.7× faster in-process).
+        # Default interp=bicubic matches gmt grdsample CLI default (-nc).
         if region is not None:
-            par_tmp = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
-                                       False, 0, -100000)
-            run(f'gmt grdsample landmask_ra.grd -R{region} {par_tmp} '
-                f'-Glandmask_ra_patch.grd')
+            # csh: gmt grdsample landmask_ra.grd -R<region> -I<inc(phase)> -G...
+            dx_phase, dy_phase, _ = _phase_patch_inc()
+            r = [float(v) for v in region.split('/')]
+            _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                              region=(r[0], r[1], r[2], r[3]),
+                              x_inc=dx_phase, y_inc=dy_phase)
         else:
             # Divergence (2): snaphu.csh uses -Rphase_patch.grd; snaphu_interp.csh
             # uses the grdinfo-derived `-I dx/dy` instead. Preserve both.
             if interp == 0:
-                run('gmt grdsample landmask_ra.grd -Rphase_patch.grd '
-                    '-Glandmask_ra_patch.grd')
+                # csh: gmt grdsample landmask_ra.grd -Rphase_patch.grd -G...
+                _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                                  ref_grd='phase_patch.grd')
             else:
-                par = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
-                                       False, 0, -100000)
-                run(f'gmt grdsample landmask_ra.grd {par} '
-                    f'-Glandmask_ra_patch.grd')
+                # csh: gmt grdsample landmask_ra.grd -I<inc(phase)> -G...
+                dx_phase, dy_phase, _ = _phase_patch_inc()
+                _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                                  x_inc=dx_phase, y_inc=dy_phase)
         run(f'gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = '
             f'phase_patch.grd {V}')
 
@@ -270,16 +295,22 @@ def snaphu():
     print('SNAPHU: ceate landmask ... ...')
     
     if check_file_report('landmask_ra.grd')==True:
+        # GMTSAR_GRDSAMPLE_PY=1 opts into in-process port (default OFF;
+        # see grdsample_wrapper.py docstring).
         if n==5:
-            par_tmp = subprocess.run(["gmt","grdinfo","-I","phase_patch.grd"],stdout=subprocess.PIPE).stdout.decode('utf-8').strip()
-            print('SNAPHU: par_tmp is ', par_tmp)
-            run('gmt grdsample landmask_ra.grd -R'+sys.argv[4]+' '+par_tmp+' -Glandmask_ra_patch.grd')
+            dx_phase, dy_phase, _ = _phase_patch_inc()
+            r = [float(v) for v in sys.argv[4].split('/')]
+            _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                              region=(r[0], r[1], r[2], r[3]),
+                              x_inc=dx_phase, y_inc=dy_phase)
         else:
             if interp==0:
-                run('gmt grdsample landmask_ra.grd -Rphase_patch.grd -Glandmask_ra_patch.grd')
+                _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                                  ref_grd='phase_patch.grd')
             elif interp==1:
-                par = catch_output_cmd(["gmt","grdinfo","-I","phase_patch.grd"],False,-999,-100000)
-                run('gmt grdsample landmask_ra.grd '+par+' -Glandmask_ra_patch.grd')
+                dx_phase, dy_phase, _ = _phase_patch_inc()
+                _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
+                                  x_inc=dx_phase, y_inc=dy_phase)
         print(' ')
         run('gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = phase_patch.grd '+V)
 

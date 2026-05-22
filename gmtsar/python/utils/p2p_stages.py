@@ -23,6 +23,7 @@ import time
 from gmtsar_lib import *
 from phase_profile import time_run, _BINARY_TIMES
 from snaphu import snaphu_unwrap, snaphu_interp_unwrap
+from grdsample_wrapper import grdsample as _grdsample_inproc
 
 
 def _snaphu_py_enabled():
@@ -680,8 +681,14 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
             f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
         os.chdir(f"../../intf/{intfSubDirName}")
         file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
-        run('grdsample ../../iono_phase/iono_correction/ph_iono_orig.grd '
-            '-Rphasefilt_non_corrected.grd -Gph_iono.grd')
+        # GMTSAR_GRDSAMPLE_PY=1 opts into in-process port (Mira #54;
+        # default OFF — see grdsample_wrapper.py). The iono path is
+        # not exercised by any regression case (no correct_iono=1
+        # fixture); byte-id parity verified by unit test
+        # bin_py/tests/test_grdsample_wrapper.py:TestIonoWireIn.
+        _grdsample_inproc('../../iono_phase/iono_correction/ph_iono_orig.grd',
+                          'ph_iono.grd',
+                          ref_grd='phasefilt_non_corrected.grd')
         run('grdmath phasefilt_non_corrected.grd ph_iono.grd SUB PI ADD '
             '2 PI MUL MOD PI SUB = phasefilt.grd')
         run('grdimage phasefilt.grd -JX6.5i -Bxaf+lRange -Byaf+lAzimuth '
