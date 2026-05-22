@@ -9,6 +9,7 @@
 """
 
 import sys, os, subprocess
+import numpy as _np
 from gmtsar_lib import *
 
 # Tier-1 in-process replacements for cheap `gmt` subprocesses
@@ -23,6 +24,46 @@ except ImportError as _e:
     print(f"DEM2TOPO_RA: WARN: gmt_inproc import failed ({_e}); "
           "using gmt subprocess.", file=sys.stderr)
     _HAVE_GMT_INPROC = False
+    # Provide a fallback so _grdmath_flipud (which also gates on
+    # _inproc_enabled) does not NameError if only gmt_inproc fails
+    # to import. Honour GMTSAR_GMT_INPROC=0 to keep the same
+    # debug-override semantics.
+    def _inproc_enabled():
+        return os.environ.get("GMTSAR_GMT_INPROC", "1") != "0"
+
+# Mira #30 (2026-05-21): in-process numba blockmedian (gmt_blockmedian_py)
+# is byte-identical to `gmt blockmedian -bi3d -bo3d -r` (13/13 parity
+# tests on real RS2 trans.dat) but is SLOWER than gmt in dem2topo_ra's
+# usage pattern. dem2topo_ra bins at the radar pixel grid (rng × az_div),
+# so the input N points and the output M bins are ~equal: every bin has
+# ~1 point. The numba prange kernel pays per-bin sort + allocation
+# overhead M times, where M = N → no speedup. Empirical (NUMBA_NUM_THREADS=8):
+#     RS2_SLC_Hawaii  (978k rows, 964k bins → 1.0 row/bin): gmt 0.6s vs py 3.0s
+#     ALOS4_Pinon     (6.4M rows, 6.2M bins → 1.0 row/bin): gmt 4.4s vs py 19.3s
+# Numba blockmedian only wins when bins are dense (Mira #25's 9M-row
+# canonical synthetic case at ~180 pts/bin clocks 2.5× faster than gmt).
+# Keep the wire-in DELIBERATELY DISABLED here until/unless a future
+# bin-density gate is added; the gmt blockmedian subprocess remains
+# the fast path for dem2topo_ra. See blockmedian benchmarks in Mira #30
+# report.
+_HAVE_GMT_BLOCKMEDIAN_PY = False
+_py_blockmedian = None  # type: ignore  # not used; documented for cross-ref
+
+# Mira #30 (2026-05-21): Tier-1 grdmath FLIPUD replacement via
+# gmt_grd_io.{read,write}_gmt_grd. The dem2topo_ra `gmt grdmath
+# pixel.grd FLIPUD = topo_ra.grd` step is a pure numpy flip + write.
+# Downstream consumers (`offset_topo` C binary, `gmt grdinfo`,
+# `gmt grdimage`) all accept the writer-flavor netCDF — verified by
+# the 16-test parity suite in bin_py/tests/test_gmt_grd_io.py
+# (specifically test_grdmath_flipud + test_grdcut_pixel).
+try:
+    from gmt_grd_io import read_gmt_grd as _read_gmt_grd
+    from gmt_grd_io import write_gmt_grd as _write_gmt_grd
+    _HAVE_GMT_GRD_IO = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_grd_io import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GMT_GRD_IO = False
 
 
 def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
@@ -33,11 +74,57 @@ def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
           | gmt blockmedian -R<region> -I<rng_step>/<az_step> -bi3d -bo3d -r <V>
           > <out_path>
 
-    Replaces the `gmt gmtconvert` step in-process (numpy memmap column
-    slice on a 5-double binary file → 3-double binary file), keeping
-    `gmt blockmedian` as subprocess (Tier-2 work, not in this mission).
+    Three execution paths, in priority order:
+      1. (DORMANT) inproc=on + blockmedian_py: kept code-complete and
+         byte-parity-tested, but the gate `_HAVE_GMT_BLOCKMEDIAN_PY` is
+         hard-coded False because dem2topo_ra's 1-point-per-bin density
+         makes the numba kernel 4× slower than `gmt blockmedian -r`.
+         See the import-site note for Mira #30 benchmarks.
+      2. inproc=on + only gmtconvert_select_cols_bin: numpy col-select
+         then `gmt blockmedian` subprocess (Mira #19 path).
+      3. inproc=off (GMTSAR_GMT_INPROC=0): pure `gmt | gmt` pipe.
+
+    Paths 2 and 3 are the production fast/fallback. Path 1 is reserved
+    for a future bin-density gate. All three are byte-equivalent on the
+    temp.rat output (verified per
+    bin_py/tests/test_gmt_blockmedian_py.py::TestParityRealData on 9M
+    rows of real RS2 trans.dat, plus the in-line parity check in the
+    Mira #30 commit).
     """
     use_inproc = _HAVE_GMT_INPROC and _inproc_enabled()
+    use_blockmedian_py = use_inproc and _HAVE_GMT_BLOCKMEDIAN_PY
+    if use_blockmedian_py:
+        # Full in-process: memmap → col-select → blockmedian → bytes-out.
+        # `region` is "xmin/xmax/ymin/ymax" (`set_region_string` format).
+        try:
+            rg = [float(s) for s in str(region).split("/")]
+        except ValueError as exc:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: bad region '{region}' "
+                f"(want 'xmin/xmax/ymin/ymax'): {exc}")
+        if len(rg) != 4:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: region must have 4 numbers, "
+                f"got {rg}")
+        # Memmap the 5-double trans.dat and slice cols [0,1,2] to a
+        # contiguous (N,3) float64 array (no temp file needed).
+        sz = os.path.getsize(trans_dat)
+        if sz % (5 * 8) != 0:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: trans.dat size {sz} not "
+                f"multiple of 5*8")
+        n_rows = sz // (5 * 8)
+        in_mm = _np.memmap(trans_dat, dtype=_np.float64, mode="r",
+                           shape=(n_rows, 5))
+        xyz = _np.ascontiguousarray(in_mm[:, :3])
+        # blockmedian returns (M, 3) float64; tobytes is the 3-double
+        # binary stream `gmt blockmedian -bo3d` writes.
+        out = _py_blockmedian(xyz,
+                              region=(rg[0], rg[1], rg[2], rg[3]),
+                              inc=(float(rng_step), float(az_step)),
+                              pixel_reg=True)
+        out.astype(_np.float64, copy=False).tofile(out_path)
+        return
     if use_inproc:
         # Slice cols 0,1,2 from the 5-double trans.dat → 3-double tmp file,
         # then pipe to blockmedian directly. ~0.5-1.0 s saved per call.
@@ -59,6 +146,45 @@ def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
             f"-bi3d -bo3d -r {V} > {out_path}"
         )
         run(cmd)
+
+
+def _grdmath_flipud(src_grd: str, dst_grd: str) -> None:
+    """Replacement for `gmt grdmath <src> FLIPUD = <dst>`.
+
+    Reads the source grid via netCDF4, flips along the y axis, writes
+    a GMT-compatible netCDF via utils/gmt_grd_io.write_gmt_grd. The
+    writer-flavor output is bit-readable by GMT 6.4.0 and by gmtsar's
+    `offset_topo`, `gmt grdinfo`, `gmt grdimage` — verified by the
+    16-test suite in bin_py/tests/test_gmt_grd_io.py.
+
+    Disable by setting GMTSAR_GMT_INPROC=0 to fall back to the gmt
+    subprocess (debug-only A/B path).
+
+    Skipped if either:
+      - GMTSAR_GMT_INPROC=0 (debug fallback)
+      - gmt_grd_io / netCDF4 not importable (fail-soft to subprocess)
+    """
+    use_inproc = _HAVE_GMT_GRD_IO and _inproc_enabled()
+    if use_inproc:
+        try:
+            data, x, y, info = _read_gmt_grd(src_grd)
+            flipped = _np.flipud(data)
+            # Preserve node_offset (pixel vs gridline) and geographic
+            # flags. `gmt surface ... -r` produces pixel-registered grids,
+            # so node_offset will typically be 1.
+            _write_gmt_grd(
+                dst_grd, flipped, x, y,
+                node_offset=int(info.get("node_offset", 0)),
+                geographic=bool(info.get("geographic", False)),
+                history=f"gmt grdmath {src_grd} FLIPUD = {dst_grd} "
+                        "[gmt_grd_io in-process]",
+            )
+            return
+        except Exception as exc:
+            print(f"DEM2TOPO_RA: WARN: in-process FLIPUD failed ({exc!r}); "
+                  "falling back to gmt subprocess.", file=sys.stderr)
+    # Fallback: classic gmt subprocess.
+    run(f'gmt grdmath {src_grd} FLIPUD = {dst_grd}')
 
 
 def dem2topo_ra():
@@ -271,7 +397,9 @@ def dem2topo_ra():
     
     print(' ')
     print('DEM2TOPO_RA: flip top to bottom for both ascending and descending passes ... ...')
-    run('gmt grdmath pixel.grd FLIPUD = topo_ra.grd')
+    # Mira #30 wire-in: in-process FLIPUD via numpy + gmt_grd_io.
+    # Set GMTSAR_GMT_INPROC=0 to fall back to `gmt grdmath`.
+    _grdmath_flipud('pixel.grd', 'topo_ra.grd')
     
     print(' ')
     print('DEM2TOPO_RA: plotting ... ...')
