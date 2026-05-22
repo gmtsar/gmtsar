@@ -24,6 +24,27 @@ import subprocess, glob, shutil
 from gmtsar_lib import *
 from grdsample_wrapper import grdsample as _grdsample_inproc
 
+# Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
+# Default ON per Rule 10 carve-out (byte-id to gmt C + 3.3× faster file→file).
+# Set GMTSAR_GRDCUT_PY=0 to fall back to the gmt subprocess for A/B parity
+# debugging.
+try:
+    from grdcut_wrapper import grdcut_file as _grdcut_file
+    _HAVE_GRDCUT_PY = True
+except ImportError as _e:
+    print(f"SNAPHU: WARN: grdcut_wrapper import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GRDCUT_PY = False
+
+
+def _grdcut(in_grd: str, out_grd: str, region) -> None:
+    """Cut ``in_grd`` to ``region`` → ``out_grd``. Honours
+    GMTSAR_GRDCUT_PY (default ON via wrapper; subprocess fallback)."""
+    if _HAVE_GRDCUT_PY:
+        _grdcut_file(in_grd, out_grd, region=region)
+    else:
+        run(f'gmt grdcut {in_grd} -R{region} -G{out_grd}')
+
 
 # ---------------------------------------------------------------------------
 # Native Python entry points (called from utils/p2p_stages.py)
@@ -112,9 +133,10 @@ def _snaphu_run(interp, threshold, defomax, region):
 
     # --- prepare files (csh: gmt grdcut/ln -s mask/corr/phase) ----------
     if region is not None:
-        run(f'gmt grdcut mask.grd -R{region} -Gmask_patch.grd')
-        run(f'gmt grdcut corr.grd -R{region} -Gcorr_patch.grd')
-        run(f'gmt grdcut phasefilt.grd -R{region} -Gphase_patch.grd')
+        # Mira (2026-05-22): in-process grdcut.
+        _grdcut('mask.grd',       'mask_patch.grd',  region)
+        _grdcut('corr.grd',       'corr_patch.grd',  region)
+        _grdcut('phasefilt.grd',  'phase_patch.grd', region)
     else:
         file_shuttle('mask.grd', 'mask_patch.grd', 'link')
         file_shuttle('corr.grd', 'corr_patch.grd', 'link')
@@ -154,7 +176,8 @@ def _snaphu_run(interp, threshold, defomax, region):
     # --- user-defined mask ----------------------------------------------
     if check_file_report('mask_def.grd') is True:
         if region is not None:
-            run(f'gmt grdcut mask_def.grd -R{region} -Gmask_def_patch.grd')
+            # Mira (2026-05-22): in-process grdcut.
+            _grdcut('mask_def.grd', 'mask_def_patch.grd', region)
         else:
             file_shuttle('mask_def.grd', 'mask_def_patch.grd', 'cp')
         run(f'gmt grdmath corr_patch.grd mask_def_patch.grd MUL = '
@@ -283,9 +306,10 @@ def snaphu():
     
     print('SNAPHU: prepare the files adding the correlation mask ... ...')
     if n==5:
-        run('gmt grdcut mask.grd -R'+sys.argv[4]+' -Gmask_patch.grd')
-        run('gmt grdcut corr.grd -R'+sys.argv[4]+' -Gcorr_patch.grd')
-        run('gmt grdcut phasefilt.grd -R'+sys.argv[4]+' -Gphase_patch.grd')
+        # Mira (2026-05-22): in-process grdcut.
+        _grdcut('mask.grd',       'mask_patch.grd',  sys.argv[4])
+        _grdcut('corr.grd',       'corr_patch.grd',  sys.argv[4])
+        _grdcut('phasefilt.grd',  'phase_patch.grd', sys.argv[4])
     else:
         file_shuttle('mask.grd', 'mask_patch.grd', 'link')
         file_shuttle('corr.grd', 'corr_patch.grd', 'link')
@@ -319,7 +343,8 @@ def snaphu():
     
     if check_file_report('mask_def.grd')==True:
         if n==5:
-            run('gmt grdcut mask_def.grd -R'+sys.argv[4]+' -Gmask_def_patch.grd') 
+            # Mira (2026-05-22): in-process grdcut.
+            _grdcut('mask_def.grd', 'mask_def_patch.grd', sys.argv[4])
         else:
             file_shuttle('mask_def.grd','mask_def_patch.grd','cp')
     
