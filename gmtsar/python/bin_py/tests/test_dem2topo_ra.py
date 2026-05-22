@@ -271,5 +271,161 @@ class TestWiredFlipudParity(unittest.TestCase):
                          msg=f"in-process marker leaked into fallback")
 
 
+# ---------------------------------------------------------------------------
+# In-memory chain wire-in parity tests (Mira, 2026-05-22).
+#
+# Exercises the surface → FLIPUD chain when
+# GMTSAR_DEM2TOPO_INMEM_CHAIN=1 is set. The chain stashes the
+# surface'd grid in a process-global dict instead of writing
+# pixel.grd to disk; _grdmath_flipud consumes the stash directly
+# and writes only topo_ra.grd.
+#
+# Byte-identity check: chain vs no-chain (with GMTSAR_SURFACE_INPROC=1
+# in both, so the upstream is identical Python).
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipUnless(_UTILS_IMPORT_OK,
+                     f"utils/dem2topo_ra import failed: {_UTILS_IMPORT_ERR}")
+class TestInmemChainParity(unittest.TestCase):
+    """Chain path (GMTSAR_DEM2TOPO_INMEM_CHAIN=1) produces a topo_ra.grd
+    byte-identical at the data-array level to the no-chain in-process
+    path (env unset). Both use GMTSAR_SURFACE_INPROC=1.
+
+    The chain only fires on the safe surface → FLIPUD path (mode=0,
+    RR empty). We unit-test the wire by directly invoking
+    `_surface_inproc(chainable=True)` followed by `_grdmath_flipud`.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="test_inmem_chain_")
+        # Save and clear chain env to start each test from a known state
+        self._old_chain = os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN")
+        self._old_inproc = os.environ.get("GMTSAR_GMT_INPROC")
+        if self._old_chain is not None:
+            del os.environ["GMTSAR_DEM2TOPO_INMEM_CHAIN"]
+        # Make sure the FLIPUD step uses the in-proc reader (default)
+        if self._old_inproc is not None:
+            del os.environ["GMTSAR_GMT_INPROC"]
+        # Clear the carrier dict between tests
+        _UTILS_NS["_PENDING_INMEM_GRID"].clear()
+
+    def tearDown(self) -> None:
+        if self._old_chain is None:
+            os.environ.pop("GMTSAR_DEM2TOPO_INMEM_CHAIN", None)
+        else:
+            os.environ["GMTSAR_DEM2TOPO_INMEM_CHAIN"] = self._old_chain
+        if self._old_inproc is None:
+            os.environ.pop("GMTSAR_GMT_INPROC", None)
+        else:
+            os.environ["GMTSAR_GMT_INPROC"] = self._old_inproc
+        _UTILS_NS["_PENDING_INMEM_GRID"].clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_temp_rat(self, path: str, region, inc, n_per_dim=12) -> None:
+        """Write a synthetic temp.rat (binary 3-double) covering the
+        region with a smooth z = sin(x/100)*cos(y/100)*1000 surface.
+        This mimics what `gmt blockmedian -bo3d` would emit."""
+        x0, x1, y0, y1 = region
+        dx, dy = inc
+        # Sample on a coarse grid of n_per_dim points per dim
+        xs = np.linspace(x0 + dx, x1 - dx, n_per_dim)
+        ys = np.linspace(y0 + dy, y1 - dy, n_per_dim)
+        xx, yy = np.meshgrid(xs, ys)
+        zz = np.sin(xx / 100.0) * np.cos(yy / 100.0) * 1000.0
+        rows = np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+        rows.astype(np.float64).tofile(path)
+
+    def test_chain_byte_identical_to_no_chain(self):
+        """topo_ra.grd from chained path == topo_ra.grd from un-chained
+        path (data array byte-equal)."""
+        region = (0, 480, 0, 800)
+        inc = (1, 2)
+        temp_rat = os.path.join(self.tmp, "temp.rat")
+        self._make_temp_rat(temp_rat, region, inc)
+
+        region_str = "0/480/0/800"
+
+        # --- Path A: no chain (write pixel.grd, then in-proc FLIPUD reads it)
+        pixel_a = os.path.join(self.tmp, "pixel_a.grd")
+        out_a = os.path.join(self.tmp, "topo_a.grd")
+        _UTILS_NS["_surface_inproc"](
+            temp_rat, region_str, 1, 2, 0.1, pixel_a, chainable=False)
+        self.assertTrue(os.path.exists(pixel_a),
+                        msg="no-chain path must write pixel.grd to disk")
+        _UTILS_NS["_grdmath_flipud"](pixel_a, out_a)
+
+        # --- Path B: chain (skip pixel.grd write; FLIPUD consumes stash)
+        os.environ["GMTSAR_DEM2TOPO_INMEM_CHAIN"] = "1"
+        pixel_b = os.path.join(self.tmp, "pixel_b.grd")
+        out_b = os.path.join(self.tmp, "topo_b.grd")
+        _UTILS_NS["_surface_inproc"](
+            temp_rat, region_str, 1, 2, 0.1, pixel_b, chainable=True)
+        # In chained mode, pixel.grd must NOT have been written
+        self.assertFalse(
+            os.path.exists(pixel_b),
+            msg="chained path must NOT write pixel.grd to disk")
+        # And the stash must contain it
+        self.assertIn(
+            pixel_b, _UTILS_NS["_PENDING_INMEM_GRID"],
+            msg="chained path must stash the grid for the next FLIPUD")
+        _UTILS_NS["_grdmath_flipud"](pixel_b, out_b)
+        # After consumption, the stash must be drained
+        self.assertNotIn(
+            pixel_b, _UTILS_NS["_PENDING_INMEM_GRID"],
+            msg="FLIPUD must drain the stash on consume")
+
+        # Compare data arrays
+        import netCDF4
+        with netCDF4.Dataset(out_a) as da, netCDF4.Dataset(out_b) as db:
+            za = da.variables["z"][:]
+            zb = db.variables["z"][:]
+        if hasattr(za, "mask"):
+            za = np.ma.filled(za, np.nan).astype(np.float32)
+        if hasattr(zb, "mask"):
+            zb = np.ma.filled(zb, np.nan).astype(np.float32)
+        self.assertEqual(
+            za.shape, zb.shape,
+            msg=f"shape mismatch: {za.shape} vs {zb.shape}")
+        self.assertTrue(
+            np.array_equal(za, zb, equal_nan=True),
+            msg=f"chain output diverged from no-chain; "
+                f"max|d|={float(np.nanmax(np.abs(za - zb)))}")
+
+    def test_chain_off_means_disk_writes_pixel_grd(self):
+        """With GMTSAR_DEM2TOPO_INMEM_CHAIN unset, _surface_inproc
+        writes pixel.grd to disk even when called with chainable=True."""
+        region = (0, 240, 0, 400)
+        inc = (1, 2)
+        temp_rat = os.path.join(self.tmp, "temp.rat")
+        self._make_temp_rat(temp_rat, region, inc)
+        pixel = os.path.join(self.tmp, "pixel.grd")
+        # chainable=True but env unset → should still write to disk
+        _UTILS_NS["_surface_inproc"](
+            temp_rat, "0/240/0/400", 1, 2, 0.1, pixel, chainable=True)
+        self.assertTrue(
+            os.path.exists(pixel),
+            msg="chain env unset must fall back to disk write")
+        self.assertNotIn(pixel, _UTILS_NS["_PENDING_INMEM_GRID"],
+                         msg="chain env unset must not stash")
+
+    def test_chainable_false_means_disk_writes_pixel_grd(self):
+        """Even with GMTSAR_DEM2TOPO_INMEM_CHAIN=1, chainable=False
+        forces disk write (used by the RR != [] and mode=1 branches)."""
+        region = (0, 240, 0, 400)
+        inc = (1, 2)
+        temp_rat = os.path.join(self.tmp, "temp.rat")
+        self._make_temp_rat(temp_rat, region, inc)
+        pixel = os.path.join(self.tmp, "pixel.grd")
+        os.environ["GMTSAR_DEM2TOPO_INMEM_CHAIN"] = "1"
+        _UTILS_NS["_surface_inproc"](
+            temp_rat, "0/240/0/400", 1, 2, 0.1, pixel, chainable=False)
+        self.assertTrue(
+            os.path.exists(pixel),
+            msg="chainable=False must always write to disk")
+        self.assertNotIn(pixel, _UTILS_NS["_PENDING_INMEM_GRID"],
+                         msg="chainable=False must not stash")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

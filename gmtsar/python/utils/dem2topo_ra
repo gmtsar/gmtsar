@@ -89,6 +89,34 @@ except ImportError as _e:
     _HAVE_GMT_GRD_IO = False
 
 
+# Mira (2026-05-22): in-memory chain between adjacent in-process ops.
+# When GMTSAR_DEM2TOPO_INMEM_CHAIN=1 (default OFF), the in-process
+# `surface` step does NOT write its `pixel.grd` to disk and instead
+# stashes (grid, x_coord, y_coord, node_offset, history) in this
+# module-level carrier keyed by the would-be output path. The
+# subsequent in-process `_grdmath_flipud` step picks it up and skips
+# the intermediate `pixel.grd` read/write entirely; the only disk
+# write in the chain is the final `topo_ra.grd`.
+#
+# Byte-identity is preserved: numpy.flipud is deterministic, the
+# coord vectors and node_offset are identical to what the disk
+# round-trip would yield, and `_write_gmt_grd` is the same writer.
+#
+# Requires GMTSAR_SURFACE_INPROC=1 (the upstream gate that activates
+# `_surface_inproc`). Without it, the surface step is a gmt
+# subprocess that writes pixel.grd to disk, so there's nothing to
+# chain.
+def _chain_enabled() -> bool:
+    return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "0") == "1"
+            and _HAVE_GMT_GRD_IO)
+
+
+# Carrier dict: {out_path: {grid, x_coord, y_coord, node_offset, history}}
+# Per-process global (dem2topo_ra is a one-shot CLI; no thread-safety
+# requirement). Cleared by `_grdmath_flipud` after consumption.
+_PENDING_INMEM_GRID: dict = {}
+
+
 def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
                                 az_step: int, V: str, out_path: str) -> None:
     """Replacement for the bash pipe:
@@ -191,6 +219,27 @@ def _grdmath_flipud(src_grd: str, dst_grd: str) -> None:
     use_inproc = _HAVE_GMT_GRD_IO and _inproc_enabled()
     if use_inproc:
         try:
+            # Chain fast-path: upstream `_surface_inproc` may have stashed
+            # an in-memory grid keyed by src_grd. Consume it directly and
+            # skip the .grd read entirely (NFS round-trip elimination).
+            stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+            if stash is not None:
+                data = stash["grid"]
+                x = stash["x_coord"]
+                y = stash["y_coord"]
+                node_off = int(stash.get("node_offset", 1))
+                geographic = bool(stash.get("geographic", False))
+                upstream_hist = stash.get("history", "")
+                flipped = _np.flipud(data)
+                _write_gmt_grd(
+                    dst_grd, flipped, x, y,
+                    node_offset=node_off,
+                    geographic=geographic,
+                    history=(f"{upstream_hist} | "
+                             f"gmt grdmath {src_grd} FLIPUD = {dst_grd} "
+                             "[gmt_grd_io in-process, chained]"),
+                )
+                return
             data, x, y, info = _read_gmt_grd(src_grd)
             flipped = _np.flipud(data)
             # Preserve node_offset (pixel vs gridline) and geographic
@@ -207,7 +256,40 @@ def _grdmath_flipud(src_grd: str, dst_grd: str) -> None:
         except Exception as exc:
             print(f"DEM2TOPO_RA: WARN: in-process FLIPUD failed ({exc!r}); "
                   "falling back to gmt subprocess.", file=sys.stderr)
-    # Fallback: classic gmt subprocess.
+            # If we'd stashed an in-mem grid but consumption failed, the
+            # disk file does not exist — flush the stash so we don't
+            # leave a dangling reference and force the subprocess to
+            # read a nonexistent file.
+            stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+            if stash is not None:
+                # Emergency: write the stashed grid out so the subprocess
+                # path can succeed. This is a hard-failure recovery — we
+                # still want to honor the legacy behavior cleanly.
+                try:
+                    _write_gmt_grd(
+                        src_grd, stash["grid"], stash["x_coord"],
+                        stash["y_coord"],
+                        node_offset=int(stash.get("node_offset", 1)),
+                        geographic=bool(stash.get("geographic", False)),
+                        history=stash.get("history", ""),
+                    )
+                except Exception as exc2:
+                    print(f"DEM2TOPO_RA: ERROR: stash-flush failed ({exc2!r})",
+                          file=sys.stderr)
+                    raise
+    # Fallback: classic gmt subprocess. If we still have a stash, flush
+    # it to disk first so the subprocess sees a real file. (This case
+    # happens when GMTSAR_GMT_INPROC=0 explicitly disables the in-proc
+    # path AFTER `_surface_inproc` ran with the chain on — unusual but
+    # possible.)
+    stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+    if stash is not None:
+        _write_gmt_grd(
+            src_grd, stash["grid"], stash["x_coord"], stash["y_coord"],
+            node_offset=int(stash.get("node_offset", 1)),
+            geographic=bool(stash.get("geographic", False)),
+            history=stash.get("history", ""),
+        )
     run(f'gmt grdmath {src_grd} FLIPUD = {dst_grd}')
 
 
@@ -221,7 +303,8 @@ def _grdmath_flipud(src_grd: str, dst_grd: str) -> None:
 #  - Briggs sub-cell constraints (GMT_SURFACE_PY_BRIGGS=1; Mira #41)
 #  - Native pixel registration (pixel_reg=True; Mira #41)
 def _surface_inproc(temp_rat: str, region_str: str, rng_step: int,
-                    az_step: int, tension: float, out_path: str) -> None:
+                    az_step: int, tension: float, out_path: str,
+                    chainable: bool = False) -> None:
     """In-process replacement for
         gmt surface <temp.rat> -R<region> -I<rng>/<az> -bi3d -T<tension>
                     -N1000 -G<out> -r
@@ -259,19 +342,43 @@ def _surface_inproc(temp_rat: str, region_str: str, rng_step: int,
     ny, nx = grid.shape
     x_coord = x0 + float(rng_step) / 2.0 + _np.arange(nx) * float(rng_step)
     y_coord = y0 + float(az_step) / 2.0 + _np.arange(ny) * float(az_step)
+    history = (f"gmt_surface_py (-T{tension}) "
+               f"-I{rng_step}/{az_step} -r")
+    # In-memory chain: stash the grid for the downstream FLIPUD step
+    # instead of writing pixel.grd to disk. The downstream
+    # `_grdmath_flipud` consumes the stash, flips, and writes only
+    # `topo_ra.grd` — eliminating the intermediate `pixel.grd`
+    # write+read round-trip (5-10 s on NFS).
+    if chainable and _chain_enabled():
+        _PENDING_INMEM_GRID[out_path] = {
+            "grid": grid,
+            "x_coord": x_coord,
+            "y_coord": y_coord,
+            "node_offset": 1,
+            "geographic": False,
+            "history": history,
+        }
+        return
     _write_gmt_grd(out_path, grid, x_coord, y_coord, node_offset=1,
-                   history=f"gmt_surface_py (-T{tension}) "
-                           f"-I{rng_step}/{az_step} -r")
+                   history=history)
 
 
 def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
                     rng_step: int, az_step: int, tension: float,
-                    out_path: str) -> None:
+                    out_path: str, chainable: bool = False) -> None:
     """Dispatch the surface call.
 
     Default = legacy subprocess (`run` of gmt surface).  When
     GMTSAR_SURFACE_INPROC=1 is set AND gmt_surface_py is importable,
     use the in-process numba path instead.
+
+    If ``chainable=True`` AND ``GMTSAR_DEM2TOPO_INMEM_CHAIN=1``, the
+    surface result is stashed in-memory for the downstream FLIPUD step
+    instead of being written to ``out_path``. The caller MUST guarantee
+    that no other process or subprocess will read ``out_path`` between
+    this call and the next ``_grdmath_flipud(out_path, ...)`` — i.e.
+    only set ``chainable=True`` on the direct surface → FLIPUD path
+    (mode=0, RR empty).
     """
     inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
               and _HAVE_GMT_GRD_IO)
@@ -280,10 +387,12 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
         return
     try:
         _surface_inproc(temp_rat, region_str, rng_step, az_step,
-                        tension, out_path)
+                        tension, out_path, chainable=chainable)
     except Exception as exc:
         print(f"DEM2TOPO_RA: WARN: in-process surface failed ({exc!r}); "
               "falling back to gmt subprocess.", file=sys.stderr)
+        # Drop any partial stash so the subprocess output is the truth
+        _PENDING_INMEM_GRID.pop(out_path, None)
         run(args_str)
 
 
@@ -430,9 +539,12 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
+                # Chainable: surface → FLIPUD has no intermediate consumer
+                # of pixel.grd, so in-mem stash is safe here.
                 _surface_or_run(
                     "gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
-                    "temp.rat", str(region), int(rng), 2, float(tension), "pixel.grd")
+                    "temp.rat", str(region), int(rng), 2, float(tension), "pixel.grd",
+                    chainable=True)
             else:
                 # RR is like ['-R0/800/0/1600']; strip the leading -R for our parser.
                 rr_str = str(RR[0]) if isinstance(RR, list) and RR else str(RR)
@@ -488,9 +600,11 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
+                # Chainable: see PRF<1000 branch above.
                 _surface_or_run(
                     "gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
-                    "temp.rat", str(region), int(rng), 4, float(tension), "pixel.grd")
+                    "temp.rat", str(region), int(rng), 4, float(tension), "pixel.grd",
+                    chainable=True)
             else:
                 rr_str = str(RR[0]) if isinstance(RR, list) and RR else str(RR)
                 _surface_or_run(
