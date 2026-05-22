@@ -9,7 +9,57 @@
 """
 
 import sys, os, subprocess
-from gmtsar_lib import *  
+from gmtsar_lib import *
+
+# Tier-1 in-process replacements for cheap `gmt` subprocesses
+# (see utils/gmt_inproc.py and PLAN.md §9). Wired into the
+# `gmt gmtconvert` step in the trans.dat → blockmedian pipe below.
+# Disable by setting GMTSAR_GMT_INPROC=0 — falls back to the original
+# `gmt gmtconvert` subprocess (debug-only A/B path).
+try:
+    from gmt_inproc import gmtconvert_select_cols_bin, _inproc_enabled
+    _HAVE_GMT_INPROC = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_inproc import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GMT_INPROC = False
+
+
+def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
+                                az_step: int, V: str, out_path: str) -> None:
+    """Replacement for the bash pipe:
+
+        gmt gmtconvert <trans_dat> -o0,1,2 -bi5d -bo3d \
+          | gmt blockmedian -R<region> -I<rng_step>/<az_step> -bi3d -bo3d -r <V>
+          > <out_path>
+
+    Replaces the `gmt gmtconvert` step in-process (numpy memmap column
+    slice on a 5-double binary file → 3-double binary file), keeping
+    `gmt blockmedian` as subprocess (Tier-2 work, not in this mission).
+    """
+    use_inproc = _HAVE_GMT_INPROC and _inproc_enabled()
+    if use_inproc:
+        # Slice cols 0,1,2 from the 5-double trans.dat → 3-double tmp file,
+        # then pipe to blockmedian directly. ~0.5-1.0 s saved per call.
+        tmp_xyz = out_path + ".xyz3.bin"
+        gmtconvert_select_cols_bin(trans_dat, 5, [0, 1, 2], tmp_xyz)
+        cmd = (
+            f"gmt blockmedian {tmp_xyz} -R{region} -I{rng_step}/{az_step} "
+            f"-bi3d -bo3d -r {V} > {out_path}"
+        )
+        run(cmd)
+        try:
+            os.remove(tmp_xyz)
+        except OSError:
+            pass
+    else:
+        cmd = (
+            f"gmt gmtconvert {trans_dat} -o0,1,2 -bi5d -bo3d | "
+            f"gmt blockmedian -R{region} -I{rng_step}/{az_step} "
+            f"-bi3d -bo3d -r {V} > {out_path}"
+        )
+        run(cmd)
+
 
 def dem2topo_ra():
 
@@ -120,7 +170,12 @@ def dem2topo_ra():
     
     if PRF<1000:
         print('DEM2TOPO_RA: if PRF<1000, then ... ...')
-        run("gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -bo3d -r "+str(V)+" > temp.rat ")
+        # Mira (Tier-1 gmt subprocess kill): gmtconvert -o0,1,2 -bi5d -bo3d
+        # now happens in-process via numpy memmap column slice
+        # (utils/gmt_inproc.py). Bit-id with gmt — see
+        # bin_py/tests/test_gmt_inproc.py::TestGmtconvertSelectCols.
+        _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 2,
+                                    str(V), "temp.rat")
         if mode == 0:
             run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
             
@@ -166,7 +221,9 @@ def dem2topo_ra():
             delete('mean.rat')
     else:
         print('DEM2TOPO_RA: if PRF>=1000, then ... ...')
-        run("gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -bo3d -r "+str(V)+" > temp.rat")
+        # Mira (Tier-1 gmt subprocess kill): same as PRF<1000 branch.
+        _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 4,
+                                    str(V), "temp.rat")
         if mode == 0:
             run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
             
