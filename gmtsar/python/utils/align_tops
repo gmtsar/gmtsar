@@ -128,9 +128,9 @@ def align_tops():
         run("gmt grd2xyz --FORMAT_FLOAT_OUT=%lf flt.grd -s > topo.llt")
 
     # Tie-point alignment estimate — used in both mode=0 and mode=1 paths.
-    lontie = _capture(f"SAT_baseline {mpre}.PRM {spre}.PRM | "
+    lontie = _capture(f"SAT_baseline_py {mpre}.PRM {spre}.PRM | "
                       f"grep lon_tie_point | awk '{{print $3}}'")
-    lattie = _capture(f"SAT_baseline {mpre}.PRM {spre}.PRM | "
+    lattie = _capture(f"SAT_baseline_py {mpre}.PRM {spre}.PRM | "
                       f"grep lat_tie_point | awk '{{print $3}}'")
     tmp_am = _capture(f"echo {lontie} {lattie} 0 | "
                       f"SAT_llt2rat {mpre}.PRM 1 | awk '{{print $2}}'")
