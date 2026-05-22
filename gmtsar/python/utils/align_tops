@@ -208,7 +208,12 @@ def align_tops():
     run(f"mv -f {spre}.PRMresamp {spre}.PRM")
 
     offset_file = "offset.dat" if -1000 < tmp_da < 1000 else "offset2.dat"
-    run(f"fitoffset 3 3 {offset_file} >> {spre}.PRM")
+    # Use csh wrapper (not C binary): wrapper emits PRM key=value lines on stdout
+    # which we append to the aligned PRM. The C `fitoffset` has a different
+    # signature (takes PRM file as 4th arg + modifies in-place); calling C with
+    # csh-style args (3 + redirect) captures the usage error instead of fit
+    # results — surfaced by Wei's audit 2026-05-22.
+    run(f"fitoffset.csh 3 3 {offset_file} >> {spre}.PRM")
 
     # Re-extract LED and recompute calc_dop_orb
     if skip_master == 0:
