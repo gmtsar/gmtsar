@@ -14,6 +14,57 @@ from gmtsar_lib import *
 from p2p_stages import *
 from phase_profile import phase, dump_profile
 
+# Stage cache (Mira #52): opt-in via GMTSAR_STAGE_CACHE=1. Default OFF so
+# behaviour is identical to v2.1.0 unless the developer explicitly enables it.
+# The import is best-effort: when run outside the test tree (e.g. user shell
+# invocations of p2p_processing), the tests/ dir may not be importable, and
+# we just disable the cache.
+_STAGE_CACHE = None
+try:
+    _gmtsar_root = os.environ.get("GMTSAR", "")
+    if _gmtsar_root:
+        _tests_dir = os.path.join(_gmtsar_root, "gmtsar", "python", "tests")
+        if os.path.isdir(_tests_dir) and _tests_dir not in sys.path:
+            sys.path.insert(0, _tests_dir)
+    import stage_cache as _STAGE_CACHE  # noqa: E402
+except Exception:
+    _STAGE_CACHE = None
+
+
+def _stage_block(stage_name, parent_key, inputs=(), config_vals=None):
+    """Return a `cached_stage` context manager if the cache is enabled and
+    the stage_cache module is available; otherwise return a no-op stub
+    so the caller's `with`-block runs unconditionally with `hit=False`.
+
+    Keeping the dispatch here (instead of at every call site) means the
+    p2p_processing body stays readable and the env-gate is checked in
+    exactly ONE place — which is what we want for an audit-conservative
+    feature.
+    """
+    if _STAGE_CACHE is None or not _STAGE_CACHE.is_enabled():
+        return _NoopStage(parent_key)
+    return _STAGE_CACHE.cached_stage(
+        os.getcwd(), stage_name,
+        input_paths=inputs,
+        config_vals=config_vals or {},
+        parent_key=parent_key,
+    )
+
+
+class _NoopStage:
+    """Stand-in for cached_stage when the cache is disabled.
+
+    Always reports `hit=False` and preserves the caller's parent_key as
+    its own, so the cascade through the chain remains coherent (parent
+    keys just flow through unchanged).
+    """
+    def __init__(self, parent_key):
+        self.hit = False
+        self.parent_key = parent_key
+        self.key = parent_key
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+
 
 def p2p_processing(debug):
     # 
@@ -187,63 +238,168 @@ def p2p_processing(debug):
     # Frame context. Standalone callers see the config they supplied.
 
 
+    # Stage-cache cascade: each stage's parent_key is the previous stage's
+    # output key. Threading parent_key through means any change upstream
+    # automatically invalidates downstream sentinels. With cache disabled
+    # the parent_key is None and every block runs unconditionally.
+    _pkey = None
+
+    # Inputs to fingerprint per stage. We list the directories/files that
+    # the stage's outputs are derived from; the cache module uses stat
+    # (size + mtime_ns), not content hash, so listing a directory has zero
+    # cost. The cwd is the case dir; resolved relative.
+    _raw_inputs = [os.path.join("raw", f) for f in sorted(os.listdir("raw"))
+                   if os.path.isfile(os.path.join("raw", f))] if os.path.isdir("raw") else []
+    _config_path = os.path.join(os.getcwd(), "config.py")
+    _common_cfg = {
+        "SAT": SAT, "master": master, "aligned": aligned,
+        "stage": stage, "skip_master": skip_master,
+        "skip_1": skip_1, "skip_2": skip_2, "skip_3": skip_3,
+        "skip_4": skip_4, "skip_5": skip_5, "skip_6": skip_6,
+        "filter": filter, "iono": iono, "dec": dec,
+        "filter_wavelength": filter_wavelength,
+        "topo_phase": topo_phase, "shift_topo": shift_topo,
+        "threshold_snaphu": threshold_snaphu,
+        "threshold_geocode": threshold_geocode,
+        "near_interp": near_interp,
+    }
+
     if stage == 1 and skip_1 == 0:
-        with phase("P2P1_preprocess"):
-            P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix)
+        with _stage_block("P2P1_preprocess", _pkey,
+                          inputs=[_config_path] + _raw_inputs,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 1: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P1_preprocess"):
+                    P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix)
     if debug==1:
         input('Press Enter to continue to Phase 2...')
 
     if (stage <=2 and skip_2 ==0):
-        with phase("P2P2_focus_align"):
-            print('P2P 2: start from focus and align SLC images')
-            run('mkdir -p SLC')
+        # P2P2 inputs include the raw/ tree (its files may have been written
+        # by P2P1) plus the config; we approximate "everything in raw/ as
+        # P2P1 left it" by re-listing here. parent_key=_pkey threads in the
+        # P2P1 result so a P2P1 re-run also re-runs P2P2.
+        _raw_inputs2 = [os.path.join("raw", f) for f in sorted(os.listdir("raw"))
+                        if os.path.isfile(os.path.join("raw", f))] if os.path.isdir("raw") else []
+        with _stage_block("P2P2_focus_align", _pkey,
+                          inputs=[_config_path] + _raw_inputs2,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 2: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P2_focus_align"):
+                    print('P2P 2: start from focus and align SLC images')
+                    run('mkdir -p SLC')
 
-            if (iono == 1):
-                print('P2P 2: creating SLC_L and SLC_H for iono==1')
-                run('mkdir -p SLC_L SLC_H')
-            if (SAT == 'S1_TOPS'):
-                master, aligned = renameMasterAlignedForS1tops(master, aligned)
-            if SAT in ('NSR_A', 'NSR_B'):
-                master, aligned = renameMasterAlignedForNSR(master, aligned, SAT)
-            print(f'master, aligned after rename for {SAT}:', master, aligned)
-            P2P2Clean(SAT, master, aligned, skip_master, iono)
-            os.chdir('SLC')
-            P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
-            # NSR_A/B skips region_cut per legacy csh; everything else honors it.
-            if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
-                P2P2RegionCut(master, aligned, skip_master, iono, region_cut)
-            os.chdir('..')
-            print('P2P 2: ALIGN.CSH - END')
+                    if (iono == 1):
+                        print('P2P 2: creating SLC_L and SLC_H for iono==1')
+                        run('mkdir -p SLC_L SLC_H')
+                    if (SAT == 'S1_TOPS'):
+                        master, aligned = renameMasterAlignedForS1tops(master, aligned)
+                    if SAT in ('NSR_A', 'NSR_B'):
+                        master, aligned = renameMasterAlignedForNSR(master, aligned, SAT)
+                    print(f'master, aligned after rename for {SAT}:', master, aligned)
+                    P2P2Clean(SAT, master, aligned, skip_master, iono)
+                    os.chdir('SLC')
+                    P2P2FocusAlign(SAT, master, aligned, skip_master, iono)
+                    # NSR_A/B skips region_cut per legacy csh; everything else honors it.
+                    if region_cut != -999 and SAT not in ('NSR_A', 'NSR_B'):
+                        P2P2RegionCut(master, aligned, skip_master, iono, region_cut)
+                    os.chdir('..')
+                    print('P2P 2: ALIGN.CSH - END')
     if debug==1:
         input('Press Enter to continue to Phase 3...')
 
     if stage <=3 and skip_3 == 0:
-        with phase("P2P3_make_topo"):
-            P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo)
+        # P2P3 reads the SLC files produced by P2P2.
+        _slc_inputs = ([os.path.join("SLC", f) for f in sorted(os.listdir("SLC"))
+                        if os.path.isfile(os.path.join("SLC", f))]
+                       if os.path.isdir("SLC") else [])
+        with _stage_block("P2P3_make_topo", _pkey,
+                          inputs=[_config_path] + _slc_inputs,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 3: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P3_make_topo"):
+                    P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo)
     if debug==1:
         input('Press Enter to continue to Phase 4...')
 
     ref, rep = switchMasterAligned(switch_master, master, aligned)
 
     if stage <= 4 and skip_4 == 0:
-        with phase("P2P4_intf_filter"):
-            P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
-                                        dec, filter, compute_phase_gradient, iono, iono_dsamp,
-                                        iono_skip_est=iono_skip_est,
-                                        iono_filt_rng=iono_filt_rng, iono_filt_azi=iono_filt_azi,
-                                        mask_water=mask_water, switch_land=switch_land)
+        # P2P4 reads SLC + topo outputs.
+        _topo_inputs = ([os.path.join("topo", f) for f in sorted(os.listdir("topo"))
+                         if os.path.isfile(os.path.join("topo", f))]
+                        if os.path.isdir("topo") else [])
+        _slc_inputs4 = ([os.path.join("SLC", f) for f in sorted(os.listdir("SLC"))
+                         if os.path.isfile(os.path.join("SLC", f))]
+                        if os.path.isdir("SLC") else [])
+        with _stage_block("P2P4_intf_filter", _pkey,
+                          inputs=[_config_path] + _slc_inputs4 + _topo_inputs,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 4: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P4_intf_filter"):
+                    P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
+                                                dec, filter, compute_phase_gradient, iono, iono_dsamp,
+                                                iono_skip_est=iono_skip_est,
+                                                iono_filt_rng=iono_filt_rng, iono_filt_azi=iono_filt_azi,
+                                                mask_water=mask_water, switch_land=switch_land)
     if debug==1:
         input('Press Enter to continue to Phase 5...')
 
     if stage <=5 and skip_5 == 0:
-        with phase("P2P5_unwrap"):
-            P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
+        # P2P5 reads intf/.
+        _intf_dirs = (sorted(os.listdir("intf")) if os.path.isdir("intf") else [])
+        _intf_inputs = []
+        for d in _intf_dirs:
+            dp = os.path.join("intf", d)
+            if os.path.isdir(dp):
+                for f in sorted(os.listdir(dp)):
+                    fp = os.path.join(dp, f)
+                    if os.path.isfile(fp):
+                        _intf_inputs.append(fp)
+        with _stage_block("P2P5_unwrap", _pkey,
+                          inputs=[_config_path] + _intf_inputs,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 5: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P5_unwrap"):
+                    P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp, defomax)
     if debug==1:
         input('Press Enter to continue to Phase 6...')
 
     if stage <=6 and skip_6 == 0:
-        with phase("P2P6_geocode"):
-            P2P6Geocode(ref, rep, threshold_geocode, topo_phase)
+        # P2P6 also reads intf/ (now with unwrap.grd added).
+        _intf_dirs6 = (sorted(os.listdir("intf")) if os.path.isdir("intf") else [])
+        _intf_inputs6 = []
+        for d in _intf_dirs6:
+            dp = os.path.join("intf", d)
+            if os.path.isdir(dp):
+                for f in sorted(os.listdir(dp)):
+                    fp = os.path.join(dp, f)
+                    if os.path.isfile(fp):
+                        _intf_inputs6.append(fp)
+        with _stage_block("P2P6_geocode", _pkey,
+                          inputs=[_config_path] + _intf_inputs6,
+                          config_vals=_common_cfg) as _cs:
+            _pkey = _cs.parent_key
+            if _cs.hit:
+                print("P2P 6: SKIP (stage-cache hit; sentinel matches inputs)")
+            else:
+                with phase("P2P6_geocode"):
+                    P2P6Geocode(ref, rep, threshold_geocode, topo_phase)
 
     # Write per-case phase profile JSON (py side). atexit hook also handles
     # crashed runs. case name is derived from cwd basename.
