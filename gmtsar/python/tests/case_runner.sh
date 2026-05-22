@@ -117,9 +117,60 @@ for readme in "$cshDir"/README*.txt; do
     sed -i -E 's@^(p2p_(ALOS2_SCAN|S1_TOPS)_Frame\.csh .*\.txt) 0$@\1 1  # patched: parallel (case_runner.sh)@' "$readme"
 done
 
-# csh reference (background) — only build if no outputs in intf/.
+# csh reference (background) — sentinel-guarded.
+#
+# Stale-oracle problem (NISAR_Ethiopia 2026-05-21): an oracle on disk can
+# look "complete" (intf/*.grd present) but be inconsistent with current
+# inputs if a prior partial run touched intermediate files. The old guard
+# `if intf is empty` then skipped re-running csh and let the stale oracle
+# survive across sweeps. Mira #18 root-caused; we now add a sentinel.
+#
+# Sentinel file: $cshDir/.oracle_built records the framework git SHA and
+# tarball md5 at oracle-build time. On the next sweep we compare both.
+# Mismatch → invalidate (wipe csh_test/<case>) and force rebuild. Missing
+# sentinel + intf populated = treat as a pre-sentinel oracle (trust it,
+# but warn so the user knows there's a one-time grandfathered run).
+oracle_sentinel="$cshDir/.oracle_built"
+tarball_md5=$(md5sum "$tarball" 2>/dev/null | awk '{print $1}')
+fwk_sha=$(cd "$(dirname "$pyReadme")/.." && git rev-parse --short HEAD 2>/dev/null || echo "no-git")
+
+oracle_valid=0
+if [ -n "$(find "$cshDir/intf" -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
+    if [ -f "$oracle_sentinel" ]; then
+        prev_sha=$(grep -oE 'fwk_sha=[a-f0-9]+' "$oracle_sentinel" | head -1 | cut -d= -f2)
+        prev_md5=$(grep -oE 'tarball_md5=[a-f0-9]+' "$oracle_sentinel" | head -1 | cut -d= -f2)
+        if [ "$prev_md5" = "$tarball_md5" ]; then
+            # Tarball matches — oracle inputs are the same as recorded.
+            # Framework SHA mismatch is OK (oracle only depends on C binaries
+            # + tarball, not on Python framework) BUT we surface it for the log.
+            oracle_valid=1
+            if [ "$prev_sha" != "$fwk_sha" ]; then
+                echo "[$case] oracle was built under fwk_sha=$prev_sha; current fwk_sha=$fwk_sha (tarball unchanged → oracle still valid)"
+            fi
+        else
+            echo "[$case] oracle tarball_md5=$prev_md5 ≠ current=$tarball_md5 — INVALIDATING oracle, wiping csh_test/$case for rebuild"
+            rm -rf "$cshDir"
+            mkdir -p "$cshDir" && tar -xzf "$tarball" -C "$cshDir"
+            # Re-apply the same per-tree config patches we did above.
+            for cfg in "$cshDir"/config*.txt; do
+                [ -f "$cfg" ] || continue
+                if grep -q "^filter1" "$cfg" && ! grep -q "^filter_wavelength" "$cfg"; then
+                    wl=$(grep "^filter1" "$cfg" | grep -oE "_[0-9]+m" | grep -oE "[0-9]+" | head -1)
+                    [ -n "$wl" ] && echo "filter_wavelength = $wl" >> "$cfg"
+                fi
+            done
+        fi
+    else
+        # Pre-sentinel grandfather case: intf has outputs but no sentinel
+        # file. Trust the oracle but log a warning so the user can decide
+        # to force-rebuild manually.
+        oracle_valid=1
+        echo "[$case] WARN: oracle has no sentinel (.oracle_built) — grandfathered as valid. To force rebuild: rm -rf $cshDir"
+    fi
+fi
+
 (
-    if [ -z "$(find "$cshDir/intf" -name '*.grd' -o -name '*.png' 2>/dev/null | head -1)" ]; then
+    if [ "$oracle_valid" = 0 ]; then
         echo "[$case] no csh reference — running legacy csh recipe"
         t0=$SECONDS
         # Some tarballs (e.g. S1_Larsen_C) ship README_Frame.txt / README_proc.txt
@@ -136,6 +187,18 @@ done
         fi
         ( cd "$cshDir" && cleanup all && csh "$readme" > log.txt 2>&1 )
         echo "$case csh used $((SECONDS-t0)) s" >> "$timeLog"
+        # Write the sentinel — we just successfully built the oracle from
+        # this tarball and this framework SHA.
+        cat > "$oracle_sentinel" <<EOF
+# csh oracle build sentinel — written by case_runner.sh
+# DO NOT delete unless you want to force csh oracle rebuild on next sweep
+built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+case=$case
+tarball=$tarball
+tarball_md5=$tarball_md5
+fwk_sha=$fwk_sha
+csh_wall_sec=$((SECONDS-t0))
+EOF
     fi
 ) &
 cshPid=$!
