@@ -75,7 +75,7 @@ CASES = {
 
     # ---- mediums (~15-30 min) ----
     'ENVI_Baja_EQ':             {'satellite': 'ENVI',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~27 min
-    'ALOS_haiti':               {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~25 min
+    'ALOS_haiti':               {'satellite': 'ALOS',       'ext': 'tar.gz', 'tiers': {'fast', 'full'},        'enabled': True},     # ~25 min — ONLY case with threshold_snaphu>0.14 → exercises C snaphu binary + utils/snaphu.py wrappers (Mira #43) end-to-end
     'ALOS4_Pinon':              {'satellite': 'ALOS4',      'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~25 min
     'TSX_SLC_Hawaii':           {'satellite': 'TSX',        'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~24 min
     'ENVI_Baja_EQ_SLC':         {'satellite': 'ENVI_SLC',   'ext': 'tar.gz', 'tiers': {'full'},                'enabled': True},     # ~18 min
