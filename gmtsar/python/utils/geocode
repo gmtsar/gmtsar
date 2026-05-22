@@ -108,6 +108,30 @@ def _grdmath_mul_grid_grid(a_grd: str, b_grd: str, out_grd: str,
     suffix = (" " + V) if V else ""
     run(f"gmt grdmath {a_grd} {b_grd} MUL = {out_grd}{suffix}")
 
+
+def _make_los(phase_grd: str, wavel: float, out_grd: str) -> None:
+    """Replacement for `gmt grdmath <phase> <wavel> MUL -79.58 MUL = <out>`.
+
+    Mira #41 wire-in (2026-05-22): calls bin_py/make_los_py via PATH
+    (subprocess), which honors the truncated `-79.58` factor verbatim from
+    geocode.csh:77,139 (do NOT substitute the mathematically exact
+    -1000/(4*pi) — that biases LOS by 0.003% vs the csh pipeline). The
+    py port has been verified byte-identical to `gmt grdmath A wavel MUL
+    -79.58 MUL = B` on RS2 Hawaii unwrap_mask{,_ll}.grd.
+
+    Gate: GMTSAR_MAKE_LOS_PY=0 → fall back to gmt grdmath subprocess.
+    """
+    use_py = os.environ.get("GMTSAR_MAKE_LOS_PY", "1") != "0"
+    if use_py:
+        try:
+            run(f"make_los_py {phase_grd} {wavel} {out_grd}")
+            return
+        except Exception as exc:
+            print(f"GEOCODE: WARN: make_los_py failed ({exc!r}); "
+                  "falling back to gmt grdmath.", file=sys.stderr)
+    run(f"gmt grdmath {phase_grd} {wavel} MUL -79.58 MUL = {out_grd}")
+
+
 def geocode():
     
     def Error_Message():
@@ -201,8 +225,9 @@ def geocode():
         if not prm_files:
             raise FileNotFoundError("geocode: no *.PRM files in current dir for wavelength lookup")
         wavel = grep_value(prm_files[0], 'wavelength', 3)
-        cmd = 'gmt grdmath unwrap_mask.grd '+str(wavel)+' MUL -79.58 MUL = los.grd'
-        run(cmd)
+        # Mira #41 wire-in: make_los_py replaces `gmt grdmath A wavel MUL -79.58 MUL`.
+        # GMTSAR_MAKE_LOS_PY=0 forces gmt grdmath fallback.
+        _make_los('unwrap_mask.grd', wavel, 'los.grd')
         run('gmt grdgradient los.grd -Nt.9 -A0. -Glos_grad.grd')
         
         cmd_grdinfo = ["gmt","grdinfo","-C","-L2","los.grd"]
@@ -304,7 +329,8 @@ def geocode():
         # numerically wrong (never noticed because compare.py didn't check
         # los_ll.grd until v1.12.1). The Python `wavel` is in scope from
         # the unwrap_mask block above; interpolate it directly.
-        run(f'gmt grdmath unwrap_mask_ll.grd {wavel} MUL -79.58 MUL = los_ll.grd')
+        # Mira #41 wire-in: make_los_py replaces `gmt grdmath A wavel MUL -79.58 MUL`.
+        _make_los('unwrap_mask_ll.grd', wavel, 'los_ll.grd')
         run(f'gmt grdedit -D//"mm"/1///"{pwd_basename} LOS displacement"/"equals negative range" los_ll.grd')
         run('grd2kml los_ll los.cpt')
 
