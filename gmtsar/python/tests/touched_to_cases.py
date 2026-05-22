@@ -54,18 +54,46 @@ RULES: list[tuple[str, str | list[str]]] = [
                                           'S1A_SLC_TOPS_Greece',
                                           'S1A_SLC_TOPS_LA', 'S1_Larsen_C',
                                           'S1_Ridgecrest_EQ']),
-    # conv_py — used in older ALOS raw-mode pipeline.
+    # conv_py — used in older ALOS raw-mode pipeline. ALOS_haiti is the only
+    # case that exercises the filter with a high threshold (Mira #50 audit).
     (r'bin_py/conv_py',             ['ALOS_haiti']),
-    # GMT surface Python port — currently exercised only by CSK RAW.
+    # GMT surface Python port — currently exercised only by CSK RAW (only case
+    # in --fast with square cells).
     (r'utils/gmt_surface_py',       ['CSK_RAW_Hawaii']),
-    # GMT grid I/O helpers.
+    # GMT grid I/O helpers — any case with grdmath wire-in.
     (r'utils/gmt_grd_io',           ['RS2_SLC_Hawaii', 'NISAR_Ethiopia']),
     # p2p_processing — the main orchestrator: any change affects every case.
     (r'utils/p2p_processing',       'all_21'),
+    # p2p_stages — stage decomposition library; touches every pipeline.
+    (r'utils/p2p_stages\.py',       'all_21'),
+    # p2p_S1_TOPS_Frame — Sentinel-1 TOPS frame driver; same scope as align_tops.
+    (r'utils/p2p_S1_TOPS_Frame',    ['S1A_SLC_TOPS_COVE', 'S1A_SLC_TOPS_Greece',
+                                     'S1A_SLC_TOPS_LA', 'S1_Larsen_C',
+                                     'S1_Ridgecrest_EQ']),
     # gmtsar_lib — shared library functions called by most processors.
     (r'utils/gmtsar_lib',           'all_21'),
     # Pre-processing utilities.
     (r'utils/pre_proc',             'all_21'),
+    # SAT_baseline_py — baseline computation, byte-id verified on 5 SAT
+    # families (Mira #29). Other cases hit it via baseline_table only on
+    # multi-pair workflows that aren't in the single-pair test pool.
+    (r'bin_py/SAT_baseline_py',     ['RS2_SLC_Hawaii', 'ALOS_haiti',
+                                     'TSX_SLC_Hawaii', 'ENVI_Baja_EQ',
+                                     'ALOS_SLC_L1.1']),
+    # phasediff_py — wired into intf. Short-baseline single-pair cases hit
+    # the inner loops hardest (RS2, CSK_RAW, ALOS_SLC, Mira #39).
+    (r'bin_py/phasediff_py',        ['RS2_SLC_Hawaii', 'CSK_RAW_Hawaii',
+                                     'ALOS_SLC_L1.1']),
+    # make_los_py — wired into geocode (Mira #39); geocode runs on every case.
+    (r'bin_py/make_los_py',         'all_21'),
+    # JIT kernel modules (resamp / SAT) — referenced via @njit imports inside
+    # the corresponding ports; any kernel change can shift float-rounding
+    # across every pipeline. all_21 is the conservative choice.
+    (r'bin_py/_jit_kernels_',       'all_21'),
+    # estimate_ionospheric_phase — env-gated, no test config has correct_iono=1
+    # (Mira #48). Audited 2026-05-22: zero cases exercise this path; touching
+    # it requires a manual ALOS2_Brazil + correct_iono=1 run, not a sweep slot.
+    (r'utils/estimate_ionospheric_phase', []),
     # Test infrastructure changes — run the fast tier for basic sanity.
     (r'tests/configs/',             ['RS2_SLC_Hawaii', 'ERS_Hector_EQ',
                                      'ALOS_Baja_EQ', 'CSK_RAW_Hawaii']),
