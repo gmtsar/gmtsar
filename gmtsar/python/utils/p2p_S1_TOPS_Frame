@@ -4,9 +4,30 @@
 # Process Sentinel-1A TOPS data; automatically process a single frame of interferogram. 
 '''
 
-import sys, os, glob
+import sys, os, glob, time
 import subprocess, multiprocessing
-from gmtsar_lib import * 
+from gmtsar_lib import *
+# phase_profile is optional — if absent we fall back to no-op stubs so the
+# Frame driver still runs in environments without the profiler installed.
+try:
+    from phase_profile import (phase, dump_profile, time_run as _trun,
+                               aggregate_subswath_profiles, _PHASES,
+                               _BINARY_TIMES)
+    _HAVE_PROFILE = True
+except Exception:
+    _HAVE_PROFILE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def phase(name):
+        yield
+    def dump_profile(*a, **kw): pass
+    def aggregate_subswath_profiles(*a, **kw): return None
+    # _trun fallback must accept (cmd, name=None) like time_run, since the
+    # call site in mergeUnwrapGeocodeTops passes a positional name.
+    def _trun(cmd, name=None):
+        return run(cmd)
+    _PHASES = []
+    _BINARY_TIMES = {}
 
 def Error_Message():
     print(' ')
@@ -84,6 +105,20 @@ def processingF1F2F3(seq, fmList, fsList):
 def processOneSubswath(subswathId, fm, fs):
     folderName = 'F'+str(subswathId+1)
     print('Processing subswath '+ folderName)
+    # When this function runs inside a multiprocessing.Pool worker (seq=1),
+    # the worker inherits the parent's `_PHASES` from the fork (frame_link
+    # already appended). If we leave it populated, the worker's atexit hook
+    # in phase_profile.py would call dump_profile() at worker exit and
+    # clutter the case root with a half-formed phase_profile_py.json (just
+    # frame_link) — possibly racing the parent's aggregator write. Detect
+    # the worker case and clear _PHASES only there. Under seq=0 the parent
+    # owns _PHASES, so we leave it alone.
+    if _HAVE_PROFILE and multiprocessing.current_process().name != 'MainProcess':
+        try:
+            from phase_profile import reset as _reset_profile
+            _reset_profile()
+        except Exception:
+            pass
     # Copy + patch the parent config: per-subswath runs MUST skip snaphu and
     # geocode (the merge stage handles them across all 3 subswaths). Was
     # previously enforced by an unconditional override inside p2p_processing
@@ -170,10 +205,6 @@ def mergeUnwrapGeocodeTops(correct_iono, det_stitch):
         print('not available yet for correct_iono!=0')
     else:
         file_shuttle('../config.py', '.', 'cp')
-        try:
-            from phase_profile import time_run as _trun
-        except Exception:
-            _trun = run
         _trun('merge_unwrap_geocode_tops tmp.filelist config.py '+str(det_stitch), "merge_unwrap_geocode_tops")
         # Post-condition: merge MUST have produced phasefilt/corr at minimum.
         # Without this, a silent failure here surfaces only when compare.py
@@ -222,15 +253,59 @@ def p2pS1TopsFrame():
     print('P2P_S1_TOPS_FRAME: fsList is ', fsList)
     
     skip_master = grep_value('config.py', 'skip_master', 3)
-    
-    linkFiles(0, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
-    linkFiles(1, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
-    linkFiles(2, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
 
-    processingF1F2F3(seq, fmList, fsList)
-    
-    merge(skip_master, fmList, fsList) 
-    
+    case_root = os.path.abspath(os.getcwd())
+
+    with phase("frame_link"):
+        linkFiles(0, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
+        linkFiles(1, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
+        linkFiles(2, masterSafe, masterEof, alignedSafe, alignedEof, fmList, fsList)
+
+    with phase("frame_subswaths_p2p"):
+        processingF1F2F3(seq, fmList, fsList)
+
+    with phase("frame_merge"):
+        merge(skip_master, fmList, fsList)
+
+    # Aggregate per-subswath phase_profile_py.json (F1/F2/F3) plus the
+    # Frame-level phases collected above (frame_link, frame_subswaths_p2p,
+    # frame_merge) plus the time_run-tracked binaries (merge_unwrap_geocode_tops)
+    # into a single case-root phase_profile_py.json so perf-snapshot Table 2
+    # has a per-binary breakdown for S1 TOPS cases.
+    try:
+        os.chdir(case_root)
+        subswath_dirs = [os.path.join(case_root, d) for d in ("F1", "F2", "F3")]
+        # Convert _PHASES (frame_link / frame_subswaths_p2p / frame_merge) into
+        # the extra_phases list. _BINARY_TIMES holds the merge_unwrap_geocode_tops
+        # call recorded by time_run inside mergeUnwrapGeocodeTops.
+        extra_phases = [dict(p) for p in _PHASES]
+        extra_binaries = {n: list(v) for n, v in _BINARY_TIMES.items()}
+        agg = aggregate_subswath_profiles(
+            subswath_dirs,
+            out_path=os.path.join(case_root, "phase_profile_py.json"),
+            case=os.path.basename(case_root),
+            extra_phases=extra_phases,
+            extra_binaries=extra_binaries,
+        )
+        if agg is not None:
+            print(f"P2P_S1_TOPS_FRAME: wrote aggregated profile "
+                  f"({len(agg.get('phases', []))} phases, "
+                  f"{len(agg.get('binaries', []))} binaries, "
+                  f"total={agg.get('total_sec')} s)")
+        # Clear in-process phase/binary buffers so the atexit hook in
+        # phase_profile.py doesn't fire dump_profile() and overwrite our
+        # case-root aggregated JSON with a non-aggregated one.
+        if _HAVE_PROFILE:
+            try:
+                from phase_profile import reset as _reset_profile
+                _reset_profile()
+            except Exception:
+                pass
+    except Exception as e:
+        # Profile aggregation failure must not break the pipeline. Log and
+        # continue — pipeline correctness is the parity gate, not profiling.
+        print(f"P2P_S1_TOPS_FRAME: WARNING phase_profile aggregation failed: {e}")
+
     print('P2P_S1_TOPS_FRAME - END')
 
 if __name__ == "__main__":
