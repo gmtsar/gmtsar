@@ -412,3 +412,200 @@ single-pair P2P. Single-case use will hit Amdahl's law on the C bits
 - **csh deprecation horizon:** is the long-term goal to remove the csh shell-out
   shims entirely, or keep them as fallback? Affects how aggressively phase 3
   rewrites internals.
+
+## 9c. Status snapshot 2026-05-22 (post-v2.1.9 evening)
+
+### Session arc this day
+
+```
+Tags landed today: v2.0.2 → v2.1.9  (17 patches/minors)
+  v2.0.2  snaphu wrappers (Mira #43)
+  v2.0.3  phasediff_py + make_los_py wire (Mira #39)
+  v2.0.4  fitoffset.csh fix (Wei audit)
+  v2.0.5  align_tops.csh ported (Mira #41, byte-id Greece F2)
+  v2.0.6  gmt_surface_py FMG+aniso+Briggs wire env-gated (Mira #38)
+  v2.0.7  SAT_llt2rat constants → utils/vector.py (Mira #46)
+  v2.0.8  merge_unwrap_geocode_tops snaphu fix + awk-int (Mira #49)
+  v2.0.9  iono env-gate + scipy gauss opt-in (Mira #48)
+  v2.1.0  MILESTONE — 9/9 SAT --fast pass, cumulative 1.22× py vs csh
+          Iris's --unit/--smart_fast/--sample/blessed tier system landed
+  v2.1.1  touched_to_cases.py rules extended (Mira #51)
+  v2.1.2  xcorr C-parity test opt-in (--unit drops 21→3min)
+  v2.1.3  stage-cache infrastructure (default OFF, 25 tests pass)
+  v2.1.4  Rule 10 — port C algorithm verbatim first
+  v2.1.5  Rule 10 carve-out — bit-id AND faster ports keep as-is
+  v2.1.6  blockmedian_py wrap (RED trap removed, Mira #56)
+  v2.1.7  gmt grdsample port — byte-id + 1.95× faster (Mira #54)
+  v2.1.8  gmt surface FAITHFUL port — byte-id, but 1.9-4× SLOWER (Mira #52)
+  v2.1.9  gmt grdfilter port — byte-id + 6× faster (Mira #55)
+```
+
+### What's wired in production (default ON)
+
+```
+✓ gmt grdmath FLIPUD/MUL/ADD/SUB (Miras #30/#36)         in-process numpy
+✓ gmt grdtrack bilinear (Mira #11)                       proj_ra2ll_fast
+✓ gmt gmtconvert (Mira #19)                              gmt_inproc.py
+✓ snaphu / snaphu_interp wrappers (Mira #43)             utils/snaphu.py
+✓ align_tops.csh port (Mira #41)                         utils/align_tops
+✓ phasediff_py + make_los_py (Mira #39)                  intf, geocode
+✓ iono Python wrapper (default uses gmt grdfilter)       utils/estimate_ionospheric_phase
+✓ merge_unwrap_geocode_tops port (Mira #49)              utils/merge_unwrap_geocode_tops
+✓ SAT_llt2rat constants centralized (Mira #46)           via utils/vector.py
+✓ blockmedian CLI wrapper (Mira #56)                     bin_py/blockmedian_py
+```
+
+### What's ported but NOT yet wired (committed v2.1.X)
+
+```
+○ gmt_grdsample_py (v2.1.7)        utils/gmt_grdsample_py.py — byte-id + 1.95× faster
+                                     Wire target: 5 sites in snaphu.py + p2p_stages.py
+                                     Status: ready, awaits wire-in Mira
+                                     
+○ gmt_grdfilter_py (v2.1.9)        utils/gmt_grdfilter_py.py — byte-id + 6× faster
+                                     Wired into iono path env-gated; default still gmt subprocess
+                                     because iono not in regression sweep
+                                     
+○ gmt_surface_py (v2.1.8)          utils/gmt_surface_py.py — byte-id, but 1.9-4× SLOWER
+                                     GMTSAR_SURFACE_INPROC=1 to enable; default OFF
+                                     Awaits Mira #60 optimization pass
+                                     
+○ stage-cache (v2.1.3)              tests/stage_cache.py — GMTSAR_STAGE_CACHE=1 to enable
+                                     Default OFF until multi-case parity verification
+                                     
+○ scipy.gauss opt-in (deprecated)   utils/estimate_ionospheric_phase
+                                     Mira #55's grdfilter port replaces it byte-id
+                                     Wire confirmed; legacy scipy code deleted
+```
+
+### Active Miras (2026-05-22 evening)
+
+```
+🏃 Mira #44  in-memory chain in dem2topo_ra
+             Eliminates intermediate .grd I/O between adjacent in-process ops
+             Target: 5-10s/case savings
+             Worktree-isolated
+             
+🏃 Mira #60  perf-tune gmt_surface_py to match-or-beat gmt C single-thread
+             Cache-aware tiling, float32 precision, SIMD-friendly stencil
+             Target: 6601×4801 ≤ gmt's 9.49s
+             Worktree-isolated
+```
+
+### Roadmap — what's still needed to port
+
+#### Tier P — Ports that LOSE to gmt C (need optimization)
+
+```
+1. gmt_surface_py (v2.1.8)
+   Status: faithful but 1.9-4× slower than gmt C single-thread
+   Mira #60 optimizing now
+   IF can't beat gmt at strict single-thread: document gap, use
+   per-grid-size dispatch (small grids = py, big grids = gmt subprocess)
+```
+
+#### Tier W — Ports ready to wire (byte-id + faster)
+
+```
+2. gmt_grdsample_py wire-in (small Mira mission)
+   5 sites in snaphu.py + p2p_stages.py
+   Replaces ~5 gmt grdsample subprocess calls per case
+   Estimated 30-min Mira mission
+   
+3. gmt_grdfilter_py default-on for iono (when iono gets regression coverage)
+   Currently GMTSAR_IONO_GAUSS_PY=1 enables py path
+   Default flip blocked on: no test case has correct_iono=1
+   Need test fixture with iono enabled before flipping default
+   
+4. gmt_surface_py default-on for small grids
+   Currently GMTSAR_SURFACE_INPROC=0 default
+   Per-grid-size dispatch: if n_nodes < 4M, use py; else gmt
+   Estimated 1-day Mira mission (depends on Mira #60 result)
+```
+
+#### Tier R — Rule 10 cleanup (YELLOW items from Mira #53 audit)
+
+```
+5. phasediff_py long-baseline spline correction
+   Currently NotImplementedError for baseline > 1000m
+   Port phasediff.c lines ~470-540 (Lindsey 2015 spline range-shift)
+   Need ALOS-2 wide-swath or TanDEM-X test data
+   Estimated 1-week Mira mission
+   
+6. scipy.gauss opt-in deletion confirmation
+   Mira #55 already wired gmt_grdfilter_py into iono
+   Verify no callers remain using the old scipy path
+   Estimated 30 min audit
+```
+
+#### Tier C — Big-effort C ports (deferred)
+
+```
+7. pre_proc per SAT family port (huge)
+   ALOS, ALOS2, CSK, ENVI, ERS, RS2, S1, TSX = 7-8 families
+   Each ~2-4 weeks (read SAT-specific raw → SLC focusing C code)
+   Total ~3-6 months
+   Biggest single perf gain remaining (30-50% wall reduction per case)
+   
+8. intf / filter C binaries port
+   Medium effort: ~2-4 weeks total
+   Each ~5-10s/case
+   
+9. snaphu C binary (third-party, 30k LOC)
+   NOT recommended to port — well-tested, optimized, complex
+   Keep subprocess wrapper indefinitely
+```
+
+#### Tier I — Infrastructure (test system, in-memory chain)
+
+```
+10. In-memory chain in dem2topo_ra (Mira #44 active)
+    Removes ~5-10 intermediate .grd writes per case
+    
+11. In-memory chain in geocode (similar pattern, future Mira)
+    
+12. Stage-cache production wire (when default-on validated)
+    
+13. CI integration (GitHub Actions / similar)
+    Auto-run --unit + --smart_fast on every PR
+    Estimated 1 day
+    
+14. Add iono-enabled test fixture (correct_iono=1)
+    Unblocks default-on iono port
+    
+15. Wire phasediff_py long-baseline (after Tier R #5 lands)
+```
+
+### Perf summary (cumulative, single-thread)
+
+```
+v2.0.0 baseline (mixed vintage):   1.04× py vs csh (essentially parity)
+v2.0.1 (madvise NFS fix):          all 9 SAT py > csh; CSK_RAW/TSX flipped
+v2.1.0 milestone:                  cumulative 1.22× py vs csh on --fast 9 SAT
+
+Expected after Tier W (wire-in) lands:
+  + Mira #44 in-memory chain:    5-10s/case
+  + grdsample wire-in:           5-10× faster on 5 sites per case
+  + grdfilter default-on (iono): only when iono enabled, future
+  Estimated cumulative: 1.3-1.5× py vs csh on --fast
+  
+Expected after Tier P (surface optimization) lands:
+  + If Mira #60 beats gmt:       50-100s/case on big-grid cases
+  Estimated cumulative: 1.5-2.0× py vs csh on --fast
+
+Expected after Tier C (pre_proc port):
+  + Per-SAT-family wins as each lands
+  Estimated 30-50% wall reduction per case for that SAT family
+  Time horizon: 6-12 months
+```
+
+### Project rules timeline
+
+```
+Rule 8 (merge gate): codified after Mira #43 NISAR stale-oracle incident
+Rule 8.8 (path-exercising smoke): codified after gmt_surface_py wire-in 
+         smoke fell through to subprocess on RS2 (anisotropic case)
+Rule 9 (no writes to csh_test/): codified after sweep-script bugs
+Rule 10 (port C verbatim): codified 2026-05-22 from gmt_surface_py Jacobi shortcut
+Rule 10 carve-out (bit-id + faster keep as-is): refined same day
+```
