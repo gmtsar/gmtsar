@@ -264,3 +264,55 @@ within tolerance" hand-waving.
 
 When in doubt: read the C source. The C author already solved the
 hard problem. Don't re-derive it.
+
+**Carve-out — existing ports that ARE bit-identical to gmt C AND
+faster:** these are compliant even if not line-by-line verbatim.
+The spirit of the rule is "don't reinvent the wheel and end up
+slower or less accurate" — if the port lands at the same numerical
+answer and runs faster, the substitution is a genuine improvement,
+not a shortcut.
+
+Concrete examples that qualify for the carve-out:
+
+- **`xcorr_py`**: uses `scipy.fft` (FFTW backend) instead of GMTSAR's
+  bundled KISS-FFT. scipy.fft is the same family of algorithms
+  (Cooley-Tukey radix-2/4) with a tighter implementation. Last-ULP
+  differences exist; bit-identical at every commonly-used precision.
+  And 1.94× faster on RS2. Keep.
+
+- **`utils/gmt_grd_io.py`**: reverse-engineered netCDF writer from
+  `ncdump -h` observation of gmt-produced files. Not derived from
+  GMT's C netCDF I/O code. But the files it writes ARE accepted by
+  every downstream gmt module (grdinfo, grdmath, grdcut, grdtrack,
+  xyz2grd round-trip — 16 parity tests pass). Avoids xarray's
+  netCDF cruft. Keep.
+
+- **`bin_py/_gmt_native_bf.py`**: same — observation-derived =bf
+  binary I/O for filter.csh's intermediate format. Files read/written
+  bit-equally to gmt's own =bf I/O. Keep.
+
+- **`utils/gmt_blockmedian_py.py`** (Mira #25, GREEN): bin index via
+  banker rounding + argsort grouping + per-bin Numba median. Different
+  data structure from gmt's nth_element quickselect, but byte-identical
+  output at the densities the pipeline actually uses (verified on 9M-row
+  ALOS_Baja_EQ trans.dat). 2.5× faster at N=8 threads. Keep.
+
+The carve-out does NOT apply to:
+
+- **Algorithm-class deviations that lose accuracy or speed** (Jacobi vs
+  GS-SOR — gmt_surface_py KEYSTONE; scipy gaussian_filter vs gmt
+  -Fg's circular truncated kernel).
+- **Incomplete ports advertising drop-in replacement** (the dormant
+  `bin_py/blockmedian_py` trap with scipy.stats + cell-center coords).
+- **Missing functionality** (phasediff_py long-baseline NotImplementedError
+  doesn't qualify — there's no output to compare for that path).
+
+**Verification test for the carve-out:**
+
+A port qualifies for keep-as-is if BOTH:
+1. Byte-identical to gmt C on real test data (or rms below documented
+   sub-ULP floor in the audit log)
+2. Equal or faster than gmt C single-thread on the same hardware
+
+If both hold and a Mira's audit says GREEN, accept the port. Otherwise
+follow Rule 10's verbatim-port discipline.
