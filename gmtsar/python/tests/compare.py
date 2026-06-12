@@ -272,6 +272,106 @@ def discover_intf_dirs(case):
 RESULTS_DIR = os.path.join(workAbsoluteDir.rstrip(os.sep), 'results')
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
+def _read_git_sidecar(case):
+    """Read the git-sha sidecar written by case_runner.sh and return a dict
+    suitable for embedding into the per-case JSON.
+
+    Sidecar lives at <workdir>/results/<case>.git_sidecar and contains
+    key=value lines:
+        launched_at, sha_at_start, dirty_files_at_start,
+        finished_at, sha_at_end, dirty_files_at_end
+
+    Returns a dict with these keys plus computed mixed-vintage warnings:
+      git_sha          : SHA at case start (short form, '' if unknown)
+      git_dirty        : bool — any dirty files under gmtsar/python/ at start
+      dirty_files      : list[str] — dirty file paths at case start
+      launched_at      : ISO-8601 timestamp at case start
+      finished_at      : ISO-8601 timestamp at case end
+      sha_at_end       : SHA at case end
+      vintage_warnings : list[str] — non-empty if HEAD or dirty set changed
+                         during the case (MIXED_VINTAGE_SHA_CHANGE,
+                         MIXED_VINTAGE_DIRTY).
+
+    Per project_rules.md #6: every per-case scorecard records `git_sha`. The
+    extension here also catches the case where the SHA advanced WHILE the
+    case was running (e.g. someone committed during a 3-hour sweep) — that
+    case's result is attributable to a span of SHAs rather than a single
+    one, so it gets a warning marker.
+
+    If the sidecar is missing (case_runner.sh failed early, or this is a
+    legacy run pre-sidecar) we still emit a complete record with empty SHA
+    fields — old per-case JSONs must still parse, just with optional new
+    fields per the mission constraint.
+    """
+    out = {
+        'git_sha': '',
+        'git_dirty': False,
+        'dirty_files': [],
+        'launched_at': '',
+        'finished_at': '',
+        'sha_at_end': '',
+        'vintage_warnings': [],
+    }
+    path = os.path.join(RESULTS_DIR, f'{case}.git_sidecar')
+    if not os.path.isfile(path):
+        return out
+    raw = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                raw[k.strip()] = v.strip()
+    except Exception as e:
+        out['vintage_warnings'].append(f'sidecar_read_error: {e}')
+        return out
+
+    sha_start = raw.get('sha_at_start', '')
+    sha_end   = raw.get('sha_at_end',   '')
+    df_start = [p for p in raw.get('dirty_files_at_start', '').split(',') if p]
+    df_end   = [p for p in raw.get('dirty_files_at_end',   '').split(',') if p]
+
+    # Use short SHA (7 chars) for compactness in the JSON; matches the
+    # convention in tools/perf_snapshot.py and tests/sweep.sh hardware
+    # snapshot. Empty string if the git lookup failed entirely.
+    out['git_sha']     = (sha_start or '')[:7]
+    out['git_dirty']   = bool(df_start)
+    out['dirty_files'] = df_start
+    out['launched_at'] = raw.get('launched_at',  '')
+    out['finished_at'] = raw.get('finished_at',  '')
+    out['sha_at_end']  = (sha_end or '')[:7]
+
+    # Mixed-vintage detection. Warnings, not failures — the case may have
+    # still produced correct output even if HEAD moved mid-run.
+    if sha_start and sha_end and sha_start != sha_end:
+        out['vintage_warnings'].append(
+            f'MIXED_VINTAGE_SHA_CHANGE: started at {sha_start[:7]}, '
+            f'finished at {sha_end[:7]} — result may not be attributable '
+            f'to a single commit')
+    # MIXED_VINTAGE_DIRTY: a file dirty at start changed (or a new file
+    # appeared dirty during the case). Means the working tree mutated mid-run.
+    if set(df_start) != set(df_end):
+        added = sorted(set(df_end) - set(df_start))
+        removed = sorted(set(df_start) - set(df_end))
+        detail = []
+        if added:   detail.append(f'new={added}')
+        if removed: detail.append(f'cleared={removed}')
+        out['vintage_warnings'].append(
+            'MIXED_VINTAGE_DIRTY: dirty file set changed mid-case — ' +
+            '; '.join(detail))
+
+    # Consume the sidecar so a re-run of compare.py doesn't recycle stale
+    # at-start data into the next sweep's scorecard. (Safe: we've embedded
+    # everything we need into case_results.)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return out
+
 for caseName in caseNameList:
     print(' ')
     print('Comparing case ', caseName)
@@ -280,6 +380,10 @@ for caseName in caseNameList:
         'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'comparisons': [],
     }
+    # Embed git-sha sidecar fields written by case_runner.sh. Missing sidecar
+    # is non-fatal (legacy run); the helper returns a record with empty SHA
+    # fields and no warnings.
+    case_results.update(_read_git_sidecar(caseName))
     intf_dirs = discover_intf_dirs(caseName)
     for fileName in fileNameList:
         ftype = 'png' if fileName.endswith('.png') else 'grd'
