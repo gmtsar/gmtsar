@@ -24,6 +24,53 @@ except ImportError as _e:
           "using gmt subprocess.", file=sys.stderr)
     _HAVE_GRDCUT_PY = False
 
+# Mira (2026-05-22): in-process gmt grdfill -Ag wrapper (utils/gmt_grdfill_py).
+#
+# **Default OFF** (GMTSAR_GRDFILL_PY=0). 22/22 isolated parity tests are
+# green AND the port is 1.65-2.0× faster than gmt grdfill subprocess on
+# synthetic gridline-registered donors. BUT on the real dem2topo_ra mode=1
+# pipeline the donor (`coarse.grd`) is pixel-registered and its pixel-
+# centres are inset from `topo_ra_tmp.grd`'s pixel-centres by inc/2; the
+# port hard-codes `in_off = 0.0` in `_bcr_bicubic_sample` and raises
+# `ValueError: donor grid does not cover query x range: qx in [1, 11303]
+# vs donor [8.00567, 11296]` instead of letting the bicubic stencil fall
+# back to natural-BC pad (which is what gmt C does silently).
+#
+# Smoke test 2026-05-22 (ALOS_haiti temp.rat → mode=1 grdfill):
+#     gmt grdfill subprocess: 3.55 s wall, writes valid pixel.grd
+#     gmt_grdfill_py_file:    1.52 s wall, RAISES range-coverage error
+#
+# To enable for production wire-in, the port must:
+#   1. Add a `donor_node_offset` parameter to gmt_grdfill_py (drop the
+#      hard-coded `in_off = 0.0` at gmt_grdfill_py.py:429) and propagate
+#      from the file wrapper.
+#   2. Add a coarse-pixel-registered-donor parity test against gmt C on
+#      a real (non-synthetic) grid pair from the dem2topo_ra mode=1 path.
+# See AUDIT.md "Mira grdfill wire-in 2026-05-22" for the diagnosis trace.
+#
+# Set GMTSAR_GRDFILL_PY=1 to opt in once the gap is closed.
+try:
+    from gmt_grdfill_py import gmt_grdfill_py_file as _grdfill_py_file
+    _HAVE_GRDFILL_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_grdfill_py import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GRDFILL_PY = False
+
+
+def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
+    """Dispatch `gmt grdfill <in> -Ag<donor> -G<out>` to py port or gmt.
+
+    Env gate: GMTSAR_GRDFILL_PY=1 → in-process numpy port (opt-in only;
+              currently fails on pixel-reg donor mismatch, see header).
+              GMTSAR_GRDFILL_PY=0 (default) → `gmt grdfill` subprocess.
+    """
+    use_py = os.environ.get("GMTSAR_GRDFILL_PY", "0") == "1"
+    if use_py and _HAVE_GRDFILL_PY:
+        _grdfill_py_file(in_grd, out_grd, algorithm='g', donor_path=donor_grd)
+    else:
+        run(f"gmt grdfill {in_grd} -Ag{donor_grd} -G{out_grd}")
+
 
 def _advise_sequential(arr):
     """Hint the kernel that this memmap will be read sequentially.
@@ -579,7 +626,9 @@ def dem2topo_ra():
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
                 "mean.rat", str(region), int(rng2), 16, 0.1, "coarse.grd")
-            run("gmt grdfill topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+            # Mira (2026-05-22): in-process gmt_grdfill_py (-Ag).
+            # GMTSAR_GRDFILL_PY=0 → subprocess.
+            _grdfill_dispatch("topo_ra_tmp.grd", "pixel.grd", "coarse.grd")
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
@@ -642,7 +691,9 @@ def dem2topo_ra():
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
                 "mean.rat", str(region), int(rng2), 32, 0.1, "coarse.grd")
-            run("gmt grdfill topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+            # Mira (2026-05-22): in-process gmt_grdfill_py (-Ag).
+            # GMTSAR_GRDFILL_PY=0 → subprocess.
+            _grdfill_dispatch("topo_ra_tmp.grd", "pixel.grd", "coarse.grd")
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
