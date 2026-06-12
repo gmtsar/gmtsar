@@ -164,6 +164,110 @@ def _gcd(a: int, b: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Dimension-suggestion logic (mirrors gmt_optimal_dim_for_surface /
+# gmtsupport_guess_surface_time / gmtsupport_compare_sugs in
+# gmt_support.c:6424-17003).
+#
+# surface.c:2029-2047 (GMT_surface, called unconditionally unless -Qr) calls
+# this BEFORE the gcd/stride hierarchy is set up.  If a "better" (n_columns,
+# n_rows) pair exists with a smaller gmtsupport_guess_surface_time() value,
+# GMT silently EXPANDS the solved region/grid to that pair, runs the entire
+# multigrid solve on the expanded grid, and crops back to the user's
+# requested region when writing the output (surface_write_grid,
+# surface.c:939-966).
+#
+# This is the actual fix for the "gcd==1" case: C essentially NEVER solves
+# a mutually-prime grid (except under -Qr) — it pads the grid to the nearest
+# size with a better gcd first.  Mira #68.
+# ---------------------------------------------------------------------------
+def _guess_surface_time(n_columns: int, n_rows: int) -> float:
+    """Port of gmtsupport_guess_surface_time (gmt_support.c:6424-6490).
+
+    n_columns, n_rows here are in the "n-1" convention (one less than the
+    node count), matching the C call sites.
+    """
+    g = _gcd(n_columns, n_rows)
+    if g > 1:
+        factors = _prime_factors(g)
+        nxg = n_columns // g
+        nyg = n_rows // g
+        if nxg < 3 or nyg < 3:
+            factor = factors[-1]
+            factors = factors[:-1]
+            g //= factor
+            nxg *= factor
+            nyg *= factor
+    else:
+        factors = []
+        nxg = n_columns
+        nyg = n_rows
+    length = float(max(nxg, nyg))
+    t_sum = float(nxg) * (float(nyg) * length)
+    while g > 1:
+        factor = factors[-1]
+        factors = factors[:-1]
+        g //= factor
+        nxg *= factor
+        nyg *= factor
+        length = float(factor)
+        t_sum += float(nxg) * (float(nyg) * length)
+    return t_sum
+
+
+def _optimal_dim_for_surface(n_columns: int, n_rows: int):
+    """Port of gmt_optimal_dim_for_surface (gmt_support.c:16944-17003).
+
+    Returns the BEST suggestion (n_columns_sug, n_rows_sug, factor) per
+    gmtsupport_compare_sugs's DESCENDING sort, or None if no suggestion
+    improves on the user's (n_columns, n_rows).
+
+    n_columns, n_rows are in the "n-1" convention (one less than the node
+    count) as required by the C call sites (surface.c:2034, 2082).
+    """
+    users_time = _guess_surface_time(n_columns, n_rows)
+    xstop = 2 * n_columns
+    ystop = 2 * n_rows
+
+    suggestions = []
+    nx2 = 2
+    while nx2 <= xstop:
+        nx3 = 1
+        while nx3 <= xstop:
+            nx5 = 1
+            while nx5 <= xstop:
+                nxg = nx2 * nx3 * nx5
+                if not (nxg < n_columns or nxg > xstop):
+                    ny2 = 2
+                    while ny2 <= ystop:
+                        ny3 = 1
+                        while ny3 <= ystop:
+                            ny5 = 1
+                            while ny5 <= ystop:
+                                nyg = ny2 * ny3 * ny5
+                                if not (nyg < n_rows or nyg > ystop):
+                                    current_time = _guess_surface_time(nxg, nyg)
+                                    if current_time < users_time:
+                                        suggestions.append(
+                                            (nxg, nyg, users_time / current_time))
+                                ny5 *= 5
+                            ny3 *= 3
+                        ny2 *= 2
+                nx5 *= 5
+            nx3 *= 3
+        nx2 *= 2
+
+    if not suggestions:
+        return None
+    # gmtsupport_compare_sugs: DESCENDING by factor.  Python's sort is
+    # stable, so ties keep the C nested-loop discovery order (ascending
+    # nx2/nx3/nx5/ny2/ny3/ny5 powers) — matches glibc qsort on the small
+    # arrays involved here closely enough that the top (largest-factor)
+    # entry is unambiguous in practice.
+    suggestions.sort(key=lambda s: -s[2])
+    return suggestions[0]
+
+
+# ---------------------------------------------------------------------------
 # Briggs sub-cell coefficients — surface_solve_Briggs_coefficients
 # ---------------------------------------------------------------------------
 # surface.c:544-573.  Given normalised offset (xx, yy) of the data
@@ -684,6 +788,58 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         alpha = 1.0
     alpha = float(alpha)
 
+    # ----- Dimension-suggestion / region expansion (surface.c:2029-2047) -----
+    # Computed on the USER's region, in "n-1" convention, BEFORE the
+    # pixel-registration offset trick (which doesn't change n_columns-1 /
+    # n_rows-1 — surface.c:2055-2063 keeps the node counts fixed and only
+    # shifts wesn by +/- inc/2).
+    #
+    # If gmt_optimal_dim_for_surface finds a (n_columns, n_rows) pair with
+    # a smaller guess_surface_time (this is how C avoids ever actually
+    # solving a mutually-prime grid except under -Qr), GMT silently grows
+    # the region/grid, solves on the larger grid, and crops back to the
+    # user's requested window when writing the result
+    # (surface_write_grid, surface.c:939-966).  Mira #68: this expansion
+    # step was MISSING, so gcd(n_columns-1, n_rows-1)==1 inputs collapsed
+    # the Python port's stride hierarchy to a single stride=1 pass with no
+    # coarse warm-start — diverging from what `gmt surface` actually runs.
+    n_columns_u = int(round((xmax - xmin) / dx))   # "n-1" convention
+    n_rows_u = int(round((ymax - ymin) / dy))
+    crop_x0 = 0   # columns to drop from the LEFT of the solved grid
+    crop_y0 = 0   # rows to drop from the BOTTOM (south) of the solved grid
+    crop_nx = n_columns_u + 1   # final output width  (node count)
+    crop_ny = n_rows_u + 1      # final output height (node count)
+
+    sug = _optimal_dim_for_surface(n_columns_u, n_rows_u)
+    if sug is not None:
+        sug_nx, sug_ny, _factor = sug
+        m_x = sug_nx - n_columns_u
+        m_y = sug_ny - n_rows_u
+        # surface.c:1391-1400 (integer division truncates toward zero;
+        # m_x, m_y >= 0 here so // matches C's m/2 exactly).
+        half_x = m_x // 2
+        xmin_exp = xmin - half_x * dx
+        xmax_exp = xmax + half_x * dx
+        if m_x % 2:
+            xmax_exp += dx
+        half_y = m_y // 2
+        ymin_exp = ymin - half_y * dy
+        ymax_exp = ymax + half_y * dy
+        if m_y % 2:
+            ymax_exp += dy
+        # surface_write_grid's del_pad (surface.c:951-954): nodes to crop
+        # from each side to get back to the user's requested window.
+        crop_x0 = half_x
+        crop_y0 = half_y
+        crop_nx = n_columns_u + 1
+        crop_ny = n_rows_u + 1
+        xmin, xmax, ymin, ymax = xmin_exp, xmax_exp, ymin_exp, ymax_exp
+        if verbose:
+            print(f"[surface_py] region expanded for gcd hierarchy: "
+                  f"({n_columns_u}x{n_rows_u}) -> ({sug_nx}x{sug_ny}) "
+                  f"speedup={_factor:.4g}; crop back to "
+                  f"({crop_nx}x{crop_ny}) at offset ({crop_x0},{crop_y0})")
+
     # ----- Pixel-registration trick (surface.c:2055-2063) -----
     if pixel_reg:
         nx_pixel = int(round((xmax - xmin) / dx))
@@ -737,9 +893,19 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         grid_final = _restore_planar_trend(grid, n_rows, n_columns,
                                             plane_icept, plane_sx, plane_sy, 1.0)
         if pixel_reg:
+            if sug is not None:
+                raise NotImplementedError(
+                    "gcd-hierarchy region expansion combined with "
+                    "pixel_reg is not supported (Mira #68 known "
+                    "limitation); use a region/inc with "
+                    "gcd(n_columns-1, n_rows-1) > 1, or node registration")
             grid_final = grid_final[:ny_pixel, :nx_pixel]
         # Flip to row 0 = SOUTH for callers
-        return np.ascontiguousarray(grid_final[::-1, :])
+        grid_final = grid_final[::-1, :]
+        if sug is not None:
+            grid_final = grid_final[crop_y0:crop_y0 + crop_ny,
+                                     crop_x0:crop_x0 + crop_nx]
+        return np.ascontiguousarray(grid_final)
     r_z_rms = 1.0 / z_rms
     z_norm = z_det * r_z_rms
 
@@ -1045,6 +1211,28 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 
     # Flip to row 0 = SOUTH (ascending y) — caller convention.
     grid = grid[::-1, :]
+
+    # ----- Crop back to the user's requested window (surface_write_grid,
+    # surface.c:947-961) if the region was expanded above for the gcd
+    # hierarchy. -----
+    if sug is not None:
+        if pixel_reg:
+            # surface.c's del_pad for pixel-registered output involves a
+            # half-cell (dx/2, dy/2) shift on top of crop_x0/crop_y0
+            # (irint of a possibly-half-integer node count).  Not
+            # validated against C — hard-fail rather than silently
+            # produce a possibly off-by-one-node grid (Rule 4).
+            raise NotImplementedError(
+                "gcd-hierarchy region expansion combined with pixel_reg "
+                "is not supported (Mira #68 known limitation); use a "
+                "region/inc with gcd(n_columns-1, n_rows-1) > 1, or "
+                "node registration")
+        grid = grid[crop_y0:crop_y0 + crop_ny, crop_x0:crop_x0 + crop_nx]
+        if grid.shape != (crop_ny, crop_nx):
+            raise RuntimeError(
+                f"gcd-hierarchy crop produced shape {grid.shape}, "
+                f"expected ({crop_ny}, {crop_nx})")
+
     return np.ascontiguousarray(grid)
 
 
