@@ -608,4 +608,42 @@ Rule 8.8 (path-exercising smoke): codified after gmt_surface_py wire-in
 Rule 9 (no writes to csh_test/): codified after sweep-script bugs
 Rule 10 (port C verbatim): codified 2026-05-22 from gmt_surface_py Jacobi shortcut
 Rule 10 carve-out (bit-id + faster keep as-is): refined same day
+Rule 11 (every bugfix -> regression test): codified 2026-05-22 (v2.1.18)
+```
+
+### Campaign paused 2026-05-22 (resume here)
+
+```
+HEAD at pause: v2.1.21 (8fbf892)
+--fast (6-case tier): 5/6 reported green (RS2, CSK_RAW, ERS, S1A_Greece,
+  ALOS_haiti all pass); ALOS_haiti and ALOS_Baja_EQ py-side both finished
+  clean, ALOS_Baja_EQ comparison just didn't make the report window —
+  re-run --fast first thing on resume to get a clean 6/6 baseline.
+
+Landed since v2.1.18:
+  v2.1.19 - grdsample default ON (numba NaN-gather fix, Mira #65)
+  v2.1.20 - grdfill wired into dem2topo_ra, default OFF (pixel-reg gap), Mira #67
+  v2.1.21 - SHA/vintage sidecar tracking for sweep reconciliation, Mira #69
+  267 passed / 11 skipped on full bin_py/tests/ (excl. surface, ~3min)
+
+Still open / lost work to re-dispatch on resume:
+  - GMTSAR_SURFACE_INPROC default OFF: gcd(n_columns-1,n_rows-1)==1 bug
+    (ENVI 5191x7579, TSX 9440x6937 -> wrong fixed point, no multigrid
+    hierarchy). Mira #68 was fixing this, hit session limit, no
+    worktree/result survived -> re-dispatch from scratch.
+  - GMTSAR_GRDFILL_PY default OFF: _bcr_bicubic_sample hardcodes
+    in_off=0.0, breaks on pixel-reg donor grids ("donor grid does not
+    cover query x range"). See AUDIT_grdfill_wirein_mira_2026-05-22.md
+    for fix path. Mira #70 was fixing this, hit session limit, lost.
+  - xyz2grd port: Mira #71 hit session limit before starting, lost.
+  - Stage cache: architecturally broken (AUDIT_stage_cache_mira57.md),
+    needs redesign mission (fingerprint post-stage outputs instead of
+    raw/ mutate-restore). Not yet dispatched.
+  - GMTSAR_IONO_GAUSS_PY: still blocked on no test case having
+    correct_iono=1.
+  - GMTSAR_DEM2TOPO_INMEM_CHAIN: depends on SURFACE_INPROC being safe.
+
+On resume: re-run --fast for a clean baseline, then re-dispatch the
+3 lost missions (surface gcd=1, grdfill pixel-reg, xyz2grd) in
+worktrees per the standing 3-concurrent-Mira discipline.
 ```
