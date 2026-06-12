@@ -22,18 +22,16 @@ Env-gate
 --------
 ``GMTSAR_XYZ2GRD_PY`` controls which path is used.
 
-* ``GMTSAR_XYZ2GRD_PY=1``: in-process port (``gmt_xyz2grd_py``).
-* ``GMTSAR_XYZ2GRD_PY=0`` (DEFAULT): ``gmt xyz2grd`` subprocess.
-
-Default OFF -- land conservatively per project_rules.md Rule 8 (env-gated
-wire-ins need a path-exercising smoke before default flips). A follow-up
-mission flips the default after a full sweep with the gate ON shows no
-regression.
+* ``GMTSAR_XYZ2GRD_PY=1`` (DEFAULT): in-process port (``gmt_xyz2grd_py``).
+* ``GMTSAR_XYZ2GRD_PY=0``: ``gmt xyz2grd`` subprocess fallback.
 
 History
 -------
-* 2026-06-12 -- initial wire-in (mira-volkov, Mission #71). See
-  AUDIT_xyz2grd_mira71.md for parity results.
+* 2026-06-12 -- initial wire-in, default OFF (mira-volkov, Mission #71).
+  See AUDIT_xyz2grd_mira71.md for unit-level parity results (bit-identical
+  on real ALOS_haiti phase_patch.grd, ~10x faster).
+* 2026-06-12 -- default flipped ON after RS2_SLC_Hawaii full-pipeline
+  smoke (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.22).
 """
 from __future__ import annotations
 
@@ -46,11 +44,11 @@ from gmtsar_lib import run as _run
 
 
 def _py_enabled() -> bool:
-    """In-process port is OFF by default — see module docstring.
+    """In-process port is ON by default — see module docstring.
 
-    Set ``GMTSAR_XYZ2GRD_PY=1`` to opt into the in-process port.
+    Set ``GMTSAR_XYZ2GRD_PY=0`` to fall back to the ``gmt xyz2grd`` subprocess.
     """
-    return os.environ.get("GMTSAR_XYZ2GRD_PY", "0") == "1"
+    return os.environ.get("GMTSAR_XYZ2GRD_PY", "1") == "1"
 
 
 def xyz2grd_file(in_path: str, out_path: str, *, par1: str, par2: str,

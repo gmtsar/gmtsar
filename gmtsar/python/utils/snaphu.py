@@ -223,7 +223,7 @@ def _snaphu_run(interp, threshold, defomax, region):
     par2 = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
                             False, 0, -100000)
     # Mira #71 (2026-06-12): in-process gmt xyz2grd port (utils/gmt_xyz2grd_py.py).
-    # Env-gated GMTSAR_XYZ2GRD_PY=1 (default OFF; subprocess fallback).
+    # Env-gated GMTSAR_XYZ2GRD_PY (default ON since v2.1.23; set =0 for subprocess fallback).
     _xyz2grd_file('unwrap.out', 'tmp.grd', par1=par1, par2=par2, ztype='f')
     _xyz2grd_file('conncomp.out', 'conncomp.grd', par1=par1, par2=par2, ztype='u')
     run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
@@ -396,7 +396,7 @@ def snaphu():
     print('SNAPHU: output from gmt grdinfo -I phase_patch.grd is', par2)
     
     # Mira #71 (2026-06-12): in-process gmt xyz2grd port (utils/gmt_xyz2grd_py.py).
-    # Env-gated GMTSAR_XYZ2GRD_PY=1 (default OFF; subprocess fallback).
+    # Env-gated GMTSAR_XYZ2GRD_PY (default ON since v2.1.23; set =0 for subprocess fallback).
     _xyz2grd_file('unwrap.out', 'tmp.grd', par1=par1, par2=par2, ztype='f')
     print(' ')
     print('SNAPHU: generate connected component ... ...')
