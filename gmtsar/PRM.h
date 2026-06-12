@@ -87,6 +87,15 @@ struct PRM {
 	double baseline_start;
 	double baseline_center;
 	double baseline_end;
+	double bh_start;
+	double bv_start;
+	double bh_center;
+	double bv_center;
+	double bh_end;
+	double bv_end;
+	double bx_start;
+	double bx_center;
+	double bx_end;
 	double alpha_start;
 	double alpha_center;
 	double alpha_end;
