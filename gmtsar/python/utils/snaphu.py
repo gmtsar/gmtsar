@@ -144,12 +144,11 @@ def _snaphu_run(interp, threshold, defomax, region):
 
     # --- landmask --------------------------------------------------------
     if check_file_report('landmask_ra.grd') is True:
-        # GMTSAR_GRDSAMPLE_PY=1 opts into the in-process port (Mira #54
-        # wire-in). Default OFF: byte-id parity verified, but the
-        # NaN-heavy 4×4 bicubic workload on real landmask grids is
-        # ~2.7× slower than gmt C. See utils/grdsample_wrapper.py
-        # docstring for full rationale; opt-in retained for the iono
-        # path (smaller, NaN-free, 1.7× faster in-process).
+        # GMTSAR_GRDSAMPLE_PY default ON since Mira #65: the @njit
+        # per-pixel gather kernel makes the port byte-id AND 2.25×
+        # faster than gmt C on the ALOS_haiti landmask (9.77M cells,
+        # 38% NaN). Set GMTSAR_GRDSAMPLE_PY=0 to force the subprocess
+        # fallback (A/B parity debugging only).
         # Default interp=bicubic matches gmt grdsample CLI default (-nc).
         if region is not None:
             # csh: gmt grdsample landmask_ra.grd -R<region> -I<inc(phase)> -G...

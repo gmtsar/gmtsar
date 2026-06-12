@@ -79,6 +79,23 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+# Numba is a soft dependency: when installed the per-pixel gather kernel
+# fuses the NaN check + weight-mask + accumulate that the pure-numpy slow
+# path expresses as eight large temporaries per (jj, ii) corner. The
+# kernel is single-thread, fastmath-disabled, and cached — same
+# discipline as the other utils/ ports (Rule 9 / Rule 10 carve-out).
+try:
+    from numba import njit  # type: ignore
+    _HAVE_NUMBA = True
+except ImportError:  # pragma: no cover - exercised on numba-free hosts
+    _HAVE_NUMBA = False
+
+    def njit(*_a, **_kw):  # type: ignore[misc]
+        def _wrap(fn):
+            return fn
+        return _wrap
+
+
 # ---------------------------------------------------------------------------
 # Output grid coord helpers (gmt_grd.h:122-123)
 # ---------------------------------------------------------------------------
@@ -276,6 +293,88 @@ def _apply_natural_bc(d_padded: np.ndarray, pad: int = 2) -> None:
     # (gmt_support.c comment: "Loaded all but three corner-most points
     # at each corner.").  These positions are never touched by the
     # 4x4 BCR kernel as long as the query is inside the grid.
+
+
+# ---------------------------------------------------------------------------
+# Per-pixel gather + NaN-aware accumulate (@njit single-thread)
+# ---------------------------------------------------------------------------
+#
+# Mira #65: the pure-numpy NaN slow-path in the bcr_n^2 corner loop
+# allocated a (tile_rows, nx_out) `nan_mask`, two `np.where` arrays, and
+# called `nan_mask.any()` on every iteration. On the ALOS_haiti
+# landmask (38% NaN, 9.77M cells, bcr_n=4 → 16 iterations × ~5 tiles)
+# this ran 2.7× SLOWER than gmt C. The fused @njit kernel below does
+# the same algebra per output pixel in a single pass — for every pixel
+# it gathers up to bcr_n*bcr_n input samples from the padded grid,
+# skips NaN entries (no weight contribution), and writes
+# (out_z, out_w). Accumulation order per-pixel matches the numpy code
+# exactly (j, i in row-major over the bcr_n × bcr_n corner block) so
+# byte-identical parity vs gmt C is preserved.
+#
+# Single-thread (no prange) per Rule 9 / project_rules Rule 10.
+# fastmath=False so NaN propagation and 1.0-t intermediate weights
+# behave bit-identically to numpy.
+
+@njit(parallel=False, fastmath=False, cache=True)
+def _gather_accumulate(d_pad, row_idx_pad, col_idx_pad, wy, wx,
+                       out_z, out_w):
+    """Fuse the bcr_n × bcr_n gather + NaN-aware multiply-accumulate.
+
+    Parameters
+    ----------
+    d_pad : (ny_in + 2*PAD, nx_in + 2*PAD) float64
+        Padded input grid in BCR frame (row 0 = north).
+    row_idx_pad : (ny_out,) int64
+        Per-output-row, the **top** row index into ``d_pad`` (already
+        includes PAD; for bcr_n=4 the C code subtracts 1 from row0
+        before this point so the index points at the upper-left of the
+        4-cell window). Out-of-bounds queries must have been rejected
+        upstream — the kernel does no bounds clamp.
+    col_idx_pad : (nx_out,) int64
+        Per-output-col, the **left** col index into ``d_pad``.
+    wy : (ny_out, bcr_n) float64
+        Per-row weights (bilinear: bcr_n=2; bicubic / bspline: bcr_n=4).
+    wx : (nx_out, bcr_n) float64
+        Per-col weights.
+    out_z : (ny_out, nx_out) float64, OUT
+        Will be filled with sum_{j,i} d * w (NaN samples skipped).
+    out_w : (ny_out, nx_out) float64, OUT
+        Will be filled with sum_{j,i} w_eff (NaN entries contribute 0).
+
+    Notes
+    -----
+    The kernel mirrors the (jj, ii) loop in the pure-numpy path:
+
+        for jj in 0..bcr_n:
+            for ii in 0..bcr_n:
+                z = d_pad[row_idx_pad[r]+jj, col_idx_pad[c]+ii]
+                w = wy[r, jj] * wx[c, ii]
+                if isnan(z): pass               # NaN → skip
+                else: out_z[r,c] += z*w; out_w[r,c] += w
+    """
+    ny_out = out_z.shape[0]
+    nx_out = out_z.shape[1]
+    bcr_n = wy.shape[1]
+    # We accumulate per-pixel; same (j, i) sum order as the numpy code,
+    # which means same per-pixel partial sums and therefore byte-id
+    # vs the previous (numpy) code path on every input pixel.
+    for r in range(ny_out):
+        r_top = row_idx_pad[r]
+        for c in range(nx_out):
+            c_left = col_idx_pad[c]
+            sum_z = 0.0
+            sum_w = 0.0
+            for jj in range(bcr_n):
+                wyy = wy[r, jj]
+                row = r_top + jj
+                for ii in range(bcr_n):
+                    z = d_pad[row, c_left + ii]
+                    if z == z:  # not NaN (NaN != NaN); avoids np.isnan call
+                        w = wyy * wx[c, ii]
+                        sum_z += z * w
+                        sum_w += w
+            out_z[r, c] = sum_z
+            out_w[r, c] = sum_w
 
 
 # Map -n flag -> (bcr_n, weight_fn, is_neighbour)
@@ -498,17 +597,17 @@ def gmt_grdsample_py(
     out_z = np.zeros((ny_out, nx_out), dtype=np.float64)
     out_w = np.zeros((ny_out, nx_out), dtype=np.float64)
 
-    # Pre-build per-offset indices for each axis.  These reach into the
-    # padded array, which carries valid natural-BC values out to 2
-    # cells past the data edge -- so we add PAD and DO NOT clamp.
-    # gmt_bcr.c:261 has a safety ``if (node >= G->header->size) continue;``
-    # but with PAD=2 and bcr_n in {2,4} on data with n>=1 the index
-    # never exceeds (n + 2*PAD - 1).  We assert that to fail loud if
-    # an unexpected query slips through.
-    col_idx = col0[None, :] + np.arange(bcr_n)[:, None] + PAD   # (bcr_n, nx_out)
-    row_idx = row0[None, :] + np.arange(bcr_n)[:, None] + PAD   # (bcr_n, ny_out)
-    if (col_idx.min() < 0 or col_idx.max() >= nx_in + 2 * PAD or
-        row_idx.min() < 0 or row_idx.max() >= ny_in + 2 * PAD):
+    # Pre-build the per-output-row / per-output-col **top-left** index
+    # into the padded grid (already PAD-shifted; bcr_n=4 has the -1
+    # shift baked into row0/col0 above). Out-of-bounds is rejected here
+    # rather than inside the kernel (matches gmt_bcr.c:261 safety check
+    # which we keep but don't expect to fire when -R is honoured).
+    row_idx_pad = (row0 + PAD).astype(np.int64)
+    col_idx_pad = (col0 + PAD).astype(np.int64)
+    if (col_idx_pad.min() < 0 or
+        col_idx_pad.max() + (bcr_n - 1) >= nx_in + 2 * PAD or
+        row_idx_pad.min() < 0 or
+        row_idx_pad.max() + (bcr_n - 1) >= ny_in + 2 * PAD):
         raise RuntimeError(
             "internal: BCR query index left the padded grid -- "
             "output region outside input by more than the PAD of 2 cells. "
@@ -516,43 +615,13 @@ def gmt_grdsample_py(
             "check new_region vs input extent."
         )
 
-    # NaN mask for the input (gmt_bcr.c:305 skips NaN nodes).
-    has_nan = np.isnan(d64).any()
-
-    # Tile along row axis to keep peak memory manageable for very large
-    # output grids.  Each tile builds a (tile_rows, nx_out, bcr_n, bcr_n)
-    # block of weights + reads -- ~tile_rows * nx_out * bcr_n^2 * 8B.
-    # Target ~256 MB per tile.
-    bytes_per_row = nx_out * bcr_n * bcr_n * 8
-    target_bytes = 256 * 1024 * 1024
-    tile_rows = max(1, min(ny_out, target_bytes // max(bytes_per_row, 1)))
-
-    for r0 in range(0, ny_out, tile_rows):
-        r1 = min(r0 + tile_rows, ny_out)
-        # Row indices for this tile slice: shape (bcr_n, r1-r0)
-        rid = row_idx[:, r0:r1]
-        # Loop over 4*4 (or 2*2) corner offsets.  This is bcr_n^2 = 4
-        # or 16 outer-product-style accumulations; each touches the
-        # whole tile of output pixels.
-        for jj in range(bcr_n):
-            ri = rid[jj]                # (r1-r0,)
-            wyy = wy[r0:r1, jj]         # (r1-r0,)
-            for ii in range(bcr_n):
-                ci = col_idx[ii]        # (nx_out,)
-                wxx = wx[:, ii]         # (nx_out,)
-                w = wyy[:, None] * wxx[None, :]    # (r1-r0, nx_out)
-                # Gather d[ri, ci] -> (r1-r0, nx_out)
-                z_block = d64[ri[:, None], ci[None, :]]
-                if has_nan:
-                    nan_mask = np.isnan(z_block)
-                    if nan_mask.any():
-                        z_block = np.where(nan_mask, 0.0, z_block)
-                        w_eff = np.where(nan_mask, 0.0, w)
-                        out_z[r0:r1] += z_block * w_eff
-                        out_w[r0:r1] += w_eff
-                        continue
-                out_z[r0:r1] += z_block * w
-                out_w[r0:r1] += w
+    # Fused per-pixel gather + NaN-aware multiply-accumulate.
+    # `_gather_accumulate` carries NaN→skip discipline inside the inner
+    # loop so the pure-numpy NaN slow-path (mask+where allocation on
+    # every (jj,ii) corner × every tile) is eliminated. The kernel is
+    # @njit single-thread, fastmath-disabled — bit-identical to the
+    # previous numpy code on real inputs (Mira #65 parity).
+    _gather_accumulate(d64, row_idx_pad, col_idx_pad, wy, wx, out_z, out_w)
 
     # ---- 9. threshold + finalize (gmt_bcr.c:268-275)
     GMT_CONV8_LIMIT = 1.0e-8
