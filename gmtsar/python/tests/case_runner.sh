@@ -27,6 +27,45 @@ pyReadme=${5:?python recipe}
 timeLog=${6:?time log}
 preloadShim=${7:-}
 
+# ─── Git-SHA capture at case start (project_rules.md #6, #8) ─────────────────
+# Records the framework git state (SHA + dirty file list under gmtsar/python/)
+# at the moment this case starts, so compare.py can embed it in the per-case
+# JSON scorecard. After the case completes, we re-read HEAD; if it advanced
+# mid-case, the result is flagged MIXED_VINTAGE_SHA_CHANGE.
+#
+# The scorecard sidecar is a plain key=value file at
+#   <workdir>/results/<case>.git_sidecar
+# which compare.py reads + deletes. Keeping it as a separate file (not env
+# vars) lets case_runner.sh's csh+python subshells run their full pipeline
+# without polluting their env, and survives if compare.py is run later.
+#
+# Repo root: this script lives at <repo>/gmtsar/python/tests/case_runner.sh,
+# so the repo root is three directories up. We use git's own working-tree
+# resolution (the script may be invoked from any cwd, and worktrees count).
+_repo_root_for_sha="$(cd "$(dirname "$0")/../../.." && git rev-parse --show-toplevel 2>/dev/null || echo "")"
+sha_at_case_start=""
+dirty_files_at_case_start=""
+case_launched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$_repo_root_for_sha" ]; then
+    sha_at_case_start="$(cd "$_repo_root_for_sha" && git rev-parse HEAD 2>/dev/null || echo "")"
+    # Dirty files scoped to gmtsar/python/ — outside that path doesn't affect
+    # the pipeline per project_rules.md #5.
+    dirty_files_at_case_start="$(cd "$_repo_root_for_sha" && git diff --name-only HEAD -- gmtsar/python/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+fi
+# Sidecar destination: <workdir>/results/<case>.git_sidecar. The workdir is
+# the parent of $pyDir's parent (pyDir = work/python_test/<case>).
+_results_dir="$(dirname "$(dirname "$pyDir")")/results"
+mkdir -p "$_results_dir"
+_sidecar="$_results_dir/${case}.git_sidecar"
+cat > "$_sidecar" <<EOF
+# git-sha sidecar — written by case_runner.sh at case start.
+# compare.py reads and deletes this to embed into the per-case JSON.
+case=$case
+launched_at=$case_launched_at
+sha_at_start=$sha_at_case_start
+dirty_files_at_start=$dirty_files_at_case_start
+EOF
+
 # Pin known thread pools to 1; libgmt's FFTW pthreads ignore these, so we also
 # LD_PRELOAD the shim built by install.sh --build (if present).
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 FFTW_NUM_THREADS=1
@@ -263,3 +302,19 @@ fi
 pyPid=$!
 
 wait $cshPid $pyPid
+
+# ─── Git-SHA capture at case end ─────────────────────────────────────────────
+# Re-read HEAD and dirty list now that csh+py finished. compare.py will
+# diff these against the at-start values to flag MIXED_VINTAGE_*.
+sha_at_case_end=""
+dirty_files_at_case_end=""
+case_finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$_repo_root_for_sha" ]; then
+    sha_at_case_end="$(cd "$_repo_root_for_sha" && git rev-parse HEAD 2>/dev/null || echo "")"
+    dirty_files_at_case_end="$(cd "$_repo_root_for_sha" && git diff --name-only HEAD -- gmtsar/python/ 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+fi
+cat >> "$_sidecar" <<EOF
+finished_at=$case_finished_at
+sha_at_end=$sha_at_case_end
+dirty_files_at_end=$dirty_files_at_case_end
+EOF
