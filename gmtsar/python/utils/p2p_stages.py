@@ -681,10 +681,11 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
             f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
         os.chdir(f"../../intf/{intfSubDirName}")
         file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
-        # GMTSAR_GRDSAMPLE_PY=1 opts into in-process port (Mira #54;
-        # default OFF — see grdsample_wrapper.py). The iono path is
-        # not exercised by any regression case (no correct_iono=1
-        # fixture); byte-id parity verified by unit test
+        # GMTSAR_GRDSAMPLE_PY default ON since Mira #65; the in-process
+        # port is byte-id AND ~9.2× faster than gmt C on this iono-shape
+        # (200k → 800k, no NaN). The iono path is not exercised by any
+        # regression case (no correct_iono=1 fixture); byte-id parity
+        # verified by unit test
         # bin_py/tests/test_grdsample_wrapper.py:TestIonoWireIn.
         _grdsample_inproc('../../iono_phase/iono_correction/ph_iono_orig.grd',
                           'ph_iono.grd',
