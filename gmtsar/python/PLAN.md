@@ -647,3 +647,55 @@ On resume: re-run --fast for a clean baseline, then re-dispatch the
 3 lost missions (surface gcd=1, grdfill pixel-reg, xyz2grd) in
 worktrees per the standing 3-concurrent-Mira discipline.
 ```
+
+### --full 21-case sweep on v2.1.21 (8a085be), 2026-06-12
+
+```
+Launched 03:54 CDT, completed 06:56:52 (~3h). Log:
+  work/sweep_full_v2.1.21_20260612_035422.log
+Summary: work/sweep_summary.md
+
+RESULT: 161 SUCCESS / 0 FAIL across all 21 cases. 0 mixed-vintage
+(git_sha stable at 8a085be throughout). 6 cases (RS2_SLC_Hawaii,
+S1A_SLC_TOPS_Greece, ALOS_haiti, ERS_Hector_EQ, ALOS_Baja_EQ,
+CSK_RAW_Hawaii) were SKIPPED by Mira #69's vintage cache -- already
+all-SUCCESS from the pre-pause --fast run, no relevant code changed
+since. 15 cases actively re-run, all SUCCESS.
+
+py vs csh speedup (15 actively-run cases, csh/py):
+  NISAR_Ethiopia        447 / 275  = 1.63x
+  ALOS_SLC_L1.1         423 / 303  = 1.40x
+  CSK_SLC_Italy         803 / 643  = 1.25x
+  S1_Ridgecrest_EQ     9147 / 7668 = 1.19x
+  ALOS2_SCAN_SSAF      8918 / 7344 = 1.21x
+  TSX_SLC_Hawaii        739 / 610  = 1.21x
+  ALOS_ERSDAC_L1.0      911 / 774  = 1.18x
+  ALOS2_Brazil          935 / 806  = 1.16x
+  ALOS4_Pinon          1230 / 1074 = 1.15x
+  ENVI_Baja_EQ         1740 / 1544 = 1.13x
+  ENVI_Baja_EQ_SLC     1407 / 1273 = 1.11x
+  S1A_SLC_TOPS_COVE    5473 / 5073 = 1.08x
+  S1A_SLC_TOPS_LA      6668 / 6195 = 1.08x
+  ALOS2_Japan_Fugi_left 1346 / 1273 = 1.06x
+  S1_Larsen_C          4937 / 4857 = 1.02x
+  -> py faster than csh on every case, avg ~1.19x.
+
+Blessed scorecard diff vs frozen v2.0.4 baseline (Tier 3,
+work/blessed_diff_v2.0.4.md): 3 PASS / 5 FAIL.
+  PASS: ALOS_haiti, NISAR_Ethiopia, RS2_SLC_Hawaii
+  FAIL (byte-drift in intf outputs since v2.0.4, all "CHANGED" md5,
+  0 missing/0 extra -- corr_ll.grd/png, filtcorr.grd, phasefilt.grd,
+  phasefilt_mask_ll.png, +display_amp_ll.png on most):
+    ALOS2_Brazil, ALOS4_Pinon, ALOS_SLC_L1.1, ENVI_Baja_EQ_SLC,
+    TSX_SLC_Hawaii
+
+  NEEDS TRIAGE ON RESUME: the 5 FAILs are most likely expected
+  byte-drift from the volume of ports landed since v2.0.4 (grdsample,
+  grdfill, grdcut, align_tops, SAT_llt2rat, etc. all touch intf-stage
+  outputs) -- the py-vs-csh correctness gate (161/0 above) is what
+  actually matters and is clean. But the v2.0.4 baseline should either
+  be (a) confirmed as stale-by-design and re-blessed at v2.1.21, or
+  (b) the 5 diffs spot-checked (rms vs csh oracle, not just md5) to
+  rule out a real regression hiding behind "py still matches csh but
+  both drifted from the old baseline" vs "py diverged from csh too".
+```
