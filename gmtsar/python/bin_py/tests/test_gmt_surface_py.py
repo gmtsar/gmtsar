@@ -551,6 +551,106 @@ class TestGmtSurfacePyBriggs(unittest.TestCase):
                         f"Briggs on-grid RMS {rms:.4e} > 1e-3")
 
 
+@unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH — skipping parity test")
+class TestGmtSurfacePyGcd1(unittest.TestCase):
+    """Mira #68 regression — gcd(n_columns-1, n_rows-1) == 1.
+
+    Root cause (gmt_support.c:16944 gmt_optimal_dim_for_surface, called
+    unconditionally from surface.c:2029-2047 unless -Qr): GMT silently
+    EXPANDS the solved region/grid to a size with a better gcd whenever
+    that would reduce gmtsupport_guess_surface_time(), then crops the
+    output back to the user's -R when writing
+    (surface_write_grid, surface.c:947-961).  C essentially never solves
+    a mutually-prime grid.
+
+    Before the fix, gmt_surface_py's stride hierarchy collapsed to a
+    single stride=1 pass for gcd==1 grids (no coarse warm start), giving
+    RMS ~1.3e-2 vs `gmt surface` on this fixture (12x over the 1e-3
+    threshold used by the other parity tests in this file).  After the
+    fix (region expansion + crop mirroring surface.c), RMS is back in
+    the same ~5e-4 ballpark as the gcd>1 cases.
+    """
+
+    def test_gcd_1_small(self):
+        """8x13 grid: n_columns-1=7, n_rows-1=12, gcd(7,12)==1.
+
+        gmt's gmt_optimal_dim_for_surface suggests (8,12) for (7,12)
+        (verified: "Internally speed up convergence by using the larger
+        region -R0/11.4285714286/0/10 (go from 7 x 12 to optimal 8 x 12,
+        with speedup-factor 3)" under -Vd).
+        """
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (10.0 / 7.0, 10.0 / 12.0)   # n_columns-1=7, n_rows-1=12
+        tension = 0.25
+
+        rng = np.random.default_rng(42)
+        N = 60
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = (np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+             + 0.1 * rng.standard_normal(N))
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            grid_gmt = _run_gmt_surface(
+                np.column_stack([x, y, z]), region, inc, tension, tmpdir)
+
+        grid_py = gmt_surface_py(x, y, z, region=region, inc=inc,
+                                  tension=tension, verbose=True)
+
+        self.assertEqual(grid_gmt.shape, (13, 8))
+        self.assertEqual(grid_py.shape, grid_gmt.shape,
+                         f"shape mismatch: gmt={grid_gmt.shape} "
+                         f"py={grid_py.shape}")
+
+        diff = grid_py - grid_gmt
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[parity, gcd==1]  shape={grid_gmt.shape}  rms={rms:.4e}  "
+              f"max|d|={max_abs:.4e}  T={tension}")
+
+        # Mira #61 found rms~1.3e-2 (12x over threshold) before this fix.
+        # Mira #68's region-expansion fix brings it back to the same
+        # ballpark (~5e-4) as the gcd>1 parity tests above.
+        self.assertLess(rms, 1e-3,
+                        f"gcd==1 RMS {rms:.4e} exceeds parity threshold "
+                        f"1e-3 — region-expansion fix regressed")
+
+    def test_gcd_1_stride_hierarchy_not_collapsed(self):
+        """The stride hierarchy for this grid must include stride > 1.
+
+        This directly tests the root-cause mechanism (not just the
+        output RMS): without the region-expansion fix,
+        gcd(7,12)==1 -> current_stride starts at 1 and the multigrid
+        while-loop never runs.  With the fix, the expanded grid is
+        (8,12) -> gcd==4 -> stride hierarchy [4, 2, 1].
+        """
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (10.0 / 7.0, 10.0 / 12.0)
+        tension = 0.25
+
+        rng = np.random.default_rng(42)
+        N = 60
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = (np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+             + 0.1 * rng.standard_normal(N))
+
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gmt_surface_py(x, y, z, region=region, inc=inc,
+                           tension=tension, verbose=True)
+        out = buf.getvalue()
+        self.assertIn("region expanded for gcd hierarchy", out,
+                       "expected the gcd==1 region-expansion path to "
+                       "fire for this fixture")
+        self.assertIn("stride=2", out,
+                       "expected a stride>1 pass in the hierarchy "
+                       "(coarse warm-start) — got single-stride collapse")
+
+
 class TestGmtSurfacePyAlgorithm(unittest.TestCase):
     """Self-consistency tests that do NOT require gmt to be installed."""
 
