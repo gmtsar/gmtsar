@@ -1,0 +1,21 @@
+{
+  "case": "NISAR_Ethiopia",
+  "tag": "v2.1.21",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/NISAR_Ethiopia.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2025325_2025337/corr_ll.grd": "c1792fc1df62102fc02b4c3f59c0f0ba",
+    "intf/2025325_2025337/corr_ll.png": "ba4df5bbfac1e2bd46e5a2d9c9441f04",
+    "intf/2025325_2025337/display_amp_ll.png": "d4544008da0d7c98a32843946095824a",
+    "intf/2025325_2025337/filtcorr.grd": "710a542d14a81ec79cc8ef36b4474f69",
+    "intf/2025325_2025337/phasefilt.grd": "babe8bfd6c8de1433b1669dd8400cec6",
+    "intf/2025325_2025337/phasefilt_mask_ll.png": "8246e165ff60f9753569f6792f00e748"
+  }
+}
