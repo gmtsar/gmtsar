@@ -27,26 +27,32 @@ Env-gate
 --------
 ``GMTSAR_GRDSAMPLE_PY`` controls which path is used.
 
-* ``GMTSAR_GRDSAMPLE_PY=0`` (DEFAULT — gmt subprocess). The port is
+* ``GMTSAR_GRDSAMPLE_PY=1`` (DEFAULT — in-process port). The port is
   byte-identical to gmt grdsample on real production data (verified on
-  ALOS_haiti landmask_ra.grd, 9.7M cells, NaN-heavy: max|py-gmt| = 0).
-  However, on that specific workload (4×4 bicubic + 38% NaN), the
-  in-process port is ~2.7× SLOWER than gmt's C implementation —
-  per-block NaN handling in the gather loop dominates. Default-on would
-  regress ALOS_haiti's snaphu stage; we hold at default-off until that
-  branch is optimised (a Numba inner loop or a vectorised NaN-bulk
-  fast-path).
-* ``GMTSAR_GRDSAMPLE_PY=1``: use the in-process port. On iono-shaped
-  workloads (~200k → 800k cells, no NaN) the port is ~1.7× faster and
-  byte-id; setting the env var to 1 enables it. Use also for A/B
-  parity debugging.
+  ALOS_haiti landmask_ra.grd, 9.77M cells, 38% NaN: max|py-gmt| = 0)
+  AND faster than gmt C single-thread on both shape families:
 
-Per project_rules.md Rule 10 carve-out: the port is byte-identical to
-gmt C; the carve-out's "equal or faster" half holds for the iono
-workload but not the NaN-heavy landmask. Default-off is the conservative
-landing pending optimisation.
+    - ALOS_haiti landmask (9.77M cells, 38% NaN, 4×4 bicubic):
+        py 452 ms vs gmt 1018 ms  → 2.25× faster (Mira #65)
+    - iono-shaped (200k → 800k, no NaN, 4×4 bicubic):
+        py 21 ms vs gmt 189 ms    → 9.2× faster
 
-The subprocess fallback (default) rebuilds the exact gmt CLI the wrapper
+  Mira #65 replaced the per-block NaN slow-path
+  (np.isnan().any() + np.where rebuild on every (jj,ii) corner × tile)
+  with a single fused @njit single-thread kernel
+  (`gmt_grdsample_py._gather_accumulate`) — same per-pixel accumulation
+  order, byte-id output, no allocations in the hot loop.
+
+* ``GMTSAR_GRDSAMPLE_PY=0``: use the gmt subprocess fallback. Same
+  output bytes; useful for A/B parity debugging or on hosts where Numba
+  is unavailable (the port itself falls back to pure-numpy gather there,
+  which is slower than gmt C on NaN-heavy bicubic — set the env var to 0
+  in that case).
+
+Per project_rules.md Rule 10 carve-out: byte-identical AND faster than
+gmt C on real data → port qualifies for the carve-out (Mira #65 audit).
+
+The subprocess fallback (env=0) rebuilds the exact gmt CLI the wrapper
 would have replaced — same flags, same argument order — so the env-gate
 is a clean A/B switch.
 """
@@ -63,17 +69,18 @@ from gmt_grd_io import read_gmt_grd, write_gmt_grd
 
 
 def _py_enabled() -> bool:
-    """In-process port is OFF by default — see module docstring.
+    """In-process port is ON by default — see module docstring.
 
-    Byte-id parity vs gmt grdsample is proven (max diff = 0 on real
-    ALOS_haiti landmask), but the NaN-heavy 4×4 bicubic workload is
-    ~2.7× slower than gmt C on the snaphu landmask. Iono-shaped
-    workloads (smaller, NaN-free) ARE 1.7× faster. Hold default-off
-    until the NaN-handling slow-path is optimised.
+    Mira #65: the @njit per-pixel gather kernel made the port
+    byte-id AND faster than gmt C on both real workloads
+    (ALOS_haiti landmask 2.25× faster, iono 9.2× faster). The carve-out
+    in project_rules.md Rule 10 now applies. Default flipped to "1".
 
-    Set ``GMTSAR_GRDSAMPLE_PY=1`` to opt into the in-process port.
+    Set ``GMTSAR_GRDSAMPLE_PY=0`` to force the subprocess fallback
+    (A/B parity debugging, or on hosts without Numba where the pure-
+    numpy gather is slower than gmt C on NaN-heavy 4×4 bicubic).
     """
-    return os.environ.get("GMTSAR_GRDSAMPLE_PY", "0") == "1"
+    return os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
 
 
 def _grd_region(grd_path: str) -> Tuple[float, float, float, float]:

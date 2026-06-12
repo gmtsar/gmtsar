@@ -24,9 +24,11 @@ Call patterns covered:
   4. ``ref_grd`` with iono-shaped grids. Mirrors p2p_stages.py:683 — not
      exercised by any test case (no correct_iono=1 fixture).
 
-The wrapper's env-gate behaviour is tested too: GMTSAR_GRDSAMPLE_PY=0
-must rebuild the gmt CLI exactly and produce the same bytes as the gmt
-binary called directly.
+The wrapper's env-gate behaviour is tested too. Since Mira #65 the
+default flipped to ON (port is byte-id AND faster than gmt C on real
+landmask + iono workloads); GMTSAR_GRDSAMPLE_PY=0 explicitly forces the
+subprocess fallback, which must rebuild the gmt CLI exactly and produce
+the same bytes as the gmt binary called directly.
 
 Skips loudly if ``gmt`` is not on PATH (per Mira gate-discipline).
 """
@@ -300,12 +302,13 @@ class TestIonoWireIn(unittest.TestCase):
 
 @unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH")
 class TestEnvGateFallback(unittest.TestCase):
-    """Default (GMTSAR_GRDSAMPLE_PY unset OR =0) → subprocess path.
+    """Explicit GMTSAR_GRDSAMPLE_PY=0 → subprocess path.
 
     The subprocess fallback must rebuild the gmt CLI exactly and produce
     the same bytes as gmt called directly with the equivalent flags.
-    GMTSAR_GRDSAMPLE_PY=1 opts into the in-process port (tested in
-    TestWireInCallPatterns).
+    Default is now ON (Mira #65); this suite asserts the explicit-OFF
+    branch is still wire-compatible with the original gmt subprocess.
+    The in-process port is tested in TestWireInCallPatterns.
     """
 
     @classmethod
