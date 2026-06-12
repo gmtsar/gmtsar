@@ -48,6 +48,38 @@ from gmt_compat import (
     GMTSARFigure, has_pygmt,
 )
 
+# Mira (2026-05-22): in-process gmt grdfill -Ag wrapper (utils/gmt_grdfill_py).
+#
+# **Default OFF** (GMTSAR_GRDFILL_PY=0). The port is 22/22 isolated tests
+# green and 1.65-2.0× faster on synthetic gridline-registered donors, but
+# fails on the production dem2topo_ra mode=1 case (pixel-registered donor
+# whose pixel-centres are inset from the input's pixel-centres by inc/2 —
+# the port hard-codes `in_off=0.0` at gmt_grdfill_py.py:429 and raises
+# ValueError instead of using natural-BC pad like gmt C does silently).
+# See AUDIT.md "Mira grdfill wire-in 2026-05-22" for the diagnosis trace.
+# Opt in via GMTSAR_GRDFILL_PY=1 once the registration gap is closed.
+try:
+    from gmt_grdfill_py import gmt_grdfill_py_file as _grdfill_py_file
+    _HAVE_GRDFILL_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA_PY: WARN: gmt_grdfill_py import failed ({_e}); "
+          "using gmt_compat.grdfill.", file=sys.stderr)
+    _HAVE_GRDFILL_PY = False
+
+
+def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
+    """`gmt grdfill <in> -Ag<donor> -G<out>` → py port or gmt_compat.
+
+    Env gate: GMTSAR_GRDFILL_PY=1 → in-process numpy port (opt-in; see
+              header — currently fails on pixel-reg donor mismatch).
+              GMTSAR_GRDFILL_PY=0 (default) → gmt_compat.grdfill.
+    """
+    use_py = os.environ.get("GMTSAR_GRDFILL_PY", "0") == "1"
+    if use_py and _HAVE_GRDFILL_PY:
+        _grdfill_py_file(in_grd, out_grd, algorithm='g', donor_path=donor_grd)
+    else:
+        grdfill(f"{in_grd} -Ag{donor_grd} -G{out_grd}")
+
 
 def _surface_inproc_or_shell(args: str,
                               region: str, rng: int, az_div: int,
@@ -271,7 +303,9 @@ def dem2topo_ra():
                   f"> mean.rat")
         surface(f"mean.rat -R{region} -I{rng2}/{az_div2} -bi3d "
                 f"-T0.1 -N1000 -Gcoarse.grd -r")
-        grdfill("topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+        # Mira (2026-05-22): in-process gmt_grdfill_py (-Ag).
+        # GMTSAR_GRDFILL_PY=0 → gmt_compat.grdfill.
+        _grdfill_dispatch("topo_ra_tmp.grd", "pixel.grd", "coarse.grd")
         for f in ("topo_ra_tmp.grd", "coarse.grd", "mean.rat"):
             delete(f)
 
