@@ -23,6 +23,7 @@ import sys, os, re, configparser
 import subprocess, glob, shutil
 from gmtsar_lib import *
 from grdsample_wrapper import grdsample as _grdsample_inproc
+from xyz2grd_wrapper import xyz2grd_file as _xyz2grd_file
 
 # Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
 # Default ON per Rule 10 carve-out (byte-id to gmt C + 3.3× faster file→file).
@@ -221,8 +222,10 @@ def _snaphu_run(interp, threshold, defomax, region):
                             False, 0, -100000)
     par2 = catch_output_cmd(["gmt", "grdinfo", "-I", "phase_patch.grd"],
                             False, 0, -100000)
-    run(f'gmt xyz2grd unwrap.out -ZTLf -r {par1} {par2} -Gtmp.grd')
-    run(f'gmt xyz2grd conncomp.out -ZTLu -r {par1} {par2} -Gconncomp.grd')
+    # Mira #71 (2026-06-12): in-process gmt xyz2grd port (utils/gmt_xyz2grd_py.py).
+    # Env-gated GMTSAR_XYZ2GRD_PY=1 (default OFF; subprocess fallback).
+    _xyz2grd_file('unwrap.out', 'tmp.grd', par1=par1, par2=par2, ztype='f')
+    _xyz2grd_file('conncomp.out', 'conncomp.grd', par1=par1, par2=par2, ztype='u')
     run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
     file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
 
@@ -392,10 +395,12 @@ def snaphu():
     print('SNAPHU: output from gmt grdinfo -I- phase_patch.grd is', par1)
     print('SNAPHU: output from gmt grdinfo -I phase_patch.grd is', par2)
     
-    run('gmt xyz2grd unwrap.out -ZTLf -r '+par1+' '+par2+' -Gtmp.grd')
+    # Mira #71 (2026-06-12): in-process gmt xyz2grd port (utils/gmt_xyz2grd_py.py).
+    # Env-gated GMTSAR_XYZ2GRD_PY=1 (default OFF; subprocess fallback).
+    _xyz2grd_file('unwrap.out', 'tmp.grd', par1=par1, par2=par2, ztype='f')
     print(' ')
     print('SNAPHU: generate connected component ... ...')
-    run('gmt xyz2grd conncomp.out -ZTLu -r '+par1+' '+par2+' -Gconncomp.grd')
+    _xyz2grd_file('conncomp.out', 'conncomp.grd', par1=par1, par2=par2, ztype='u')
     run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
     
     print(' ')
