@@ -701,3 +701,32 @@ work/blessed_diff_v2.0.4.md): 3 PASS / 5 FAIL.
   default (lexicographically newest) and self-checks 21/21 PASS.
   Committed efdf411.
 ```
+
+### Mission queue 2026-06-12 evening (1-by-1, budget-conscious)
+
+User directive: tackle missions sequentially (no concurrent Miras),
+token-budget-conscious (Pro plan). Order so far:
+
+```
+1. xyz2grd port (Mira #71)        -> v2.1.22 merge, v2.1.23 default-ON.  DONE
+2. surface gcd==1 fix (Mira #68)  -> v2.1.24.                            DONE
+3. grdfill pixel-reg fix (Mira #70, re-dispatch) -> IN PROGRESS
+     Fix _bcr_bicubic_sample in_off=0.0 hardcode for pixel-reg donors
+     (AUDIT_grdfill_wirein_mira_2026-05-22.md fix path). Add production-
+     shaped pixel-reg parity test. Do NOT flip GMTSAR_GRDFILL_PY default
+     (separate Rule-8 smoke step after landing).
+4. gmt_surface_py single-thread perf gap (1.9-4x slower than C, Mira #52)
+     Optimization pass on the already-ported, byte-id gmt_surface_py.py
+     (vectorize/batch the multigrid iteration). Goal: close gap enough
+     to flip GMTSAR_SURFACE_INPROC default ON, which also unblocks
+     GMTSAR_DEM2TOPO_INMEM_CHAIN (item 9c Tier I).
+5. S1 TOPS csh->Python port (section 7b)
+     p2p_S1_TOPS_Frame.csh -> native Python, wire phase_profile. Largest
+     remaining "not fully Python" pipeline (S1A_SLC_TOPS_*, S1_Larsen_C,
+     S1_Ridgecrest_EQ). Big standalone effort -- likely needs its own
+     sub-plan once items 3-4 land.
+
+After 5: revisit stage-cache redesign, GMTSAR_IONO_GAUSS_PY (blocked on
+test coverage), and parallelism (in-process per-burst/per-tile work via
+multiprocessing) once in-memory chaining (item 4's unblock) exists.
+```
