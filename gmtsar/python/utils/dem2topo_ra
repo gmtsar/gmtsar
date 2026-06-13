@@ -495,8 +495,16 @@ def _surface_inproc(temp_rat: str, region_str: str, rng_step: int,
         region=(x0, x1, y0, y1),
         inc=(float(rng_step), float(az_step)),
         tension=float(tension),
-        max_iter=2000, tol=1e-4,
-        omega=0.5,
+        # omega=1.4 matches surface.c:135 SURFACE_OVERRELAXATION; max_iter=1000
+        # matches the C pipeline's `-N1000`.  The prior omega=0.5 (Mira #41, no
+        # documented justification) was severe UNDER-relaxation: it both crawled
+        # on large grids (ENVI surface 2261s) AND returned unconverged/divergent
+        # results within the iter budget (S1_Ridgecrest H_res 77M-cell grid drifted
+        # 41m from `gmt surface` -> phasefilt parity failure).  Matching C's omega
+        # AND max_iter makes the GS-SOR iterate identically to C even when
+        # iteration-bounded on heterogeneous terrain (Mira perf audit 2026-06-13).
+        max_iter=1000, tol=1e-4,
+        omega=1.4,
         use_multigrid=True,
         pixel_reg=True,
     )
