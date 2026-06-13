@@ -183,14 +183,23 @@ def _run_surface_inproc_5col(trans_dat: str, region_str: str, col_z: int,
 def _ensure_raln_ralt(trans_dat: str, region: str, verbose: bool = False) -> None:
     """Run `gmt surface` once to produce raln.grd / ralt.grd if missing.
 
-    Default: the legacy subprocess.  When GMTSAR_SURFACE_INPROC=1 is
-    set, replaces both calls with an in-process gmt_surface_py +
-    write_gmt_grd pair (Mira #41 wire-in).  Both raln (col 3 = lon)
-    and ralt (col 4 = lat) are computed from the same 5-col trans.dat
-    binary input.
+    In-process gmt_surface_py + write_gmt_grd pair (Mira #41 wire-in),
+    DEFAULT ON since v2.1.27.  Both raln (col 3 = lon) and ralt (col 4
+    = lat) are computed from the same 5-col trans.dat binary input.
+    Set GMTSAR_SURFACE_INPROC=0 to fall back to the `gmt surface`
+    subprocess.
+
+    History
+    -------
+    * Default flipped ON after RS2_SLC_Hawaii path-exercising smoke
+      (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.27) confirmed
+      the in-proc -I16/32 (anisotropic) call produces parity output.
+      Mira #60 (glue vectorization) + Mira #68 (gcd==1 region
+      expansion) + Mira #72 (anisotropic benchmark fix, no algorithm
+      change needed) closed the remaining gaps.
     """
     Vflag = "-V" if verbose else ""
-    inproc = os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
+    inproc = os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
     if not os.path.isfile("raln.grd"):
         if inproc:
             _run_surface_inproc_5col(trans_dat, region, col_z=3,
