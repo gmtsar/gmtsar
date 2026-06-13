@@ -767,4 +767,27 @@ token-budget-conscious (Pro plan). Order so far:
 After 6: revisit stage-cache redesign, GMTSAR_IONO_GAUSS_PY (blocked on
 test coverage), and parallelism (in-process per-burst/per-tile work via
 multiprocessing) now that in-memory chaining (item 4/6's unblock) exists.
+
+## v2.2.0 — "fully Python" minor release (in progress)
+
+Status 2026-06-13: full 21-case SWEEP_FORCE=py --full sweep running to
+validate items 3-6 (v2.1.22-v2.1.28, 44 commits since v2.1.0) before
+cutting v2.2.0. User framing: v2.2.0 = "the full Python update" — all
+major orchestration pipelines (p2p_S1_TOPS_Frame, merge_unwrap_geocode_tops,
+align_tops, dem2topo_ra incl. in-mem chain, snaphu, iono) are native Python
+with default-ON py paths (csh fallback flags are opt-in only).
+
+One known exception, deferred to AFTER v2.2.0 (does not block):
+- `m2s.csh` (gmtsar/csh/m2s.csh, 21 lines) is still called as a genuine
+  csh subprocess from utils/proj_ra2ll_lib.py (~line 376, the
+  `_gmtconvert_pipe_to_temprat`/geocode fine_inc/crude_inc computation),
+  ~0.47s per case. Computes lon/lat grid increments from pixel size via
+  `gmt gmtinfo` + `gmt math` (mean-latitude correction, round to nearest
+  0.5 arcsec). Small, self-contained port candidate -- pure numeric
+  helper, no GMT I/O beyond gmtinfo on llp. Good first mission after
+  v2.2.0 ships.
+
+Also noted (housekeeping, not blocking): 33 stale `.claude/worktrees/
+agent-*` dirs left over from past Mira dispatches that were never
+`git worktree remove`d. Clean up opportunistically.
 ```
