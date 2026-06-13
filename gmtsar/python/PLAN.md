@@ -823,16 +823,20 @@ One known exception, deferred to AFTER v2.2.0 (does not block):
      dims/iteration count (analogous to #67 below) before any flip.
      See updated History note at utils/dem2topo_ra ~line 235.
 
-9. gmt_blockmedian_py 1pt/bin perf fix (Mira #67)                DONE (uncommitted)
+9. gmt_blockmedian_py 1pt/bin perf fix (Mira #67)            DONE, FLIPPED (v2.1.30)
      Added n==1 fast path to `_per_bin_median` (skips 3x np.empty()
      allocs/bin for singleton bins -- 99.97% of bins in RS2_SLC_Hawaii's
      dem2topo_ra blockmedian call). RS2_SLC_Hawaii 1pt/bin:
      0.35s -> 0.11s (~3.2x), py now ~3.5x FASTER than gmt subprocess
      (~0.39s) -- reverses the #30 premise (py used to lose at 1pt/bin).
      Mira #25 dense case (~180pt/bin) unchanged at 3.25s (no regression).
-     13/13 byte-parity tests pass. `_HAVE_GMT_BLOCKMEDIAN_PY` left False
-     -- wiring it on is now viable but is a separate Rule-8
-     (env-gate + path-exercising smoke) step.
+     13/13 byte-parity tests pass. Wired into
+     _gmtconvert_pipe_to_temprat via new GMTSAR_BLOCKMEDIAN_PY gate.
+     Rule-8 smoke 2026-06-13 (RS2_SLC_Hawaii, full dem2topo_ra run,
+     GMTSAR_BLOCKMEDIAN_PY=1 vs =0): temp.rat and topo_ra.grd
+     BYTE-IDENTICAL (cmp clean); gmtconvert_to_temprat phase 0.401s
+     (py) vs 0.443s (gmt subprocess), ~10% faster. Default flipped
+     "0" -> "1" in v2.1.30.
 
    Item 3 (grdfill donor_node_offset) was already DONE upstream by
    Mira #70 (b7eb144, "pixel-registered donor support in -Ag bicubic"),

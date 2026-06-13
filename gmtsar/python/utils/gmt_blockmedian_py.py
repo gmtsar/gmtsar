@@ -88,6 +88,19 @@ def _per_bin_median(sorted_x, sorted_y, sorted_z,
         s = bin_starts[k]
         e = bin_ends[k]
         n = e - s
+        if n == 1:
+            # Fast path: a singleton bin's median is the point itself.
+            # Skips the 3 per-bin np.empty() allocations entirely, which
+            # dominate runtime when most bins have exactly one point
+            # (the dem2topo_ra 1-pt/bin regime: ~966k allocations of
+            # 3 arrays each cost ~0.24s; the fast path costs ~0.003s).
+            # GMT's blockmedian for n=1 also returns the point unchanged
+            # (no weight/decimation side effects at n=1), so this is
+            # exactly what gmt blockmedian -bi3d -bo3d -r writes.
+            out_x[k] = sorted_x[s]
+            out_y[k] = sorted_y[s]
+            out_z[k] = sorted_z[s]
+            continue
         # Copy each slice to a local buffer and sort in place.
         # This is allocation per bin, which is fine because numba/numpy
         # arenas reuse small buffers and bins are typically small
