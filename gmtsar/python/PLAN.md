@@ -797,6 +797,65 @@ One known exception, deferred to AFTER v2.2.0 (does not block):
   helper, no GMT I/O beyond gmtinfo on llp. Good first mission after
   v2.2.0 ships.
 
+### 2026-06-13 follow-up missions (1/2/3/4 from "what's still not python")
+
+7. m2s.csh port (Mira #73)                                  DONE, FLIPPED (v2.1.29)
+     New utils/m2s_py.py + bin_py/tests/test_m2s_py.py. Algorithm
+     verified against real GMT 6.4.0: RINT = round-half-to-even
+     (np.round matches), gmt math number formatting = "%.12g" (Python's
+     "%.12g" matches byte-for-byte). 9/9 parity tests pass on real
+     RS2_SLC_Hawaii raln/ralt-derived llp across pix in
+     {0.01,1,7.5,15,60,100} (incl. asymmetric dx!=dy and MAX(1,..)
+     clamp branches) -- exact string equality vs `csh -f m2s.csh`.
+     Wired into proj_ra2ll_lib.py via new `_m2s()` dispatcher behind
+     GMTSAR_M2S_PY. Rule-8 smoke 2026-06-13: `GMTSAR_M2S_PY=1 geocode
+     0.10` on RS2_SLC_Hawaii -> all 5 *_ll.grd byte-identical, no
+     fallback warnings. Default flipped "0" -> "1" in v2.1.29.
+
+8. GMTSAR_SURFACE_INPROC smoke for dem2topo_ra pixel.grd call    SMOKED, NOT FLIPPED
+     RS2_SLC_Hawaii, full dem2topo_ra run, INPROC=1 vs =0:
+     topo_ra.grd BYTE-IDENTICAL (cmp clean), in-mem chain engages
+     correctly (no pixel.grd written). Correctness: PASS.
+     Performance: REGRESSION -- `surface` phase 11.9s (gmt) vs 38.1s
+     (gmt_surface_py), ~3.2x slower, 87-98% of total wall ->
+     32.7s -> 58.8s overall (~1.8x slower). Default left at "0".
+     Needs a perf investigation of gmt_surface_py on THIS grid's
+     dims/iteration count (analogous to #67 below) before any flip.
+     See updated History note at utils/dem2topo_ra ~line 235.
+
+9. gmt_blockmedian_py 1pt/bin perf fix (Mira #67)                DONE (uncommitted)
+     Added n==1 fast path to `_per_bin_median` (skips 3x np.empty()
+     allocs/bin for singleton bins -- 99.97% of bins in RS2_SLC_Hawaii's
+     dem2topo_ra blockmedian call). RS2_SLC_Hawaii 1pt/bin:
+     0.35s -> 0.11s (~3.2x), py now ~3.5x FASTER than gmt subprocess
+     (~0.39s) -- reverses the #30 premise (py used to lose at 1pt/bin).
+     Mira #25 dense case (~180pt/bin) unchanged at 3.25s (no regression).
+     13/13 byte-parity tests pass. `_HAVE_GMT_BLOCKMEDIAN_PY` left False
+     -- wiring it on is now viable but is a separate Rule-8
+     (env-gate + path-exercising smoke) step.
+
+   Item 3 (grdfill donor_node_offset) was already DONE upstream by
+   Mira #70 (b7eb144, "pixel-registered donor support in -Ag bicubic"),
+   landed before this batch.                          FLIPPED (v2.1.29)
+     Rule-8 smoke 2026-06-13: while wiring up this smoke, found and
+     fixed a pre-existing, unrelated bug in utils/dem2topo_ra: `mode =
+     sys.argv[3]` was a STRING compared against ints 0/1, so mode=1
+     ("gmt triangulate" interpolation -- the ONLY path that calls
+     _grdfill_dispatch) matched neither `if mode == 0` nor `elif mode
+     == 1`, silently producing no topo_ra.grd. Fixed via `mode =
+     int(sys.argv[3])`. After the fix: `GMTSAR_GRDFILL_PY=1
+     dem2topo_ra master.PRM dem.grd 1` on real ALOS_haiti ->
+     topo_ra.grd BYTE-IDENTICAL to GMTSAR_GRDFILL_PY=0. New regression
+     test bin_py/tests/test_dem2topo_ra.py::TestMode1ArgRegression
+     runs the live mode=1 CLI end-to-end and asserts topo_ra.grd is
+     produced. GMTSAR_GRDFILL_PY default flipped "0" -> "1" in
+     v2.1.29.
+
+   Next candidates: (a) Rule-8 env-gate + smoke for the #67
+   blockmedian fast path in dem2topo_ra's _gmtconvert_pipe_to_temprat,
+   (b) gmt_surface_py perf investigation for dem2topo_ra's pixel.grd
+   grid (item 8 above).
+
 Also noted (housekeeping, not blocking): 33 stale `.claude/worktrees/
 agent-*` dirs left over from past Mira dispatches that were never
 `git worktree remove`d. Clean up opportunistically.

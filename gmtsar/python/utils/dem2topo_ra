@@ -61,29 +61,29 @@ except ImportError as _e:
 
 # Mira (2026-05-22): in-process gmt grdfill -Ag wrapper (utils/gmt_grdfill_py).
 #
-# **Default OFF** (GMTSAR_GRDFILL_PY=0). 22/22 isolated parity tests are
-# green AND the port is 1.65-2.0× faster than gmt grdfill subprocess on
-# synthetic gridline-registered donors. BUT on the real dem2topo_ra mode=1
+# **Default ON** (GMTSAR_GRDFILL_PY=1, since v2.1.29). The donor_node_offset
+# gap described below (pixel-registered `coarse.grd` donor vs gridline-
+# registered query) was closed by Mira #70 (commit b7eb144, "pixel-registered
+# donor support in -Ag bicubic", 23/23 parity tests): `_bcr_bicubic_sample`
+# now takes a `donor_node_offset` parameter (in_off = 0.5*donor_node_offset)
+# instead of hard-coding `in_off = 0.0`, and `gmt_grdfill_py_file` reads the
+# donor's node_offset from its grid header and propagates it.
+#
+# Original gap (now fixed) for reference: on the real dem2topo_ra mode=1
 # pipeline the donor (`coarse.grd`) is pixel-registered and its pixel-
-# centres are inset from `topo_ra_tmp.grd`'s pixel-centres by inc/2; the
-# port hard-codes `in_off = 0.0` in `_bcr_bicubic_sample` and raises
-# `ValueError: donor grid does not cover query x range: qx in [1, 11303]
-# vs donor [8.00567, 11296]` instead of letting the bicubic stencil fall
-# back to natural-BC pad (which is what gmt C does silently).
+# centres are inset from `topo_ra_tmp.grd`'s pixel-centres by inc/2; the old
+# hard-coded `in_off = 0.0` raised `ValueError: donor grid does not cover
+# query x range: qx in [1, 11303] vs donor [8.00567, 11296]`.
 #
-# Smoke test 2026-05-22 (ALOS_haiti temp.rat → mode=1 grdfill):
-#     gmt grdfill subprocess: 3.55 s wall, writes valid pixel.grd
-#     gmt_grdfill_py_file:    1.52 s wall, RAISES range-coverage error
+# Rule-8 smoke 2026-06-13 (ALOS_haiti, mode=1, GMTSAR_GRDFILL_PY=1 vs 0):
+#     topo_ra.grd BYTE-IDENTICAL between the two paths (cmp clean).
+#     (This smoke also uncovered and fixed an unrelated pre-existing bug:
+#     `mode = sys.argv[3]` was a str compared against int 0/1, so mode=1
+#     -- the ONLY path that calls _grdfill_dispatch -- matched neither
+#     branch and silently produced no topo_ra.grd. Fixed via
+#     `mode = int(sys.argv[3])`.)
 #
-# To enable for production wire-in, the port must:
-#   1. Add a `donor_node_offset` parameter to gmt_grdfill_py (drop the
-#      hard-coded `in_off = 0.0` at gmt_grdfill_py.py:429) and propagate
-#      from the file wrapper.
-#   2. Add a coarse-pixel-registered-donor parity test against gmt C on
-#      a real (non-synthetic) grid pair from the dem2topo_ra mode=1 path.
-# See AUDIT.md "Mira grdfill wire-in 2026-05-22" for the diagnosis trace.
-#
-# Set GMTSAR_GRDFILL_PY=1 to opt in once the gap is closed.
+# Set GMTSAR_GRDFILL_PY=0 to roll back to the `gmt grdfill` subprocess.
 try:
     from gmt_grdfill_py import gmt_grdfill_py_file as _grdfill_py_file
     _HAVE_GRDFILL_PY = True
@@ -96,11 +96,12 @@ except ImportError as _e:
 def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
     """Dispatch `gmt grdfill <in> -Ag<donor> -G<out>` to py port or gmt.
 
-    Env gate: GMTSAR_GRDFILL_PY=1 → in-process numpy port (opt-in only;
-              currently fails on pixel-reg donor mismatch, see header).
-              GMTSAR_GRDFILL_PY=0 (default) → `gmt grdfill` subprocess.
+    Env gate: GMTSAR_GRDFILL_PY=1 (default, since v2.1.29) → in-process
+              numpy port; donor_node_offset-aware (Mira #70), Rule-8
+              smoke-verified byte-identical on real ALOS_haiti mode=1 data.
+              GMTSAR_GRDFILL_PY=0 → `gmt grdfill` subprocess (rollback).
     """
-    use_py = os.environ.get("GMTSAR_GRDFILL_PY", "0") == "1"
+    use_py = os.environ.get("GMTSAR_GRDFILL_PY", "1") == "1"
     if use_py and _HAVE_GRDFILL_PY:
         _grdfill_py_file(in_grd, out_grd, algorithm='g', donor_path=donor_grd)
     else:
@@ -148,21 +149,41 @@ except ImportError as _e:
     def _inproc_enabled():
         return os.environ.get("GMTSAR_GMT_INPROC", "1") != "0"
 
-# Mira #30 (2026-05-21): in-process numba blockmedian (gmt_blockmedian_py)
-# is byte-identical to `gmt blockmedian -bi3d -bo3d -r` (13/13 parity
-# tests on real RS2 trans.dat) but is SLOWER than gmt in dem2topo_ra's
-# usage pattern. dem2topo_ra bins at the radar pixel grid (rng × az_div),
-# so the input N points and the output M bins are ~equal: every bin has
-# ~1 point. The numba prange kernel pays per-bin sort + allocation
-# overhead M times, where M = N → no speedup. Empirical (NUMBA_NUM_THREADS=8):
+# Mira #30 (2026-05-21, UPDATED 2026-06-13): in-process numba blockmedian
+# (gmt_blockmedian_py) is byte-identical to `gmt blockmedian -bi3d -bo3d -r`
+# (13/13 parity tests on real RS2 trans.dat). The 2026-05-21 numbers below
+# showed it 4-7x SLOWER than gmt at dem2topo_ra's 1-pt/bin density:
 #     RS2_SLC_Hawaii  (978k rows, 964k bins → 1.0 row/bin): gmt 0.6s vs py 3.0s
 #     ALOS4_Pinon     (6.4M rows, 6.2M bins → 1.0 row/bin): gmt 4.4s vs py 19.3s
-# Numba blockmedian only wins when bins are dense (Mira #25's 9M-row
-# canonical synthetic case at ~180 pts/bin clocks 2.5× faster than gmt).
-# Keep the wire-in DELIBERATELY DISABLED here until/unless a future
-# bin-density gate is added; the gmt blockmedian subprocess remains
-# the fast path for dem2topo_ra. See blockmedian benchmarks in Mira #30
-# report.
+#
+# 2026-06-13 (Mira #67): added an n==1 fast path to the
+# `_per_bin_median` numba kernel. Profiling on this same RS2
+# trans.dat (978883 rows -> 966217 bins, 99.97% singletons) found the
+# old kernel spent ~0.24s of its ~0.32s total in three np.empty()
+# allocations per bin x 966k bins -- pure allocation overhead for a
+# 1-element "sort". The fast path writes the singleton straight to
+# out_{x,y,z} and `continue`s, skipping all three allocations.
+# A bin with n==1 has only one point, so its median IS that point;
+# GMT's blockmedian has no other side effect at n=1 (verified by the
+# existing test_single_point_bin parity test, which still passes).
+#
+# Re-measured on this host (48 cores, NUMBA_NUM_THREADS unset):
+#     RS2_SLC_Hawaii (978883 rows, 966217 bins, 1pt/bin):
+#         gmt subprocess: ~0.39s    py (before fix): ~0.35s
+#         py (after fix): ~0.11s    -> py now ~3.5x FASTER than gmt
+#     Mira #25 canonical dense case (9M rows, 50000 bins, ~180pt/bin):
+#         py (before fix): ~3.25s   py (after fix): ~3.25s (unchanged,
+#         as expected -- dense bins never hit the n==1 fast path)
+#
+# 13/13 byte-parity tests in bin_py/tests/test_gmt_blockmedian_py.py
+# still pass (cache cleared + rerun) after this change.
+#
+# The wire-in below remains DELIBERATELY DISABLED. The kernel fix
+# closes the 1-pt/bin performance gap (py now beats gmt at this
+# density too), so a density gate is no longer strictly necessary --
+# but flipping `_HAVE_GMT_BLOCKMEDIAN_PY` to True is still a separate
+# Rule-8 (env-gated default OFF + path-exercising smoke) step, not
+# done here. See Mira #67 investigation notes for before/after timings.
 _HAVE_GMT_BLOCKMEDIAN_PY = False
 _py_blockmedian = None  # type: ignore  # not used; documented for cross-ref
 
@@ -211,6 +232,21 @@ except ImportError as _e:
 #   (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.28) confirmed
 #   raln.grd/ralt.grd are produced via the chain with no pixel.grd
 #   intermediate written to disk.
+# * 2026-06-13: Rule-8 smoke for THIS module's pixel.grd call (the
+#   default still queued above). RS2_SLC_Hawaii, GMTSAR_SURFACE_INPROC=1
+#   vs =0, full dem2topo_ra run: topo_ra.grd is BYTE-IDENTICAL (cmp
+#   clean) and the in-mem chain engages correctly (no pixel.grd written
+#   to disk). Correctness: PASS.
+#   Performance: REGRESSION. Per dem2topo_ra_phase_profile_py.json the
+#   `surface` phase alone is 11.9s (gmt subprocess) vs 38.1s (in-process
+#   gmt_surface_py) -- ~3.2x SLOWER -- and this phase is 87-98% of total
+#   wall time, so overall dem2topo_ra wall goes 32.7s -> 58.8s (~1.8x
+#   slower). Default NOT flipped. Unlike the raln/ralt grid (1001x251,
+#   #72 found ~0.97x near-parity), this pixel.grd grid evidently hits a
+#   regime where gmt_surface_py's multigrid/Briggs path loses badly to
+#   gmt's C surface -- needs its own perf investigation (grid dims,
+#   iteration counts, FMG level count) before a flip can be considered,
+#   analogous to the #67 blockmedian 1pt/bin investigation.
 def _chain_enabled() -> bool:
     return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "1") == "1"
             and _HAVE_GMT_GRD_IO)
@@ -530,9 +566,9 @@ def dem2topo_ra():
     print('DEM2TOPO_RA - START ... ...')
     print(' ')
     tension = 0.1
-    mode    = 0 
+    mode    = 0
     if n == 4:
-        mode = sys.argv[3]
+        mode = int(sys.argv[3])
     print('DEM2TOPO_RA: tension is ', tension)
     print('DEM2TOPO_RA: interpolation approach mode is ', mode)    
     
