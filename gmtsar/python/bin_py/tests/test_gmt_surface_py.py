@@ -11,13 +11,16 @@ rule, the parity test fails noisily if the oracle is unavailable.
 """
 from __future__ import annotations
 
+import io
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -149,6 +152,52 @@ def _run_gmt_surface(xyz: np.ndarray, region, inc, tension,
     if np.isnan(grid).any():
         raise RuntimeError("gmt grd2xyz left gaps in reconstructed grid")
     return grid
+
+
+def _run_gmt_surface_iter_counts(xyz: np.ndarray, region, inc, tension,
+                                  tmpdir: Path) -> list:
+    """Run `gmt surface -Vd` and parse the per-stride iteration table.
+
+    Returns a list of (stride:int, mode:str ('I' or 'D'), iterations:int)
+    tuples in the order GMT printed them, parsed from the GMT_MSG_INFORMATION
+    summary lines that look like:
+
+        surface [INFORMATION]:   64    D       17  4.65e-08  4.79e-08    17
+
+    Mirrors surface_iterate's per-stride report (surface.c:1155-1156).
+    """
+    xyz_file = tmpdir / "scatter.txt"
+    grd_file = tmpdir / "out.grd"
+    np.savetxt(xyz_file, xyz, fmt="%.10g")
+
+    xmin, xmax, ymin, ymax = region
+    dx, dy = inc
+    cmd = [_GMT, "surface", str(xyz_file),
+           f"-R{xmin}/{xmax}/{ymin}/{ymax}",
+           f"-I{dx}/{dy}",
+           f"-T{tension}",
+           f"-G{grd_file}",
+           "-Vd"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"gmt surface -Vd failed (rc={r.returncode}):\n"
+            f"  stdout: {r.stdout}\n  stderr: {r.stderr}")
+
+    # Lines look like:
+    #   surface [INFORMATION]:   64\tD\t      17\t4.65e-08\t4.79e-08\t        17
+    pat = re.compile(
+        r"^surface \[INFORMATION\]:\s+(\d+)\t([ID])\t\s*(\d+)\t")
+    out = []
+    for line in r.stderr.splitlines():
+        m = pat.match(line)
+        if m:
+            out.append((int(m.group(1)), m.group(2), int(m.group(3))))
+    if not out:
+        raise RuntimeError(
+            "no per-stride iteration lines parsed from `gmt surface -Vd` "
+            "stderr — output format may have changed:\n" + r.stderr[:2000])
+    return out
 
 
 @unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH — skipping parity test")
@@ -837,7 +886,7 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         grid_py = gmt_surface_py(
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
-            omega=0.6, tol=1e-4, use_multigrid=True,
+            tol=1e-4, use_multigrid=True,
         )
         t_py = time.time() - t0
 
@@ -870,7 +919,7 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         grid_py = gmt_surface_py(
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
-            omega=0.6, tol=1e-4, use_multigrid=True,
+            tol=1e-4, use_multigrid=True,
         )
         t_py = time.time() - t0
 
@@ -907,13 +956,152 @@ class TestGmtSurfacePyBenchmark(unittest.TestCase):
         grid_py = gmt_surface_py(
             xyz[:, 0], xyz[:, 1], xyz[:, 2],
             region=region, inc=inc, tension=tension,
-            omega=0.6, tol=1e-4, use_multigrid=True,
+            tol=1e-4, use_multigrid=True,
         )
         t_py = time.time() - t0
 
         print(f"\n[bench aniso 1001x251]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
               f"speedup={t_gmt/t_py:.2f}x  shape={grid_gmt.shape}  "
               f"threads={os.environ.get('NUMBA_NUM_THREADS', 'default')}")
+
+
+@unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH — skipping parity test")
+class TestGmtSurfacePyAnisotropicConvergence(unittest.TestCase):
+    """Mira #72 — anisotropic 1001x251 grid: per-stride iteration-count
+    parity vs C, plus a wall-time regression guard.
+
+    Root cause (see AUDIT_surface_aniso_mira72.md): the benchmark fixture
+    passed ``omega=0.6`` to gmt_surface_py, but C's default over-relaxation
+    is ``SURFACE_OVERRELAXATION = 1.4`` (surface.c:135).  omega=0.6 is
+    UNDER-relaxed GS, which needs 2-5x more sweeps per stride to hit the
+    same convergence threshold than C's omega=1.4 SOR — a Rule-10
+    "different iteration-count path for the same algorithm" violation,
+    but it was in the TEST fixture, not the port itself (the port's
+    default IS 1.4).  This test locks in that the port's DEFAULT omega
+    produces a per-stride iteration count matching C within a small
+    absolute slack (a few iterations either way are expected from
+    float32 (gmt_grdfloat) vs float64 (numpy) rounding noise in the
+    convergence test — surface.c uses `gmt_grdfloat=float` for the grid
+    state array; the py port uses float64 throughout).
+    """
+
+    def test_iteration_counts_match_c_within_slack(self):
+        rng = np.random.default_rng(11)
+        N = 10000
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (0.01, 0.04)  # 1001 x 251, alpha = dx/dy = 0.25
+        tension = 0.5
+        xyz = np.column_stack([x, y, z])
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            c_counts = _run_gmt_surface_iter_counts(xyz, region, inc,
+                                                      tension, tmpdir)
+
+        # Capture gmt_surface_py's verbose per-stride log and parse the
+        # same (stride, mode, iterations) tuples.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            gmt_surface_py(x, y, z, region=region, inc=inc,
+                           tension=tension, tol=1e-4, use_multigrid=True,
+                           verbose=True)
+        log = buf.getvalue()
+
+        py_counts = []
+        conv_pat = re.compile(
+            r"stride=(\d+) (DATA|NODES) converged at it=(\d+)")
+        cap_pat = re.compile(
+            r"stride=(\d+) (DATA|NODES) hit max_iter \((\d+)\)")
+        for line in log.splitlines():
+            m = conv_pat.search(line)
+            if m:
+                py_counts.append((int(m.group(1)),
+                                   "I" if m.group(2) == "NODES" else "D",
+                                   int(m.group(3))))
+                continue
+            m = cap_pat.search(line)
+            if m:
+                py_counts.append((int(m.group(1)),
+                                   "I" if m.group(2) == "NODES" else "D",
+                                   int(m.group(3))))
+
+        self.assertEqual(len(c_counts), len(py_counts),
+                         f"stride-hierarchy length mismatch: "
+                         f"c={c_counts} py={py_counts}")
+
+        total_c = sum(c[2] for c in c_counts)
+        total_py = sum(c[2] for c in py_counts)
+        print(f"\n[iter-count, aniso 1001x251]  "
+              f"c_total={total_c}  py_total={total_py}  "
+              f"c={c_counts}  py={py_counts}")
+
+        for (c_stride, c_mode, c_it), (py_stride, py_mode, py_it) in zip(
+                c_counts, py_counts):
+            self.assertEqual((c_stride, c_mode), (py_stride, py_mode),
+                              f"stride/mode sequence mismatch: "
+                              f"c={c_counts} py={py_counts}")
+            # Slack: float32 (C) vs float64 (py) convergence-test rounding
+            # can shift the iteration where max|du| first drops below the
+            # threshold by a handful of sweeps.  10 absolute or 25% of the
+            # C count (whichever is larger) bounds this without masking a
+            # real divergence (the omega=0.6 bug produced 2-5x, i.e.
+            # 100-400% deltas — this slack is an order of magnitude tighter).
+            slack = max(10, int(round(0.25 * c_it)))
+            self.assertLessEqual(
+                abs(c_it - py_it), slack,
+                f"stride={c_stride} mode={c_mode}: c={c_it} py={py_it} "
+                f"exceeds slack={slack} — possible reintroduction of the "
+                f"omega/convergence-formula divergence (Mira #72)")
+
+        # Total iteration count must not blow up: with the omega=0.6 bug
+        # py_total/c_total was ~2.8x (1034 vs 365 on a related fixture).
+        # A correct port should be within ~1.3x of C's total.
+        ratio = total_py / total_c
+        self.assertLess(ratio, 1.3,
+                         f"py_total/c_total={ratio:.2f} — iteration-count "
+                         f"path has diverged from C (Mira #72 regression)")
+
+    @unittest.skipUnless(os.environ.get("GMT_SURFACE_PY_BENCH") == "1",
+                         "set GMT_SURFACE_PY_BENCH=1 to enable")
+    def test_aniso_not_much_slower_than_c(self):
+        """Wall-time regression guard: with the omega=0.6 bug, py was 2.6x
+        SLOWER than C on this grid (0.71s vs 1.84s).  After the fix
+        (default omega=1.4, matching C), py must be within 1.5x of C's
+        wall time (it was measured at ~1.0x — near parity)."""
+        rng = np.random.default_rng(11)
+        N = 10000
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+        xyz = np.column_stack([x, y, z])
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (0.01, 0.04)
+        tension = 0.5
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            t0 = time.time()
+            _run_gmt_surface(xyz, region, inc, tension, tmpdir)
+            t_gmt = time.time() - t0
+
+        # Warm up numba JIT before timing.
+        _ = gmt_surface_py(x[:50], y[:50], z[:50],
+                          region=region, inc=(0.25, 0.25),
+                          tension=tension, max_iter=5)
+
+        t0 = time.time()
+        gmt_surface_py(x, y, z, region=region, inc=inc, tension=tension,
+                       tol=1e-4, use_multigrid=True)
+        t_py = time.time() - t0
+
+        print(f"\n[aniso speed guard]  gmt={t_gmt:.2f}s  py={t_py:.2f}s  "
+              f"ratio={t_py/t_gmt:.2f}")
+        self.assertLess(t_py, 1.5 * t_gmt,
+                        f"py ({t_py:.2f}s) > 1.5x gmt ({t_gmt:.2f}s) — "
+                        f"anisotropic-grid slowdown regression (Mira #72)")
 
 
 if __name__ == "__main__":
