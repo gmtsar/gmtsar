@@ -710,11 +710,12 @@ token-budget-conscious (Pro plan). Order so far:
 ```
 1. xyz2grd port (Mira #71)        -> v2.1.22 merge, v2.1.23 default-ON.  DONE
 2. surface gcd==1 fix (Mira #68)  -> v2.1.24.                            DONE
-3. grdfill pixel-reg fix (Mira #70, re-dispatch) -> IN PROGRESS
-     Fix _bcr_bicubic_sample in_off=0.0 hardcode for pixel-reg donors
-     (AUDIT_grdfill_wirein_mira_2026-05-22.md fix path). Add production-
-     shaped pixel-reg parity test. Do NOT flip GMTSAR_GRDFILL_PY default
-     (separate Rule-8 smoke step after landing).
+3. grdfill pixel-reg fix (Mira #70) -> v2.1.25.                          DONE
+     Fixed _bcr_bicubic_sample in_off=0.5*node_offset + gmtbcr_reject-
+     style wesn clamp/NaN + zero-init BCR pad corners (AUDIT_grdfill_
+     pixelreg_mira70.md). New test_pixel_registered_donor (23/23 pass).
+     GMTSAR_GRDFILL_PY still default OFF -- separate Rule-8 smoke step
+     before flipping.
 4. gmt_surface_py single-thread perf gap (1.9-4x slower than C, Mira #52)
      Optimization pass on the already-ported, byte-id gmt_surface_py.py
      (vectorize/batch the multigrid iteration). Goal: close gap enough
