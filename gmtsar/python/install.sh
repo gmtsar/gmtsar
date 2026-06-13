@@ -137,6 +137,17 @@ if [[ $DO_BUILD -eq 1 ]]; then
     ln -sf "$f" "$REPO_ROOT/bin/$(basename "$f")"
   done
 
+  # Symlink the bin_py/ ports that utils/p2p_stages.py invokes by bare name
+  # via subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
+  # _v2 entries map a PATH name to its JIT-cache-optimized source file.
+  chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py "$REPO_ROOT/gmtsar/python/bin_py/"*_py_v2
+  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py; do
+    ln -sf "$REPO_ROOT/gmtsar/python/bin_py/$name" "$REPO_ROOT/bin/$name"
+  done
+  for name in resamp_py SAT_llt2rat_py; do
+    ln -sf "$REPO_ROOT/gmtsar/python/bin_py/${name}_v2" "$REPO_ROOT/bin/$name"
+  done
+
   # Symlink the canonical csh scripts (pop_config.csh, p2p_processing.csh, ...) so
   # they're on PATH via $GMTSAR/bin. make install does NOT do this upstream.
   # Source files may ship non-executable in the tree (mode 0644), so chmod first.
