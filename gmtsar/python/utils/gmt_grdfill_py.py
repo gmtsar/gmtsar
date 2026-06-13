@@ -394,7 +394,8 @@ from gmt_grdsample_py import (  # noqa: E402
 def _bcr_bicubic_sample(donor: np.ndarray, donor_x: np.ndarray,
                         donor_y: np.ndarray, qx: np.ndarray,
                         qy: np.ndarray,
-                        *, threshold: float = 0.5) -> np.ndarray:
+                        *, threshold: float = 0.5,
+                        donor_node_offset: int = 0) -> np.ndarray:
     """Bicubic sample of ``donor`` at scattered query points ``(qx, qy)``.
 
     Mirrors gmt_bcr.c (gmt_bcr_get_z) with the default a=-0.5 bicubic
@@ -414,6 +415,28 @@ def _bcr_bicubic_sample(donor: np.ndarray, donor_x: np.ndarray,
     NaN handling matches gmt_bcr.c:305 -- NaN-valued contributors drop
     out of the weighted average; the cell is masked NaN if (sum_w +
     GMT_CONV8_LIMIT - threshold) <= 0.
+
+    Registration / out-of-range handling (gmt_bcr.c)
+    --------------------------------------------------
+    ``in_off`` (called ``xy_off`` in GMT) is ``0.5 * registration``
+    (gmt_grdio.c:2147, gmt_grdio.c:3102): 0.0 for gridline-registered
+    donors, 0.5 for pixel-registered donors -- in BOTH axes.
+
+    Before normalising, each query coordinate is checked against the
+    donor's REGION ``wesn`` (not the pixel-centre range
+    ``donor_x[0]..donor_x[-1]``):  for pixel-registered donors
+    ``wesn = [donor_x[0] - dx/2, donor_x[-1] + dx/2]`` (and similarly
+    for y).  This mirrors ``gmtbcr_reject`` (gmt_bcr.c:86-119):
+
+      - If the query is outside ``wesn`` by more than
+        ``GMT_CONV4_LIMIT = 1e-4`` (gmt_constants.h:78) -> the C
+        ``gmt_bcr_get_z`` returns NaN for that point (silently;
+        grdfill.c:557-560 just counts it as "still NaN" and emits a
+        WARNING, it does not error).  We mirror this: such points are
+        marked NaN in the output, NOT raised.
+      - If the query is within ``GMT_CONV4_LIMIT`` of (but outside)
+        ``wesn``, it is CLAMPED onto the ``wesn`` border BEFORE the
+        normalised-coordinate computation (gmt_bcr.c:102/106/111/115).
     """
     nx = donor_x.size
     ny = donor_y.size
@@ -421,31 +444,48 @@ def _bcr_bicubic_sample(donor: np.ndarray, donor_x: np.ndarray,
     dy = float(donor_y[-1] - donor_y[0]) / max(ny - 1, 1)
     in_xmin = float(donor_x[0])
     in_ymax = float(donor_y[-1])
-    # We always treat donor as gridline-registered here -- the dem2topo_ra
-    # production path passes pixel-registered topo_ra_tmp through the same
-    # bicubic at the same registration; the in_off applies in both axes if
-    # the donor is pixel-reg.  We default to 0.0 (gridline); the file-
-    # wrapper passes the actual node_offset.
-    in_off = 0.0
+    # gmt_grdio.c:2147 -- xy_off = 0.5 * registration (0 for gridline,
+    # 0.5 for pixel).  Applies identically to x and y axes.
+    in_off = 0.5 * float(donor_node_offset)
 
-    fx = (qx.astype(np.float64) - in_xmin) / dx - in_off
-    fy = (in_ymax - qy.astype(np.float64)) / dy - in_off
+    qx64 = qx.astype(np.float64).copy()
+    qy64 = qy.astype(np.float64).copy()
 
-    # Range check (per Rule 1).  Allow tiny overshoot (rounding).
-    if (fx < -1e-9).any() or (fx > nx - 1 + 1e-9).any():
-        raise ValueError(
-            "donor grid does not cover query x range: "
-            f"qx in [{float(qx.min()):.6g}, {float(qx.max()):.6g}] vs donor "
-            f"[{donor_x[0]:.6g}, {donor_x[-1]:.6g}]")
-    if (fy < -1e-9).any() or (fy > ny - 1 + 1e-9).any():
-        raise ValueError(
-            "donor grid does not cover query y range: "
-            f"qy in [{float(qy.min()):.6g}, {float(qy.max()):.6g}] vs donor "
-            f"[{donor_y[0]:.6g}, {donor_y[-1]:.6g}]")
+    # Donor region wesn (gmt_bcr.c:100-116).  For pixel-registration the
+    # region extends half a cell beyond the outermost pixel centres.
+    GMT_CONV4_LIMIT = 1.0e-4
+    wesn_xlo = in_xmin - in_off * dx
+    wesn_xhi = float(donor_x[-1]) + in_off * dx
+    wesn_ylo = float(donor_y[0]) - in_off * dy
+    wesn_yhi = in_ymax + in_off * dy
 
-    fx = np.clip(fx, 0.0, nx - 1.0)
-    fy = np.clip(fy, 0.0, ny - 1.0)
+    # gmtbcr_reject: truly-outside -> NaN; near-border -> clamp to wesn.
+    x_outside = (qx64 < wesn_xlo - GMT_CONV4_LIMIT) | (qx64 > wesn_xhi + GMT_CONV4_LIMIT)
+    y_outside = (qy64 < wesn_ylo - GMT_CONV4_LIMIT) | (qy64 > wesn_yhi + GMT_CONV4_LIMIT)
+    outside = x_outside | y_outside
 
+    qx64 = np.where(qx64 < wesn_xlo, wesn_xlo, qx64)
+    qx64 = np.where(qx64 > wesn_xhi, wesn_xhi, qx64)
+    qy64 = np.where(qy64 < wesn_ylo, wesn_ylo, qy64)
+    qy64 = np.where(qy64 > wesn_yhi, wesn_yhi, qy64)
+
+    # gmt_bcr.c:130-131:  x = (xx - wesn[XLO]) * r_inc - xy_off.
+    # ``donor_x[0]``/``donor_y[-1]`` (in_xmin/in_ymax) are PIXEL-CENTRE
+    # coordinates (read_gmt_grd's convention), i.e.
+    #   wesn[XLO] = donor_x[0] - in_off*dx,  wesn[YHI] = donor_y[-1] + in_off*dy
+    # Substituting:
+    #   x = (xx - (in_xmin - in_off*dx))/dx - in_off
+    #     = (xx - in_xmin)/dx + in_off - in_off = (xx - in_xmin)/dx
+    # The xy_off terms CANCEL exactly -- in_off only affects the wesn
+    # clamp/reject above, not the normalised-coordinate formula itself.
+    fx = (qx64 - in_xmin) / dx
+    fy = (in_ymax - qy64) / dy
+
+    # No further clip on fx/fy (gmt_bcr.c does not clip the normalised
+    # coordinate -- only the input xx/yy were clamped to wesn above).
+    # After the wesn-clamp, fx in [-in_off, nx-1+in_off] and fy
+    # similarly; with in_off in {0, 0.5} this gives col0=floor(fx)-1 in
+    # [-2, nx-2], which PAD=2 covers exactly.
     xi = np.floor(fx)
     yj = np.floor(fy)
     col0 = xi.astype(np.int64) - 1  # 4x4 upper-left
@@ -458,10 +498,21 @@ def _bcr_bicubic_sample(donor: np.ndarray, donor_x: np.ndarray,
 
     # Build padded donor in BCR frame (row 0 = north -- so flip
     # numpy-y-ascending to gmt-y-descending).
+    #
+    # gmt_grd_BC_set (gmt_support.c, X-not-periodic/Y-not-periodic case)
+    # explicitly does NOT set the 3 corner-most pad cells in each of the
+    # 4 corners ("Loaded all but three corner-most points at each
+    # corner."). GMT's padded grid buffer is allocated via gmt_M_memory
+    # (calloc -> zero-initialised), so those cells retain value 0.0, NOT
+    # NaN. Only the 4x4 BCR kernel for a query in the absolute geometric
+    # corner of a PIXEL-registered donor (in_off=0.5, both tx,ty offsets
+    # land col0=-2 AND row0=-2 simultaneously) ever touches these cells.
+    # Initialise to 0.0 (not NaN) so the NaN-skip branch below does not
+    # spuriously drop these contributions from the weighted average.
     PAD = 2
     d_bcr = donor[::-1, :].astype(np.float32, copy=False)
     d_pad = np.full((ny + 2 * PAD, nx + 2 * PAD),
-                    np.float32(np.nan), dtype=np.float32)
+                    np.float32(0.0), dtype=np.float32)
     d_pad[PAD:PAD + ny, PAD:PAD + nx] = d_bcr
     _natural_bc(d_pad, pad=PAD)
     d64 = d_pad.astype(np.float64, copy=False)
@@ -503,12 +554,17 @@ def _bcr_bicubic_sample(donor: np.ndarray, donor_x: np.ndarray,
     valid = (w_sum + GMT_CONV8_LIMIT - threshold) > 0.0
     out = np.full(Nq, np.nan, dtype=np.float64)
     np.divide(z_sum, w_sum, out=out, where=valid & (w_sum != 0.0))
+    # gmtbcr_reject (gmt_bcr.c:86-119): queries truly outside the donor's
+    # wesn (beyond GMT_CONV4_LIMIT) -> NaN, silently (grdfill.c:557-560
+    # only warns, never errors).
+    out[outside] = np.nan
     return out.astype(np.float32)
 
 
 def _grid_fill(data: np.ndarray, x: np.ndarray, y: np.ndarray,
                donor: np.ndarray, donor_x: np.ndarray,
-               donor_y: np.ndarray) -> np.ndarray:
+               donor_y: np.ndarray,
+               *, donor_node_offset: int = 0) -> np.ndarray:
     """-Ag fill: replace each NaN with bicubic sample of donor at (x, y)."""
     out = data.astype(np.float32, copy=True)
     mask = np.isnan(out)
@@ -517,7 +573,8 @@ def _grid_fill(data: np.ndarray, x: np.ndarray, y: np.ndarray,
     rows, cols = np.nonzero(mask)
     qx = x[cols]
     qy = y[rows]
-    vals = _bcr_bicubic_sample(donor, donor_x, donor_y, qx, qy)
+    vals = _bcr_bicubic_sample(donor, donor_x, donor_y, qx, qy,
+                                donor_node_offset=donor_node_offset)
     out[rows, cols] = vals
     return out
 
@@ -537,6 +594,7 @@ def gmt_grdfill_py(
     donor: Optional[np.ndarray] = None,
     donor_x: Optional[np.ndarray] = None,
     donor_y: Optional[np.ndarray] = None,
+    donor_node_offset: int = 0,
     nodata_value: Optional[float] = None,
 ) -> np.ndarray:
     """In-process ``gmt grdfill`` port.
@@ -561,6 +619,11 @@ def gmt_grdfill_py(
         Max integer shell radius for ``algorithm='n'``.
     donor, donor_x, donor_y :
         Donor grid + coords for ``algorithm='g'``.
+    donor_node_offset : int
+        Registration of the donor grid: 0 = gridline (default), 1 =
+        pixel-registered.  Used by ``algorithm='g'`` to compute the
+        BCR normalisation offset ``in_off = 0.5 * donor_node_offset``
+        (gmt_bcr.c:130-131, gmt_grdio.c:2147).  Ignored otherwise.
     nodata_value : float
         Alternate hole sentinel.  Cells equal to this value are treated
         as NaN before filling (mirrors GMT's ``-N`` option,
@@ -623,7 +686,8 @@ def gmt_grdfill_py(
             raise ValueError(
                 f"donor shape {donor.shape} != "
                 f"(len(donor_y)={donor_y.size}, len(donor_x)={donor_x.size})")
-        return _grid_fill(data, x, y, donor, donor_x, donor_y)
+        return _grid_fill(data, x, y, donor, donor_x, donor_y,
+                          donor_node_offset=int(donor_node_offset))
 
     if algo == 's':
         raise NotImplementedError(
@@ -664,16 +728,19 @@ def gmt_grdfill_py_file(
     z, x, y, info = read_gmt_grd(in_path)
 
     donor = donor_x = donor_y = None
+    donor_node_offset = 0
     if algorithm.lower() == 'g':
         if donor_path is None:
             raise ValueError("algorithm='g' requires donor_path")
-        donor, donor_x, donor_y, _ = read_gmt_grd(donor_path)
+        donor, donor_x, donor_y, donor_info = read_gmt_grd(donor_path)
+        donor_node_offset = int(donor_info.get('node_offset', 0))
 
     out = gmt_grdfill_py(z, x, y,
                          algorithm=algorithm,
                          constant=constant,
                          radius=radius,
                          donor=donor, donor_x=donor_x, donor_y=donor_y,
+                         donor_node_offset=donor_node_offset,
                          nodata_value=nodata_value)
 
     write_gmt_grd(out_path, out, x, y,
