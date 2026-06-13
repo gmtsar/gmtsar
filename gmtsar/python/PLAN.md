@@ -732,12 +732,22 @@ token-budget-conscious (Pro plan). Order so far:
      Rule-8 path-exercising smoke + default-flip mission whenever picked
      up; unblocks GMTSAR_DEM2TOPO_INMEM_CHAIN (item 9c Tier I).
 4b. GMTSAR_SURFACE_INPROC flipped default ON -> v2.1.27.            DONE
-     Rule-8 smoke: RS2_SLC_Hawaii w/ GMTSAR_SURFACE_INPROC=1,
-     SWEEP_FORCE=1 -> raln.grd/ralt.grd freshly generated via
-     _run_surface_inproc_5col (-I16/32, the anisotropic shape #72
-     validated), 6/6 py-vs-csh SUCCESS (identical metrics to the
-     subprocess path), blessed diff PASS. No silent-fallback except
-     in the call path. GMTSAR_DEM2TOPO_INMEM_CHAIN now unblocked.
+     SCOPED TO proj_ra2ll_lib.py::_ensure_raln_ralt ONLY (raln.grd/
+     ralt.grd, -I16/32 anisotropic shape). Rule-8 smoke: RS2_SLC_Hawaii
+     w/ GMTSAR_SURFACE_INPROC=1, SWEEP_FORCE=1 -> raln.grd/ralt.grd
+     freshly generated via _run_surface_inproc_5col, 6/6 py-vs-csh
+     SUCCESS (identical metrics to the subprocess path), blessed diff
+     PASS. No silent-fallback except in the call path.
+     GMTSAR_DEM2TOPO_INMEM_CHAIN now unblocked.
+     NOTE (2026-06-13): dem2topo_ra::_surface_or_run (the pixel.grd
+     surface call, 87-98% of dem2topo_ra wall time per the new
+     dem2topo_ra_phase_profile_py.json) reads the SAME env var but its
+     own default REMAINS "0"/OFF -- it was never part of this flip.
+     This split-default-by-same-name was undocumented and led to a
+     stale comment in dem2topo_ra (lines 199-202, now fixed) claiming
+     a global ON default. See item "GMTSAR_SURFACE_INPROC default-flip
+     for dem2topo_ra pixel.grd" queued below for the actual flip
+     mission on that second call site.
 5. S1 TOPS csh->Python port (section 7b)                          ALREADY DONE
      Verified 2026-06-12: this landed earlier (91ba567 "full native-Python
      pipeline", affa266 "aggregate per-subswath phase_profile", 402d4f8

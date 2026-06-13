@@ -12,6 +12,41 @@ import sys, os, subprocess, mmap as _mmap
 import numpy as _np
 from gmtsar_lib import *
 
+# Internal sub-step profiling: dem2topo_ra is itself one "binary" row in
+# the parent p2p_processing's phase_profile_py.json (e.g. 32.5s for RS2).
+# To find where that time actually goes (grd2xyz|SAT_llt2rat_py vs
+# blockmedian/gmtconvert vs surface vs flipud), we dump our OWN
+# dem2topo_ra_phase_profile_py.json in cwd using the same `phase()` API.
+# Falls back to a no-op if phase_profile is unavailable.
+try:
+    from phase_profile import phase as _dem2topo_phase, dump_profile as _dem2topo_dump_profile
+    _HAVE_DEM2TOPO_PROFILE = True
+except Exception:
+    _HAVE_DEM2TOPO_PROFILE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def _dem2topo_phase(name):
+        yield
+    def _dem2topo_dump_profile(*a, **kw):
+        pass
+
+
+class _PhaseTimer:
+    """start()/stop() wrapper around the `phase()` context manager.
+
+    Used where a phase spans an if/elif block we don't want to
+    re-indent (the mode==0 vs mode==1 surface branches below).
+    """
+    def __init__(self, name):
+        self._cm = _dem2topo_phase(name)
+
+    def start(self):
+        self._cm.__enter__()
+        return self
+
+    def stop(self):
+        self._cm.__exit__(None, None, None)
+
 # Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
 # Default ON (GMTSAR_GRDCUT_PY=1) per Rule 10 carve-out — byte-id to gmt C
 # AND faster (file→file 3.3×, array-only 151×). Set GMTSAR_GRDCUT_PY=0 to
@@ -161,10 +196,14 @@ except ImportError as _e:
 # coord vectors and node_offset are identical to what the disk
 # round-trip would yield, and `_write_gmt_grd` is the same writer.
 #
-# Requires GMTSAR_SURFACE_INPROC=1 (the upstream gate that activates
-# `_surface_inproc`, default ON since v2.1.27). Without it, the surface
-# step is a gmt subprocess that writes pixel.grd to disk, so there's
-# nothing to chain.
+# Requires GMTSAR_SURFACE_INPROC=1 to activate `_surface_inproc` for
+# THIS module's pixel.grd call (_surface_or_run below defaults this
+# gate to "0"/OFF -- still awaiting its own Rule-8 smoke + flip).
+# NOTE: the same env var defaults to "1"/ON in proj_ra2ll_lib.py's
+# _ensure_raln_ralt (flipped there in v2.1.27) -- that flip does NOT
+# extend to this module's pixel.grd path. Without GMTSAR_SURFACE_INPROC=1
+# *and* this module's default flipped, the surface step here is a gmt
+# subprocess that writes pixel.grd to disk, so there's nothing to chain.
 #
 # History
 # -------
@@ -561,10 +600,11 @@ def dem2topo_ra():
     # AUDIT note in gmtsar/python/AUDIT.md (ALOS_haiti los_ll fix).
     # See gmtsar/python/AUDIT_SAT_llt2rat_py.md for the 9 sub-ULP bugs
     # Mira #2 fixed to close parity.
-    if SC == 10 or SC == 11:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod > trans.dat')
-    else:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod > trans.dat')
+    with _dem2topo_phase("grd2xyz_SAT_llt2rat"):
+        if SC == 10 or SC == 11:
+            run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod > trans.dat')
+        else:
+            run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod > trans.dat')
     
     print(' ')
     print('DEM2TOPO_RA: use an azimuth spacing of 2 for low PRF data such as S1 TOPS ... ...')
@@ -575,8 +615,10 @@ def dem2topo_ra():
         # now happens in-process via numpy memmap column slice
         # (utils/gmt_inproc.py). Bit-id with gmt — see
         # bin_py/tests/test_gmt_inproc.py::TestGmtconvertSelectCols.
-        _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 2,
-                                    str(V), "temp.rat")
+        with _dem2topo_phase("gmtconvert_to_temprat"):
+            _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 2,
+                                        str(V), "temp.rat")
+        _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
             run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
             
@@ -639,11 +681,14 @@ def dem2topo_ra():
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
+        _pt_surface.stop()
     else:
         print('DEM2TOPO_RA: if PRF>=1000, then ... ...')
         # Mira (Tier-1 gmt subprocess kill): same as PRF<1000 branch.
-        _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 4,
-                                    str(V), "temp.rat")
+        with _dem2topo_phase("gmtconvert_to_temprat"):
+            _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 4,
+                                        str(V), "temp.rat")
+        _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
             run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
             
@@ -704,12 +749,14 @@ def dem2topo_ra():
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
-    
+        _pt_surface.stop()
+
     print(' ')
     print('DEM2TOPO_RA: flip top to bottom for both ascending and descending passes ... ...')
     # Mira #30 wire-in: in-process FLIPUD via numpy + gmt_grd_io.
     # Set GMTSAR_GMT_INPROC=0 to fall back to `gmt grdmath`.
-    _grdmath_flipud('pixel.grd', 'topo_ra.grd')
+    with _dem2topo_phase("flipud"):
+        _grdmath_flipud('pixel.grd', 'topo_ra.grd')
     
     print(' ')
     print('DEM2TOPO_RA: plotting ... ...')
@@ -728,7 +775,9 @@ def dem2topo_ra():
     delete('dem.xyz')
     delete('tmp')
     delete('topo_ra.cpt')
-    
+
+    _dem2topo_dump_profile(path="dem2topo_ra_phase_profile_py.json")
+
     print(' ')
     print("DEM2TOPO_RA - END ... ...")
 
