@@ -738,13 +738,33 @@ token-budget-conscious (Pro plan). Order so far:
      validated), 6/6 py-vs-csh SUCCESS (identical metrics to the
      subprocess path), blessed diff PASS. No silent-fallback except
      in the call path. GMTSAR_DEM2TOPO_INMEM_CHAIN now unblocked.
-5. S1 TOPS csh->Python port (section 7b)
-     p2p_S1_TOPS_Frame.csh -> native Python, wire phase_profile. Largest
-     remaining "not fully Python" pipeline (S1A_SLC_TOPS_*, S1_Larsen_C,
-     S1_Ridgecrest_EQ). Big standalone effort -- likely needs its own
-     sub-plan once items 3-4 land.
+5. S1 TOPS csh->Python port (section 7b)                          ALREADY DONE
+     Verified 2026-06-12: this landed earlier (91ba567 "full native-Python
+     pipeline", affa266 "aggregate per-subswath phase_profile", 402d4f8
+     "wire snaphu_unwrap import + awk-int parity + env-gate", all ancestors
+     of HEAD). p2p_S1_TOPS_Frame and merge_unwrap_geocode_tops are native
+     Python in utils/, recipes already call them (README_S1A_SLC_TOPS_LA.txt
+     etc.). Confirmed via the SWEEP_FORCE=py --full sweep:
+     work/results/S1A_SLC_TOPS_LA.json @ db62d13 (v2.1.27) = 10/10 SUCCESS,
+     and phase_profile_py.json exists at Frame-level + F1/F2/F3 for both
+     S1A_SLC_TOPS_LA and S1_Ridgecrest_EQ. Section 7b's TODO text below is
+     stale and describes already-completed work -- no further action needed.
 
-After 5: revisit stage-cache redesign, GMTSAR_IONO_GAUSS_PY (blocked on
+6. GMTSAR_DEM2TOPO_INMEM_CHAIN flipped default ON -> v2.1.28.       DONE
+     Rule-8 smoke: RS2_SLC_Hawaii w/ GMTSAR_SURFACE_INPROC=1,
+     GMTSAR_DEM2TOPO_INMEM_CHAIN=1, SWEEP_FORCE=1 -> raln.grd/ralt.grd
+     freshly generated via the chain (no pixel.grd intermediate on
+     disk), 6/6 py-vs-csh SUCCESS, blessed diff PASS. Updated
+     test_dem2topo_ra.py TestInmemChainParity: renamed/added
+     test_chain_default_on_means_stash_not_disk and
+     test_chain_explicitly_disabled_means_disk_writes_pixel_grd (env
+     unset now means chain-ON, not chain-OFF). 13/13 pass.
+     v2.1.27 full-sweep perf check (161/161 SUCCESS, blessed PASS):
+     SURFACE_INPROC flip was perf-neutral overall (-1.5%, within noise),
+     consistent with #72's near-parity (0.97x) anisotropic finding --
+     the value is unblocking this chain step, not a standalone speedup.
+
+After 6: revisit stage-cache redesign, GMTSAR_IONO_GAUSS_PY (blocked on
 test coverage), and parallelism (in-process per-burst/per-tile work via
-multiprocessing) once in-memory chaining (item 4's unblock) exists.
+multiprocessing) now that in-memory chaining (item 4/6's unblock) exists.
 ```

@@ -149,9 +149,9 @@ except ImportError as _e:
 
 
 # Mira (2026-05-22): in-memory chain between adjacent in-process ops.
-# When GMTSAR_DEM2TOPO_INMEM_CHAIN=1 (default OFF), the in-process
-# `surface` step does NOT write its `pixel.grd` to disk and instead
-# stashes (grid, x_coord, y_coord, node_offset, history) in this
+# When GMTSAR_DEM2TOPO_INMEM_CHAIN=1 (default ON since v2.1.28), the
+# in-process `surface` step does NOT write its `pixel.grd` to disk and
+# instead stashes (grid, x_coord, y_coord, node_offset, history) in this
 # module-level carrier keyed by the would-be output path. The
 # subsequent in-process `_grdmath_flipud` step picks it up and skips
 # the intermediate `pixel.grd` read/write entirely; the only disk
@@ -162,11 +162,18 @@ except ImportError as _e:
 # round-trip would yield, and `_write_gmt_grd` is the same writer.
 #
 # Requires GMTSAR_SURFACE_INPROC=1 (the upstream gate that activates
-# `_surface_inproc`). Without it, the surface step is a gmt
-# subprocess that writes pixel.grd to disk, so there's nothing to
-# chain.
+# `_surface_inproc`, default ON since v2.1.27). Without it, the surface
+# step is a gmt subprocess that writes pixel.grd to disk, so there's
+# nothing to chain.
+#
+# History
+# -------
+# * Default flipped ON after RS2_SLC_Hawaii path-exercising smoke
+#   (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.28) confirmed
+#   raln.grd/ralt.grd are produced via the chain with no pixel.grd
+#   intermediate written to disk.
 def _chain_enabled() -> bool:
-    return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "0") == "1"
+    return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "1") == "1"
             and _HAVE_GMT_GRD_IO)
 
 
