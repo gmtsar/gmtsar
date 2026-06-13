@@ -699,6 +699,58 @@ class TestGmtSurfacePyGcd1(unittest.TestCase):
                        "expected a stride>1 pass in the hierarchy "
                        "(coarse warm-start) — got single-stride collapse")
 
+    def test_gcd_1_pixel_reg(self):
+        """gcd-hierarchy region expansion COMBINED with pixel_reg=True.
+
+        Before 2026-06-13, this combination raised
+        ``NotImplementedError`` from the crop-back step (Mira #68 known
+        limitation). dem2topo_ra's RS2_SLC_Hawaii pixel.grd call
+        (region 0/3416/0/5744, inc 2/4, pixel_reg) hits exactly this
+        combination -- gcd(1708,1436)==4, but gmt_optimal_dim_for_surface
+        still suggests a larger (1728,1440) grid, so `sug is not None`
+        AND `pixel_reg` are both true.
+
+        Same (7,12)-cell fixture as test_gcd_1_small (gcd(7,12)==1,
+        suggested (8,12)), but with pixel_reg=True so the output is
+        7x12 pixels instead of 8x13 nodes.
+        """
+        region = (0.0, 10.0, 0.0, 10.0)
+        inc = (10.0 / 7.0, 10.0 / 12.0)
+        tension = 0.25
+
+        rng = np.random.default_rng(42)
+        N = 60
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        z = (np.exp(-((x - 5.0) ** 2 + (y - 5.0) ** 2) / 4.0)
+             + 0.1 * rng.standard_normal(N))
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = Path(td)
+            grid_gmt = _run_gmt_surface(
+                np.column_stack([x, y, z]), region, inc, tension, tmpdir,
+                pixel_reg=True)
+
+        grid_py = gmt_surface_py(x, y, z, region=region, inc=inc,
+                                  tension=tension, pixel_reg=True,
+                                  verbose=True)
+
+        self.assertEqual(grid_gmt.shape, (12, 7))
+        self.assertEqual(grid_py.shape, grid_gmt.shape,
+                         f"shape mismatch: gmt={grid_gmt.shape} "
+                         f"py={grid_py.shape}")
+
+        diff = grid_py - grid_gmt
+        rms = float(np.sqrt(np.mean(diff ** 2)))
+        max_abs = float(np.max(np.abs(diff)))
+        print(f"\n[parity, gcd==1 + pixel_reg]  shape={grid_gmt.shape}  "
+              f"rms={rms:.4e}  max|d|={max_abs:.4e}  T={tension}")
+
+        # Same threshold as the gridline gcd==1 case (test_gcd_1_small).
+        self.assertLess(rms, 1e-3,
+                        f"gcd==1 + pixel_reg RMS {rms:.4e} exceeds parity "
+                        f"threshold 1e-3")
+
 
 class TestGmtSurfacePyAlgorithm(unittest.TestCase):
     """Self-consistency tests that do NOT require gmt to be installed."""

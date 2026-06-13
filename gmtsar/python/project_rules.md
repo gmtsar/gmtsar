@@ -383,3 +383,44 @@ a full --fast 9 SAT to surface. Cost: ~30 min sweep + ~2 hours Mira #61
 investigation + ~3 hours Mira #68 fix mission. Total ~6 hours could
 have been ~30 min if a gcd=1 fixture had been in the test suite from
 day 1.
+
+## 12. No catch-and-retry-via-subprocess fallbacks in dispatchers
+
+A `GMTSAR_*_PY` dispatcher selects between an in-process Python port and
+a `gmt`/csh subprocess. The selection MUST happen via a pre-flight env
+check (and, where relevant, a capability/shape check on the inputs)
+**before** calling the in-process path. Once the in-process path is
+called, it must run to completion or raise — its exception must NOT be
+caught and silently retried via the subprocess.
+
+**Why:** a `try: _inproc(...) except Exception: run(subprocess_args)`
+pattern looks like a safety net but actively hides incomplete ports and
+wastes compute:
+
+- 2026-06-13, `dem2topo_ra::_surface_or_run` (pixel.grd call,
+  `GMTSAR_SURFACE_INPROC=1`): `gmt_surface_py` ran a full ~26s multigrid
+  solve on RS2_SLC_Hawaii's pixel.grd grid, then raised
+  `NotImplementedError` at the pixel_reg crop-back step (a genuinely
+  unimplemented Mira #68 case). The except-fallback caught this, threw
+  away the 26s of work, and re-ran via the `gmt` subprocess (~12s).
+  Total wall time (38s) was reported in code comments as "gmt_surface_py
+  is 3.2x slower" — a real-sounding performance number that was actually
+  *zero seconds of gmt_surface_py output* plus 26s of wasted compute.
+  The fallback hid both the missing feature AND the true cost.
+
+**How to apply:**
+
+- Gate selection on `os.environ.get("GMTSAR_X_PY", default) == "1"` (and
+  import success) ONLY. Do not add a second layer of `try/except` around
+  the in-process call that falls through to the subprocess on failure.
+- If the in-process port has a known-unsupported input shape/regime,
+  check for it BEFORE calling the port (cheap shape/parameter check,
+  not "try it and see") and either (a) raise immediately with a message
+  naming the unsupported case, or (b) route to the subprocess via the
+  pre-flight check — never via a post-hoc except.
+- This does not weaken Rule 8's rollback story: `GMTSAR_X_PY=0` remains
+  the instant, zero-cost rollback to the subprocess. What's forbidden is
+  *automatic*, *silent*, *post-compute* fallback when `=1` is set.
+- Applies to new dispatchers and is the target for auditing existing
+  ones (m2s_py, grdfill, blockmedian, surface_inproc x2) opportunistically
+  as they're touched — not a mandate to retrofit all of them in one pass.

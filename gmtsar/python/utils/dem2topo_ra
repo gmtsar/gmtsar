@@ -248,19 +248,24 @@ except ImportError as _e:
 #   intermediate written to disk.
 # * 2026-06-13: Rule-8 smoke for THIS module's pixel.grd call (the
 #   default still queued above). RS2_SLC_Hawaii, GMTSAR_SURFACE_INPROC=1
-#   vs =0, full dem2topo_ra run: topo_ra.grd is BYTE-IDENTICAL (cmp
-#   clean) and the in-mem chain engages correctly (no pixel.grd written
-#   to disk). Correctness: PASS.
-#   Performance: REGRESSION. Per dem2topo_ra_phase_profile_py.json the
-#   `surface` phase alone is 11.9s (gmt subprocess) vs 38.1s (in-process
-#   gmt_surface_py) -- ~3.2x SLOWER -- and this phase is 87-98% of total
-#   wall time, so overall dem2topo_ra wall goes 32.7s -> 58.8s (~1.8x
-#   slower). Default NOT flipped. Unlike the raln/ralt grid (1001x251,
-#   #72 found ~0.97x near-parity), this pixel.grd grid evidently hits a
-#   regime where gmt_surface_py's multigrid/Briggs path loses badly to
-#   gmt's C surface -- needs its own perf investigation (grid dims,
-#   iteration counts, FMG level count) before a flip can be considered,
-#   analogous to the #67 blockmedian 1pt/bin investigation.
+#   vs =0, full dem2topo_ra run: topo_ra.grd was BYTE-IDENTICAL (cmp
+#   clean) -- but root-caused later the same day: the "38.1s in-process
+#   gmt_surface_py" figure was a misdiagnosis. gmt_surface_py's
+#   gcd-hierarchy expansion (Mira #68) finds (1708x1436)->(1728x1440)
+#   for this grid, runs the FULL multigrid solve (~26s), then RAISES
+#   NotImplementedError at the pixel_reg crop-back step (Mira #68 known
+#   limitation: crop-back after gcd-hierarchy expansion + pixel_reg was
+#   never implemented). The (now-removed) try/except in _surface_or_run
+#   caught that, dropped the in-mem stash, and re-ran via the `gmt`
+#   subprocess (~12s) -- so topo_ra.grd's byte-identity came entirely
+#   from the SUBPROCESS fallback. 26s(wasted)+12s(real)=38s, matching
+#   the reported total. gmt_surface_py never produced output for this
+#   grid at all. Default NOT flipped. The actual blocker is the
+#   pixel_reg crop-back NotImplementedError, not a perf regression in
+#   gmt_surface_py's solver -- fix that (apply crop_x0/crop_y0/crop_nx/
+#   crop_ny + the pixel-reg coordinate shift to the post-solve grid,
+#   per the existing gmt_surface_py.py:806-841 comments) before
+#   retrying this flip.
 def _chain_enabled() -> bool:
     return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "1") == "1"
             and _HAVE_GMT_GRD_IO)
@@ -536,21 +541,27 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
     this call and the next ``_grdmath_flipud(out_path, ...)`` — i.e.
     only set ``chainable=True`` on the direct surface → FLIPUD path
     (mode=0, RR empty).
+
+    No try/except fallback to the subprocess (Rule 12): a prior version
+    caught any exception from ``_surface_inproc`` and re-ran via ``run()``.
+    For RS2_SLC_Hawaii's pixel.grd (region 0/3416/0/5744, inc 2/4,
+    pixel_reg) this masked a real NotImplementedError in gmt_surface_py's
+    gcd-hierarchy + pixel_reg crop-back (Mira #68 known limitation): the
+    in-process path ran the FULL multigrid solve (~26s), threw at the
+    final crop step, and the fallback silently redid the work via
+    subprocess (~12s) -- 38s total reported as "gmt_surface_py is 3.2x
+    slower" when in fact gmt_surface_py never produced output at all.
+    With GMTSAR_SURFACE_INPROC=0 (this site's default), this branch is
+    not exercised; opting in via =1 now fails loudly so an incomplete
+    port shows up as a crash, not a silently-absorbed 2x compute bill.
     """
     inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
               and _HAVE_GMT_GRD_IO)
     if not inproc:
         run(args_str)
         return
-    try:
-        _surface_inproc(temp_rat, region_str, rng_step, az_step,
-                        tension, out_path, chainable=chainable)
-    except Exception as exc:
-        print(f"DEM2TOPO_RA: WARN: in-process surface failed ({exc!r}); "
-              "falling back to gmt subprocess.", file=sys.stderr)
-        # Drop any partial stash so the subprocess output is the truth
-        _PENDING_INMEM_GRID.pop(out_path, None)
-        run(args_str)
+    _surface_inproc(temp_rat, region_str, rng_step, az_step,
+                    tension, out_path, chainable=chainable)
 
 
 def dem2topo_ra():

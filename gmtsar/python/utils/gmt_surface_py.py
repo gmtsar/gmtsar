@@ -844,10 +844,18 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     if pixel_reg:
         nx_pixel = int(round((xmax - xmin) / dx))
         ny_pixel = int(round((ymax - ymin) / dy))
-        xmin_s = xmin + dx / 2.0
-        xmax_s = xmax + dx / 2.0
-        ymin_s = ymin + dy / 2.0
-        ymax_s = ymax + dy / 2.0
+        if sug is not None:
+            # surface_suggest_sizes' pixel-undo (surface.c:1399-1403) and the
+            # pixel-shift below (surface.c:2055-2058) cancel exactly once the
+            # region has been expanded for the gcd hierarchy: the solve-grid
+            # wesn is just the expanded (xmin_exp,xmax_exp,ymin_exp,ymax_exp)
+            # with NO extra +/- inc/2 shift.
+            xmin_s, xmax_s, ymin_s, ymax_s = xmin, xmax, ymin, ymax
+        else:
+            xmin_s = xmin + dx / 2.0
+            xmax_s = xmax + dx / 2.0
+            ymin_s = ymin + dy / 2.0
+            ymax_s = ymax + dy / 2.0
         n_columns = nx_pixel + 1
         n_rows = ny_pixel + 1
     else:
@@ -874,6 +882,45 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     if xx_in.size == 0:
         raise ValueError("no input data inside region")
 
+    # ----- Replicate surface_throw_away_unusables (surface.c:1301-1340) -----
+    # In C, surface_read_data assigns data to cells at stride=1, then
+    # surface_throw_away_unusables retains one point per cell (nearest to the
+    # cell center using info->wesn, which is set BEFORE the pixel shift in
+    # surface_init_parameters).  Plane fitting and all subsequent strides use
+    # only these survivors — not the full region-filtered set.  We replicate
+    # this here so the plane fit and z_norm match C's exact data subset.
+    _r_ix = 1.0 / dx
+    _r_iy = 1.0 / dy
+    _fc = (xx_in - xmin_s) * _r_ix
+    _fr = (n_rows - 1) - (yy_in - ymin_s) * _r_iy
+    _c1 = np.floor(_fc + 0.5).astype(np.int64)
+    _r1 = np.floor(_fr + 0.5).astype(np.int64)
+    _ok = (_c1 >= 0) & (_c1 < n_columns) & (_r1 >= 0) & (_r1 < n_rows)
+    _dx1 = _fc[_ok] - _c1[_ok]
+    _dy1 = -(_fr[_ok] - _r1[_ok])
+    # surface_compare_points uses physical Euclidean distance to the cell
+    # center from info->wesn (set before the pixel shift in
+    # surface_init_parameters).  For pixel_reg+sug, info->wesn[XLO] =
+    # xmin_s - dx/2, so the comparison center is (x_node - dx/2, y_node -
+    # dy/2): dist^2 = (dx*dx_off + dx/2)^2 + (dy*dy_off + dy/2)^2
+    #             = dx^2*(dx_off+0.5)^2 + dy^2*(dy_off+0.5)^2.
+    # For non-pixel or no-sug: comparison center is the node itself:
+    # dist^2 = (dx*dx_off)^2 + (dy*dy_off)^2.
+    if pixel_reg and sug is not None:
+        _d2 = (dx * (_dx1 + 0.5)) ** 2 + (dy * (_dy1 + 0.5)) ** 2
+    else:
+        _d2 = (dx * _dx1) ** 2 + (dy * _dy1) ** 2
+    _idx = _r1[_ok] * n_columns + _c1[_ok]
+    _ord = np.lexsort((_d2, _idx))
+    _idx_s = _idx[_ord]
+    _uniq = np.empty(_idx_s.size, dtype=bool)
+    _uniq[0] = True
+    _uniq[1:] = _idx_s[1:] != _idx_s[:-1]
+    _keep2 = np.where(_ok)[0][_ord][_uniq]
+    xx_in = xx_in[_keep2]
+    yy_in = yy_in[_keep2]
+    z_in = z_in[_keep2]
+
     # ----- Fractional col / y_up for planar fit (surface.c:1249-1250) -----
     x_frac_pts = (xx_in - xmin_s) / dx
     y_up_frac_pts = (yy_in - ymin_s) / dy
@@ -894,17 +941,21 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                                             plane_icept, plane_sx, plane_sy, 1.0)
         if pixel_reg:
             if sug is not None:
-                raise NotImplementedError(
-                    "gcd-hierarchy region expansion combined with "
-                    "pixel_reg is not supported (Mira #68 known "
-                    "limitation); use a region/inc with "
-                    "gcd(n_columns-1, n_rows-1) > 1, or node registration")
-            grid_final = grid_final[:ny_pixel, :nx_pixel]
+                # Mirror the main-path convention (drop the NORTHERNMOST
+                # row, i.e. row 0) so the crop below can reuse the same
+                # crop_x0/crop_y0 del_pad offsets as the main path.
+                grid_final = grid_final[1:ny_pixel + 1, :nx_pixel]
+            else:
+                grid_final = grid_final[:ny_pixel, :nx_pixel]
         # Flip to row 0 = SOUTH for callers
         grid_final = grid_final[::-1, :]
         if sug is not None:
-            grid_final = grid_final[crop_y0:crop_y0 + crop_ny,
-                                     crop_x0:crop_x0 + crop_nx]
+            if pixel_reg:
+                grid_final = grid_final[crop_y0:crop_y0 + (crop_ny - 1),
+                                         crop_x0:crop_x0 + (crop_nx - 1)]
+            else:
+                grid_final = grid_final[crop_y0:crop_y0 + crop_ny,
+                                         crop_x0:crop_x0 + crop_nx]
         return np.ascontiguousarray(grid_final)
     r_z_rms = 1.0 / z_rms
     z_norm = z_det * r_z_rms
@@ -912,6 +963,18 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     # In NORMALIZED units, the converge limit per-stride is tol/stride
     # (surface.c:1086).  When tol=1e-4 and z_rms=O(1), the absolute limit
     # at stride=1 is 1e-4 * z_rms — matching gmt's "100ppm" default.
+    #
+    # NOTE: surface.c:1365 computes converge_limit = SURFACE_CONV_LIMIT *
+    # z_rms in UNNORMALIZED units (e.g. ~0.0204 for RS2_SLC_Hawaii's
+    # pixel.grd, vs this port's tol=1e-4) -- so this port's stride=1 du
+    # threshold is ~200x tighter than gmt's for that case. Multiplying by
+    # z_rms here to match was tried and reduced RS2 stride=1 DATA from 248
+    # to 8 iterations (vs gmt's 157) WITHOUT reducing the output rms diff
+    # (0.605 -> 0.612), and regressed
+    # test_iteration_counts_match_c_within_slack (Mira #72's
+    # omega/convergence-formula divergence guard). The per-iteration
+    # convergence RATE, not just the threshold, diverges from gmt's GS-SOR
+    # -- a separate, already-tracked issue (Mira #72), not fixed here.
     converge_limit_n = tol
 
     # ----- Compute stencil coefficients (surface.c:286-326) -----
@@ -1004,7 +1067,17 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         dy_off = -(frow_in - row_near)
         # Sort by (index, dist2), keep nearest per node
         index = row_near * cur_nx_ + col_near
-        dist2 = dx_off * dx_off + dy_off * dy_off
+        # surface_compare_points uses physical Euclidean distance to the
+        # info->wesn cell center (set before pixel shift).  For pixel_reg+sug,
+        # that center is (x_node - inc_x/2, y_node - inc_y/2), so:
+        #   dist^2 = (inc_x*(dx_off+0.5))^2 + (inc_y*(dy_off+0.5))^2.
+        # For other cases: dist^2 = (inc_x*dx_off)^2 + (inc_y*dy_off)^2.
+        # Briggs dx_off/dy_off stay node-relative (surface.c:601-605 uses
+        # h->wesn, not info->wesn).
+        if pixel_reg and sug is not None:
+            dist2 = (inc_x * (dx_off + 0.5)) ** 2 + (inc_y * (dy_off + 0.5)) ** 2
+        else:
+            dist2 = (inc_x * dx_off) ** 2 + (inc_y * dy_off) ** 2
         order = np.lexsort((dist2, index))
         index_s = index[order]
         dx_s = dx_off[order]
@@ -1217,21 +1290,38 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     # hierarchy. -----
     if sug is not None:
         if pixel_reg:
-            # surface.c's del_pad for pixel-registered output involves a
-            # half-cell (dx/2, dy/2) shift on top of crop_x0/crop_y0
-            # (irint of a possibly-half-integer node count).  Not
-            # validated against C — hard-fail rather than silently
-            # produce a possibly off-by-one-node grid (Rule 4).
-            raise NotImplementedError(
-                "gcd-hierarchy region expansion combined with pixel_reg "
-                "is not supported (Mira #68 known limitation); use a "
-                "region/inc with gcd(n_columns-1, n_rows-1) > 1, or "
-                "node registration")
-        grid = grid[crop_y0:crop_y0 + crop_ny, crop_x0:crop_x0 + crop_nx]
-        if grid.shape != (crop_ny, crop_nx):
-            raise RuntimeError(
-                f"gcd-hierarchy crop produced shape {grid.shape}, "
-                f"expected ({crop_ny}, {crop_nx})")
+            # When sug is not None, the pixel-reg block above (lines
+            # ~843-858) computed nx_pixel=sug_nx, ny_pixel=sug_ny and
+            # solved/cropped on the EXPANDED region [xmin_exp,xmax_exp] x
+            # [ymin_exp,ymax_exp] (xmin/xmax/ymin/ymax were overwritten
+            # with the _exp values at line ~836 BEFORE the pixel-reg
+            # block ran). So `grid` here is a (sug_ny, sug_nx) pixel grid
+            # whose cell (q, j) [row 0 = south, ascending y] is centred at
+            #   x_j = xmin_exp + (j+0.5)*dx,  y_q = ymin_exp + (q+0.5)*dy
+            #
+            # The user's requested pixel grid has n_columns_u x n_rows_u
+            # cells centred at x_k = xmin + (k+0.5)*dx (k=0..n_columns_u-1),
+            # y_k = ymin + (k+0.5)*dy.  Since xmin_exp = xmin - crop_x0*dx
+            # and ymin_exp = ymin - crop_y0*dy (crop_x0=half_x, crop_y0=
+            # half_y from the del_pad computed above — same offsets used
+            # for the gridline case), x_j == x_k iff j == k + crop_x0, and
+            # similarly for y. So the SAME crop_x0/crop_y0 offsets apply,
+            # but the cropped extent is n_columns_u x n_rows_u pixels
+            # (= crop_nx-1, crop_ny-1), not crop_nx x crop_ny nodes.
+            crop_nx_px = crop_nx - 1
+            crop_ny_px = crop_ny - 1
+            grid = grid[crop_y0:crop_y0 + crop_ny_px,
+                         crop_x0:crop_x0 + crop_nx_px]
+            if grid.shape != (crop_ny_px, crop_nx_px):
+                raise RuntimeError(
+                    f"gcd-hierarchy pixel-reg crop produced shape "
+                    f"{grid.shape}, expected ({crop_ny_px}, {crop_nx_px})")
+        else:
+            grid = grid[crop_y0:crop_y0 + crop_ny, crop_x0:crop_x0 + crop_nx]
+            if grid.shape != (crop_ny, crop_nx):
+                raise RuntimeError(
+                    f"gcd-hierarchy crop produced shape {grid.shape}, "
+                    f"expected ({crop_ny}, {crop_nx})")
 
     return np.ascontiguousarray(grid)
 
