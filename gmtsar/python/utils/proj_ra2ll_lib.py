@@ -61,10 +61,41 @@ except ImportError as e:
         "proj_ra2ll_lib requires xarray. Install via `pip install xarray netCDF4`."
     ) from e
 
+# m2s_py — in-process port of gmtsar/csh/m2s.csh (utils/m2s_py.py).
+# Import at module load so the env-gate is a clean A/B switch (must
+# succeed even with GMTSAR_M2S_PY=0).
+from m2s_py import m2s_py as _m2s_py
+
 
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _m2s(pix_m: float, llp_path: str) -> tuple[str, str]:
+    """Dispatch m2s.csh's (fine_inc, crude_inc) computation.
+
+    Env-gate ``GMTSAR_M2S_PY`` (default "1" — ON, v2.1.29):
+
+    * default / ``GMTSAR_M2S_PY=1``: in-process ``m2s_py``
+      (utils/m2s_py.py), verified byte-identical to ``csh -f m2s.csh`` on
+      real RS2_SLC_Hawaii data across pix in {0.01, 1, 7.5, 15, 60, 100}
+      (bin_py/tests/test_m2s_py.py), and Rule-8 path-exercised end-to-end
+      via ``geocode`` on RS2_SLC_Hawaii (all *_ll.grd byte-identical, no
+      fallback). On ANY exception, falls back to the subprocess (warn to
+      stderr), matching dem2topo_ra's ``_surface_or_run`` fallback style.
+    * ``GMTSAR_M2S_PY=0``: subprocess ``m2s.csh pix_m llp`` (legacy path,
+      kept for rollback).
+    """
+    if os.environ.get("GMTSAR_M2S_PY", "1") == "1":
+        try:
+            return _m2s_py(pix_m, llp_path)
+        except Exception as exc:
+            print(f"PROJ_RA2LL: WARN: m2s_py failed ({exc!r}); "
+                  "falling back to m2s.csh subprocess.", file=sys.stderr)
+    incs_line = subprocess.check_output(
+        ["m2s.csh", str(pix_m), llp_path], text=True).strip().split()
+    return incs_line[0], incs_line[1]
 
 def _read_grd(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (z, x, y) for a GMT netCDF grid; x, y as 1-D coord arrays."""
@@ -372,9 +403,8 @@ def proj_ra2ll_fast(trans_dat: str, in_grd: str, out_grd: str,
                 pix_m = float(filt[0].split("_")[1]) / 4.0
             else:
                 pix_m = 60.0
-        incs_line = subprocess.check_output(
-            ["m2s.csh", str(pix_m), "llp"], text=True).strip().split()
-        cache["fine_inc"], cache["crude_inc"] = incs_line[0], incs_line[1]
+        fine_inc_v, crude_inc_v = _m2s(pix_m, "llp")
+        cache["fine_inc"], cache["crude_inc"] = fine_inc_v, crude_inc_v
     fine_inc = cache["fine_inc"]
     # Per-file bbox — DO NOT cache (see comment above).
     R = subprocess.check_output(

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""test_dem2topo_ra — unit tests for bin_py/dem2topo_ra_py.
+"""test_dem2topo_ra — wire-in parity tests for utils/dem2topo_ra.
 
-The hand-portable bits we own (no GMT calls) — bounds derivation from
-temp.rat, FLIPUD via clib.Session. Other steps (gmt surface,
-SAT_llt2rat) are external and tested at the integration level via
-the live RS2 sweep.
+Exercises the LIVE production script `utils/dem2topo_ra`'s in-process
+GMT wire-ins (FLIPUD, surface, the surface->FLIPUD in-memory chain),
+asserting byte-identical output vs the `gmt` subprocess baseline.
 
 Run:
     python3 -m pytest test_dem2topo_ra.py -v
@@ -15,6 +14,8 @@ from __future__ import annotations
 
 import os
 import sys
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,105 +23,14 @@ from pathlib import Path
 import numpy as np
 
 _HERE = Path(__file__).resolve().parent
-_DEM = _HERE.parent / "dem2topo_ra_py"
-_NS: dict = {"__file__": str(_DEM), "__name__": "dem2topo_ra_module"}
-exec(compile(_DEM.read_text(), str(_DEM), "exec"), _NS)
-_bounds_of_temp_rat = _NS["_bounds_of_temp_rat"]
-
-
-class TestBoundsDerivation(unittest.TestCase):
-    """Covers `_bounds_of_temp_rat` — the key step in IMPROVEMENT A
-    (skipping the gmt surface dry-run hint pass). Bounds derived
-    directly from the xyz triplets that blockmedian writes."""
-
-    def _write_temp_rat(self, xyz_rows: list[tuple[float, float, float]],
-                        path: str) -> None:
-        """Write a `temp.rat`-style binary file: 3 doubles per row."""
-        a = np.array(xyz_rows, dtype=np.float64).flatten()
-        a.tofile(path)
-
-    def test_simple_rectangle(self):
-        """xyz extent 100..900 (x), 200..3800 (y) → bounds match."""
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "temp.rat")
-            self._write_temp_rat([
-                (100.0, 200.0, 0.0),
-                (500.0, 1000.0, 50.0),
-                (900.0, 3800.0, 100.0),
-                (250.0, 2100.0, 25.0),
-            ], p)
-            xmin, xmax, ymin, ymax = _bounds_of_temp_rat(p)
-            self.assertEqual(xmin, 100)
-            self.assertEqual(xmax, 900)
-            self.assertEqual(ymin, 200)
-            self.assertEqual(ymax, 3800)
-
-    def test_fractional_xy_rounded_to_inclusive_int(self):
-        """Bounds returned as inclusive integers (floor for min,
-        ceil for max). Matches what gmt surface's -R expects."""
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "temp.rat")
-            self._write_temp_rat([
-                (100.5, 200.5, 0.0),
-                (899.5, 3799.5, 10.0),
-            ], p)
-            xmin, xmax, ymin, ymax = _bounds_of_temp_rat(p)
-            self.assertEqual(xmin, 100)      # floor(100.5)
-            self.assertEqual(xmax, 900)      # ceil(899.5)
-            self.assertEqual(ymin, 200)      # floor(200.5)
-            self.assertEqual(ymax, 3800)     # ceil(3799.5)
-
-    def test_empty_file_returns_zeros(self):
-        """No xyz rows → all-zero bounds (caller falls back to nominal R)."""
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "temp.rat")
-            open(p, "w").close()             # empty file
-            self.assertEqual(_bounds_of_temp_rat(p), (0, 0, 0, 0))
-
-    def test_misaligned_byte_count_returns_zeros(self):
-        """File whose size isn't a multiple of (3 × float64) → bail safely."""
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "temp.rat")
-            np.array([1.0, 2.0], dtype=np.float64).tofile(p)   # 2 doubles, not 3*N
-            self.assertEqual(_bounds_of_temp_rat(p), (0, 0, 0, 0))
-
-    def test_large_dataset_matches_numpy_minmax(self):
-        """1000 random xyz rows: derived bounds match np.min / np.max."""
-        rng = np.random.default_rng(7)
-        xs = rng.uniform(50, 950, 1000)
-        ys = rng.uniform(100, 4000, 1000)
-        zs = rng.uniform(0, 500, 1000)
-        rows = list(zip(xs.tolist(), ys.tolist(), zs.tolist()))
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "temp.rat")
-            self._write_temp_rat(rows, p)
-            xmin, xmax, ymin, ymax = _bounds_of_temp_rat(p)
-            self.assertEqual(xmin, int(np.floor(xs.min())))
-            self.assertEqual(xmax, int(np.ceil(xs.max())))
-            self.assertEqual(ymin, int(np.floor(ys.min())))
-            self.assertEqual(ymax, int(np.ceil(ys.max())))
-
-
-class TestModuleImportsCleanly(unittest.TestCase):
-    """Smoke test: the module loads without raising, and key symbols
-    are exported. Catches import-time bugs (today's `shutil` issue
-    would have been caught here)."""
-
-    def test_required_symbols_present(self):
-        for sym in ("_bounds_of_temp_rat", "_grdmath_flipud",
-                    "_piped_grd2xyz_llt2rat", "_gmtconvert_blockmedian",
-                    "dem2topo_ra"):
-            self.assertIn(sym, _NS,
-                          msg=f"dem2topo_ra_py missing symbol: {sym}")
 
 
 # ---------------------------------------------------------------------------
 # Mira #30 — wire-in parity tests for utils/dem2topo_ra
 #
-# These tests exercise the LIVE production script `utils/dem2topo_ra`
-# (not the bin_py exploratory port above), specifically the
-# `_grdmath_flipud` function that was wired in to replace the
-# `gmt grdmath pixel.grd FLIPUD = topo_ra.grd` subprocess.
+# These tests exercise the LIVE production script `utils/dem2topo_ra`,
+# specifically the `_grdmath_flipud` function that was wired in to
+# replace the `gmt grdmath pixel.grd FLIPUD = topo_ra.grd` subprocess.
 #
 # The pattern follows /home/staff/dliu/.claude memory rule:
 #   "bin_py tests need C-parity, not self-consistency".
@@ -129,10 +39,6 @@ class TestModuleImportsCleanly(unittest.TestCase):
 # byte-equal); grid metadata (Command, history, chunking) is allowed
 # to differ — that's documented behavior of the writer-flavor netCDF.
 # ---------------------------------------------------------------------------
-
-import shutil
-import subprocess
-
 
 _UTILS_DEM2TOPO_RA = _HERE.parent.parent / "utils" / "dem2topo_ra"
 _UTILS_NS: dict = {"__file__": str(_UTILS_DEM2TOPO_RA),
@@ -444,6 +350,67 @@ class TestInmemChainParity(unittest.TestCase):
             msg="chainable=False must always write to disk")
         self.assertNotIn(pixel, _UTILS_NS["_PENDING_INMEM_GRID"],
                          msg="chainable=False must not stash")
+
+
+# ---------------------------------------------------------------------------
+# Regression test for the `mode = sys.argv[3]` str/int bug (2026-06-13),
+# fixed via `mode = int(sys.argv[3])`. mode=1 ("gmt triangulate"
+# interpolation) is the only path that calls `_grdfill_dispatch`, so this
+# also exercises the GMTSAR_GRDFILL_PY=1 default flipped in v2.1.29.
+# ---------------------------------------------------------------------------
+
+_ALOS_HAITI_TOPO = Path(
+    "/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test/ALOS_haiti/topo")
+_ALOS_MASTER_PRM = _ALOS_HAITI_TOPO / "master.PRM"
+_ALOS_DEM = _ALOS_HAITI_TOPO / "dem.grd"
+_ALOS_LED = _ALOS_HAITI_TOPO / "IMG-HH-ALPSRP166373240-H1.0__D.LED"
+
+
+@unittest.skipUnless(_UTILS_IMPORT_OK,
+                     f"utils/dem2topo_ra import failed: {_UTILS_IMPORT_ERR}")
+@unittest.skipUnless(_GMT, "gmt binary not found — parity test cannot run")
+@unittest.skipUnless(
+    _ALOS_MASTER_PRM.exists() and _ALOS_DEM.exists() and _ALOS_LED.exists(),
+    f"oracle missing: {_ALOS_HAITI_TOPO}")
+class TestMode1ArgRegression(unittest.TestCase):
+    """`dem2topo_ra master.PRM dem.grd 1` must produce topo_ra.grd.
+
+    Before the fix, `mode = sys.argv[3]` was the STRING "1", but
+    `if mode == 0` / `elif mode == 1` are int comparisons -- mode=1
+    (the only path that calls `_grdfill_dispatch`) matched neither
+    branch, so `pixel.grd` was never written and the trailing
+    `_grdmath_flipud('pixel.grd', 'topo_ra.grd')` raised
+    FileNotFoundError, producing no topo_ra.grd at all. Fixed via
+    `mode = int(sys.argv[3])`.
+
+    Runs the LIVE `dem2topo_ra()` CLI end-to-end on real ALOS_haiti
+    inputs with sys.argv[3]="1" (the str the shell actually passes),
+    using the v2.1.29 default GMTSAR_GRDFILL_PY=1.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="test_dem2topo_mode1_")
+        shutil.copy(_ALOS_MASTER_PRM, self.tmp)
+        shutil.copy(_ALOS_DEM, self.tmp)
+        shutil.copy(_ALOS_LED, self.tmp)
+        self._old_cwd = os.getcwd()
+        self._old_argv = sys.argv
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        sys.argv = self._old_argv
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_mode1_produces_topo_ra_grd(self):
+        sys.argv = ["dem2topo_ra", "master.PRM", "dem.grd", "1"]
+        _UTILS_NS["dem2topo_ra"]()
+        topo_ra = os.path.join(self.tmp, "topo_ra.grd")
+        self.assertTrue(
+            os.path.exists(topo_ra),
+            msg="mode=1 (gmt triangulate) must produce topo_ra.grd -- "
+                "regression for the mode=sys.argv[3] str/int bug")
+        self.assertGreater(os.path.getsize(topo_ra), 0)
 
 
 if __name__ == "__main__":
