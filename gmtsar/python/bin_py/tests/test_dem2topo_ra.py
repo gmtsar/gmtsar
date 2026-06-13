@@ -392,22 +392,41 @@ class TestInmemChainParity(unittest.TestCase):
             msg=f"chain output diverged from no-chain; "
                 f"max|d|={float(np.nanmax(np.abs(za - zb)))}")
 
-    def test_chain_off_means_disk_writes_pixel_grd(self):
-        """With GMTSAR_DEM2TOPO_INMEM_CHAIN unset, _surface_inproc
+    def test_chain_default_on_means_stash_not_disk(self):
+        """With GMTSAR_DEM2TOPO_INMEM_CHAIN unset (default ON since
+        v2.1.28), _surface_inproc(chainable=True) stashes the grid and
+        does NOT write pixel.grd to disk."""
+        region = (0, 240, 0, 400)
+        inc = (1, 2)
+        temp_rat = os.path.join(self.tmp, "temp.rat")
+        self._make_temp_rat(temp_rat, region, inc)
+        pixel = os.path.join(self.tmp, "pixel.grd")
+        # chainable=True, env unset → default-ON chain → stash, no disk write
+        _UTILS_NS["_surface_inproc"](
+            temp_rat, "0/240/0/400", 1, 2, 0.1, pixel, chainable=True)
+        self.assertFalse(
+            os.path.exists(pixel),
+            msg="chain default-ON must not write pixel.grd to disk")
+        self.assertIn(pixel, _UTILS_NS["_PENDING_INMEM_GRID"],
+                      msg="chain default-ON must stash the grid")
+
+    def test_chain_explicitly_disabled_means_disk_writes_pixel_grd(self):
+        """With GMTSAR_DEM2TOPO_INMEM_CHAIN=0, _surface_inproc
         writes pixel.grd to disk even when called with chainable=True."""
         region = (0, 240, 0, 400)
         inc = (1, 2)
         temp_rat = os.path.join(self.tmp, "temp.rat")
         self._make_temp_rat(temp_rat, region, inc)
         pixel = os.path.join(self.tmp, "pixel.grd")
-        # chainable=True but env unset → should still write to disk
+        os.environ["GMTSAR_DEM2TOPO_INMEM_CHAIN"] = "0"
+        # chainable=True but chain explicitly disabled → should write to disk
         _UTILS_NS["_surface_inproc"](
             temp_rat, "0/240/0/400", 1, 2, 0.1, pixel, chainable=True)
         self.assertTrue(
             os.path.exists(pixel),
-            msg="chain env unset must fall back to disk write")
+            msg="chain explicitly disabled must fall back to disk write")
         self.assertNotIn(pixel, _UTILS_NS["_PENDING_INMEM_GRID"],
-                         msg="chain env unset must not stash")
+                         msg="chain explicitly disabled must not stash")
 
     def test_chainable_false_means_disk_writes_pixel_grd(self):
         """Even with GMTSAR_DEM2TOPO_INMEM_CHAIN=1, chainable=False
