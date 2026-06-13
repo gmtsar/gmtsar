@@ -716,11 +716,21 @@ token-budget-conscious (Pro plan). Order so far:
      pixelreg_mira70.md). New test_pixel_registered_donor (23/23 pass).
      GMTSAR_GRDFILL_PY still default OFF -- separate Rule-8 smoke step
      before flipping.
-4. gmt_surface_py single-thread perf gap (1.9-4x slower than C, Mira #52)
-     Optimization pass on the already-ported, byte-id gmt_surface_py.py
-     (vectorize/batch the multigrid iteration). Goal: close gap enough
-     to flip GMTSAR_SURFACE_INPROC default ON, which also unblocks
-     GMTSAR_DEM2TOPO_INMEM_CHAIN (item 9c Tier I).
+4. gmt_surface_py single-thread perf gap -> v2.1.26.                    DONE
+     Verified Mira #60's glue-vectorization claim (1001x1001: py 1.82x
+     faster than gmt, even better than #60's own number). Profiled the
+     remaining anisotropic-grid regression (1001x251, 4:1 aspect, was
+     0.38x = 2.6x SLOWER): root cause was NOT the port (algorithm,
+     stencil, omega=1.4 all already match C) -- it was the BENCHMARK
+     TEST HARNESS passing a stale omega=0.6 (pre-GS-SOR damped-Jacobi
+     leftover). Fixed test fixtures; 1001x251 now 0.97x (near parity),
+     201x201 2.59x faster. Verified vs fresh `gmt surface -Vd` per-stride
+     iteration counts: 358 (py) vs 365 (C), ratio 0.98. New
+     TestGmtSurfacePyAnisotropicConvergence locks in iteration-count
+     parity (AUDIT_surface_aniso_mira72.md). gmt_surface_py.py itself
+     UNCHANGED. GMTSAR_SURFACE_INPROC still default OFF -- ready for a
+     Rule-8 path-exercising smoke + default-flip mission whenever picked
+     up; unblocks GMTSAR_DEM2TOPO_INMEM_CHAIN (item 9c Tier I).
 5. S1 TOPS csh->Python port (section 7b)
      p2p_S1_TOPS_Frame.csh -> native Python, wire phase_profile. Largest
      remaining "not fully Python" pipeline (S1A_SLC_TOPS_*, S1_Larsen_C,
