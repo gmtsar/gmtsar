@@ -231,40 +231,30 @@ except ImportError as _e:
 # coord vectors and node_offset are identical to what the disk
 # round-trip would yield, and `_write_gmt_grd` is the same writer.
 #
-# GMTSAR_SURFACE_INPROC defaults to "1"/ON since v2.1.32 for both this
-# module's pixel.grd call and proj_ra2ll_lib.py's surface call.
-# NOTE: the same env var defaults to "1"/ON in proj_ra2ll_lib.py's
-# _ensure_raln_ralt (flipped there in v2.1.27) -- that flip does NOT
-# extend to this module's pixel.grd path. Without GMTSAR_SURFACE_INPROC=1
-# *and* this module's default flipped, the surface step here is a gmt
-# subprocess that writes pixel.grd to disk, so there's nothing to chain.
+# GMTSAR_SURFACE_INPROC defaults to "0"/OFF for this module's pixel.grd
+# call.  The same env var defaults to "1"/ON in proj_ra2ll_lib.py's
+# _ensure_raln_ralt (flipped there in v2.1.27): that flip is for the
+# raln/ralt surface call which does NOT use pixel_reg and IS byte-identical
+# to gmt surface.  This module's pixel.grd call uses pixel_reg + a large
+# gcd-hierarchy expansion; gmt_surface_py's GS-SOR solver diverges from
+# gmt surface on real terrain at that scale (Mira #72).
 #
 # History
 # -------
-# * Default flipped ON after RS2_SLC_Hawaii path-exercising smoke
-#   (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.28) confirmed
-#   raln.grd/ralt.grd are produced via the chain with no pixel.grd
-#   intermediate written to disk.
-# * 2026-06-13: Rule-8 smoke for THIS module's pixel.grd call (the
-#   default still queued above). RS2_SLC_Hawaii, GMTSAR_SURFACE_INPROC=1
-#   vs =0, full dem2topo_ra run: topo_ra.grd was BYTE-IDENTICAL (cmp
-#   clean) -- but root-caused later the same day: the "38.1s in-process
-#   gmt_surface_py" figure was a misdiagnosis. gmt_surface_py's
-#   gcd-hierarchy expansion (Mira #68) finds (1708x1436)->(1728x1440)
-#   for this grid, runs the FULL multigrid solve (~26s), then RAISES
-#   NotImplementedError at the pixel_reg crop-back step (Mira #68 known
-#   limitation: crop-back after gcd-hierarchy expansion + pixel_reg was
-#   never implemented). The (now-removed) try/except in _surface_or_run
-#   caught that, dropped the in-mem stash, and re-ran via the `gmt`
-#   subprocess (~12s) -- so topo_ra.grd's byte-identity came entirely
-#   from the SUBPROCESS fallback. 26s(wasted)+12s(real)=38s, matching
-#   the reported total. gmt_surface_py never produced output for this
-#   grid at all. Default NOT flipped. The actual blocker is the
-#   pixel_reg crop-back NotImplementedError, not a perf regression in
-#   gmt_surface_py's solver -- fix that (apply crop_x0/crop_y0/crop_nx/
-#   crop_ny + the pixel-reg coordinate shift to the post-solve grid,
-#   per the existing gmt_surface_py.py:806-841 comments) before
-#   retrying this flip.
+# * v2.1.27: INPROC=1 default set for proj_ra2ll_lib.py's surface call
+#   only (raln/ralt, non-pixel_reg, verified byte-identical).
+# * v2.1.28: RS2_SLC_Hawaii "byte-identical" smoke run for this module --
+#   but the subprocess fallback (try/except) was silently doing the work;
+#   gmt_surface_py raised NotImplementedError at pixel_reg crop-back (Mira
+#   #68), got caught, subprocess ran.  Incorrectly logged as "gmt_surface_py
+#   is bit-identical".
+# * v2.1.32: default flipped to "1" for this module based on the wrong
+#   RS2 smoke.
+# * v2.2.0 pre-release: CSK_SLC_Italy phasefilt.grd complex-rms = 0.2298
+#   (threshold 0.15).  Root-caused to gmt_surface_py producing topo_ra.grd
+#   rms=0.46m vs gmt surface on 5595x5367 px terrain (Mira #72).
+#   Default reverted to "0".  Do not re-flip until Mira #72 is closed and
+#   CSK_SLC_Italy parity passes with INPROC=1.
 def _chain_enabled() -> bool:
     return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "1") == "1"
             and _HAVE_GMT_GRD_IO)
@@ -537,11 +527,15 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
                     out_path: str, chainable: bool = False) -> None:
     """Dispatch the surface call.
 
-    Default ON (GMTSAR_SURFACE_INPROC=1) since v2.1.32: gmt_surface_py
-    is bit-identical to gmt surface (rms ≤1.2e-7) and 0.98x (faster) at
-    RS2_SLC_Hawaii scale (1708×1436 px, ~2M pts) after the pixel_reg +
-    gcd-hierarchy crop-back fix (2026-06-13).  Set GMTSAR_SURFACE_INPROC=0
-    to force the legacy gmt subprocess.
+    Default OFF (GMTSAR_SURFACE_INPROC=0, reverted from v2.1.32 which
+    incorrectly defaulted to "1"): gmt_surface_py's iterative GS-SOR
+    solver diverges from gmt surface on real terrain at CSK scale
+    (5595x5367 px, B=565m) producing topo_ra.grd rms=0.46m vs reference
+    — sufficient to cause >2π phase wrapping and phasefilt complex-rms
+    0.23 (threshold 0.15).  Root cause: Mira #72 (iterative solution
+    diverges even though convergence threshold and iteration count match
+    gmt exactly).  Set GMTSAR_SURFACE_INPROC=1 to opt-in to gmt_surface_py
+    (only safe once Mira #72 is closed).
 
     If ``chainable=True`` AND ``GMTSAR_DEM2TOPO_INMEM_CHAIN=1``, the
     surface result is stashed in-memory for the downstream FLIPUD step
@@ -560,9 +554,10 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
     final crop step, and the fallback silently redid the work via
     subprocess (~12s) -- 38s total reported as "gmt_surface_py is 3.2x
     slower" when in fact gmt_surface_py never produced output at all.
-    Fixed 2026-06-13; default flipped to ON same day.
+    Fixed 2026-06-13; default was incorrectly flipped to ON same day
+    (reverted — see Mira #72 and CSK_SLC_Italy parity failure above).
     """
-    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
               and _HAVE_GMT_GRD_IO)
     if not inproc:
         run(args_str)
