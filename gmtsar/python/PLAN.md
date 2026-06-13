@@ -731,6 +731,13 @@ token-budget-conscious (Pro plan). Order so far:
      UNCHANGED. GMTSAR_SURFACE_INPROC still default OFF -- ready for a
      Rule-8 path-exercising smoke + default-flip mission whenever picked
      up; unblocks GMTSAR_DEM2TOPO_INMEM_CHAIN (item 9c Tier I).
+4b. GMTSAR_SURFACE_INPROC flipped default ON -> v2.1.27.            DONE
+     Rule-8 smoke: RS2_SLC_Hawaii w/ GMTSAR_SURFACE_INPROC=1,
+     SWEEP_FORCE=1 -> raln.grd/ralt.grd freshly generated via
+     _run_surface_inproc_5col (-I16/32, the anisotropic shape #72
+     validated), 6/6 py-vs-csh SUCCESS (identical metrics to the
+     subprocess path), blessed diff PASS. No silent-fallback except
+     in the call path. GMTSAR_DEM2TOPO_INMEM_CHAIN now unblocked.
 5. S1 TOPS csh->Python port (section 7b)
      p2p_S1_TOPS_Frame.csh -> native Python, wire phase_profile. Largest
      remaining "not fully Python" pipeline (S1A_SLC_TOPS_*, S1_Larsen_C,
