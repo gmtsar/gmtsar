@@ -178,14 +178,28 @@ except ImportError as _e:
 # 13/13 byte-parity tests in bin_py/tests/test_gmt_blockmedian_py.py
 # still pass (cache cleared + rerun) after this change.
 #
-# The wire-in below remains DELIBERATELY DISABLED. The kernel fix
-# closes the 1-pt/bin performance gap (py now beats gmt at this
-# density too), so a density gate is no longer strictly necessary --
-# but flipping `_HAVE_GMT_BLOCKMEDIAN_PY` to True is still a separate
-# Rule-8 (env-gated default OFF + path-exercising smoke) step, not
-# done here. See Mira #67 investigation notes for before/after timings.
-_HAVE_GMT_BLOCKMEDIAN_PY = False
-_py_blockmedian = None  # type: ignore  # not used; documented for cross-ref
+# The kernel fix closes the 1-pt/bin performance gap (py now beats gmt
+# at this density too, AND the dense case is unchanged), so a density
+# gate is no longer necessary. Env gate GMTSAR_BLOCKMEDIAN_PY (default
+# "1" -- ON, since v2.1.30) selects this path.
+#
+# Rule-8 smoke 2026-06-13 on real RS2_SLC_Hawaii (full dem2topo_ra run,
+# GMTSAR_BLOCKMEDIAN_PY=1 vs =0):
+#     Accuracy: temp.rat and topo_ra.grd BYTE-IDENTICAL (cmp clean).
+#     Speed:    gmtconvert_to_temprat phase 0.401s (py) vs 0.443s (gmt
+#               subprocess), ~10% faster -- consistent with Mira #67's
+#               ~3.5x kernel speedup (the phase also includes the
+#               numpy memmap col-select, which dominates at this size).
+# Set GMTSAR_BLOCKMEDIAN_PY=0 to roll back to the `gmt blockmedian`
+# subprocess.
+try:
+    from gmt_blockmedian_py import blockmedian as _py_blockmedian
+    _HAVE_GMT_BLOCKMEDIAN_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_blockmedian_py import failed ({_e}); "
+          "using gmt blockmedian subprocess.", file=sys.stderr)
+    _HAVE_GMT_BLOCKMEDIAN_PY = False
+    _py_blockmedian = None  # type: ignore
 
 # Mira #30 (2026-05-21): Tier-1 grdmath FLIPUD replacement via
 # gmt_grd_io.{read,write}_gmt_grd. The dem2topo_ra `gmt grdmath
@@ -267,13 +281,14 @@ def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
           > <out_path>
 
     Three execution paths, in priority order:
-      1. (DORMANT) inproc=on + blockmedian_py: kept code-complete and
-         byte-parity-tested, but the gate `_HAVE_GMT_BLOCKMEDIAN_PY` is
-         hard-coded False because dem2topo_ra's 1-point-per-bin density
-         makes the numba kernel 4× slower than `gmt blockmedian -r`.
-         See the import-site note for Mira #30 benchmarks.
+      1. inproc=on + blockmedian_py (GMTSAR_BLOCKMEDIAN_PY=1, default since
+         v2.1.30): full in-process memmap -> col-select -> blockmedian ->
+         bytes-out, no subprocess at all. Byte-parity-tested (13/13) and,
+         after the Mira #67 n==1 fast path, FASTER than `gmt blockmedian`
+         at dem2topo_ra's 1-pt/bin density. See the import-site note.
       2. inproc=on + only gmtconvert_select_cols_bin: numpy col-select
-         then `gmt blockmedian` subprocess (Mira #19 path).
+         then `gmt blockmedian` subprocess (Mira #19 path). Used when
+         GMTSAR_BLOCKMEDIAN_PY=0.
       3. inproc=off (GMTSAR_GMT_INPROC=0): pure `gmt | gmt` pipe.
 
     Paths 2 and 3 are the production fast/fallback. Path 1 is reserved
@@ -284,7 +299,8 @@ def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
     Mira #30 commit).
     """
     use_inproc = _HAVE_GMT_INPROC and _inproc_enabled()
-    use_blockmedian_py = use_inproc and _HAVE_GMT_BLOCKMEDIAN_PY
+    use_blockmedian_py = (use_inproc and _HAVE_GMT_BLOCKMEDIAN_PY
+                           and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1")
     if use_blockmedian_py:
         # Full in-process: memmap → col-select → blockmedian → bytes-out.
         # `region` is "xmin/xmax/ymin/ymax" (`set_region_string` format).
