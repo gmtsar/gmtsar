@@ -308,6 +308,68 @@ class TestGridFill(unittest.TestCase):
                               donor=z_full, donor_x=x, donor_y=y)
         _assert_data_bit_equal(z_py, z_gmt, label="-Ag no holes")
 
+    def test_pixel_registered_donor(self):
+        """Pixel-registered (node_offset=1) coarse donor -- Mira #70.
+
+        Mirrors the dem2topo_ra production shape: ``coarse.grd`` is built
+        with the same ``-R`` (wesn) as the input grid but ``-r`` (pixel
+        registration), so its pixel centres are inset by ``dx_coarse/2``
+        from the input's outermost gridline nodes.
+
+        Pre-fix, ``_bcr_bicubic_sample`` hard-coded ``in_off=0.0`` and the
+        range check used ``donor_x[0]/donor_x[-1]`` (the pixel CENTRES,
+        not ``wesn``) -- so queries at the input's edge columns/rows (which
+        sit exactly on the donor's ``wesn`` border, outside the pixel-
+        centre range) raised ``ValueError: donor grid does not cover query
+        x range``.  This test fails on that code and passes after the
+        ``donor_node_offset`` / ``in_off=0.5*registration`` /
+        ``gmtbcr_reject``-style clamp fix (gmt_bcr.c:86-131,
+        gmt_grdio.c:2147).
+        """
+        # Fine (gridline-registered) input grid, wesn = [0,40] x [0,32].
+        nx, ny = 41, 33
+        x = np.arange(nx, dtype=np.float64)
+        y = np.arange(ny, dtype=np.float64)
+        _, z_hole, _, _ = _smooth_with_hole(
+            nx, ny, hole_slice=(slice(2, 5), slice(2, 5)))
+        # Also punch holes at the four corners + edge midpoints so the
+        # bicubic query set includes points exactly on the donor's wesn
+        # border (the pre-fix raise site).
+        z_hole[0, 0] = np.nan
+        z_hole[0, -1] = np.nan
+        z_hole[-1, 0] = np.nan
+        z_hole[-1, -1] = np.nan
+        z_hole[0, nx // 2] = np.nan
+        z_hole[-1, nx // 2] = np.nan
+        z_hole[ny // 2, 0] = np.nan
+        z_hole[ny // 2, -1] = np.nan
+
+        # Coarse pixel-registered donor: same wesn=[0,40]x[0,32], 20x16
+        # pixels -> dx_c=2, dy_c=2, pixel centres at 1,3,...,39 / 1,...,31.
+        cnx, cny = 20, 16
+        dx_c, dy_c = 40.0 / cnx, 32.0 / cny
+        cx = (np.arange(cnx, dtype=np.float64) + 0.5) * dx_c
+        cy = (np.arange(cny, dtype=np.float64) + 0.5) * dy_c
+        cxg, cyg = np.meshgrid(cx, cy)
+        z_coarse = (np.sin(cxg * 0.3) * np.cos(cyg * 0.4)
+                    + 2.0 * cxg / nx - cyg / ny).astype(np.float32)
+
+        in_p = self.tmp / "in.grd"
+        c_p = self.tmp / "coarse.grd"
+        write_gmt_grd(str(in_p), z_hole, x, y, node_offset=0)
+        write_gmt_grd(str(c_p), z_coarse, cx, cy, node_offset=1)
+
+        out_gmt = self.tmp / "out_gmt.grd"
+        _gmt_grdfill(str(in_p), str(out_gmt), f"-Ag{c_p}")
+        z_gmt, _, _, _ = read_gmt_grd(str(out_gmt))
+
+        out_py_path = self.tmp / "out_py.grd"
+        gmt_grdfill_py_file(str(in_p), str(out_py_path), algorithm='g',
+                             donor_path=str(c_p))
+        z_py, _, _, _ = read_gmt_grd(str(out_py_path))
+
+        _assert_data_bit_equal(z_py, z_gmt, label="-Ag pixel-reg donor")
+
 
 # ---------------------------------------------------------------------------
 # Edge cases (Py-only contract tests)
