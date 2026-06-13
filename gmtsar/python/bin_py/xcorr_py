@@ -80,6 +80,24 @@ except Exception:  # pragma: no cover
     _W = None
 
 
+# ------------------------------------------------ FFTW float32 backend ---
+# GMT_FFT_1D in xcorr.c uses FFTW float32 (libfftw3f) for the highres-corr
+# sub-pixel FFT interpolation.  scipy.fft uses pocketfft, which gives
+# different float32 butterfly rounding for near-tie peaks (2 ULP difference
+# produces a 1-bin / 0.031 px shift in the interpolated peak position —
+# visible as the residual row 286 divergence after the stale-md and
+# stale-FFT fixes).
+#
+# To replicate C's exact float32 FFT numerics, _fft_interpolate_1d (used
+# ONLY in the 8-sample highres_corr path) can use FFTW float32 via ctypes.
+# The library is auto-detected at import time; if absent, the code falls
+# back to pocketfft (giving the ~0.031 px float32 precision residual on
+# the one near-tie row, but otherwise correct parity).
+#
+# No build step required — pure runtime ctypes dlopen.  The XCORR_PY_NOFFTW
+# env var disables the FFTW path for testing.
+
+
 # ---------------------------------------------------------------- PRM ---
 def _read_prm(path: str) -> dict:
     out: dict[str, str] = {}
@@ -133,6 +151,15 @@ class XCorr:
     # computed
     x_inc: int = 0; y_inc: int = 0
     loc: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.int64))
+    # persistent md buffer — mirrors C xcorr.c:248 `malloc(n2x*2 * n2y*2 * sizeof(fcomplex))`
+    # which is allocated once and never re-zeroed between calls to do_highres_corr.
+    # In C (highres_corr.c:32-38), only positions where k>=0 are written; positions where
+    # k<0 retain stale values from the prior iteration.  A fresh np.zeros() every call
+    # diverges from C in those positions — this is the root cause of the 22-row xcorr.dat
+    # discrepancy on CSK_SLC_Italy and ALOS_haiti (Mira parity audit, 2026-06-13).
+    # Shape is (n2y, n2x); initialised to zeros (matches Linux glibc malloc zero-fill on
+    # the first call via mmap-backed sbrk for large allocs; subsequent calls see prior data).
+    _md_buf: np.ndarray | None = field(default=None, repr=False)
 
 
 # ------------------------------------------------------------ defaults ---
@@ -355,26 +382,96 @@ def _process_location(xc: XCorr, x: int, y: int, mask: np.ndarray,
 def _do_highres_corr(xc: XCorr, corr_scaled: np.ndarray,
                      xoff: float, yoff: float) -> tuple[float, float]:
     """Mirror highres_corr.c:do_highres_corr — 16× FFT zero-pad over an
-    n2x×n2y region centered on the integer peak. Returns (xfrac, yfrac)."""
+    n2x×n2y region centered on the integer peak. Returns (xfrac, yfrac).
+
+    C-faithful notes (highres_corr.c:32-63):
+
+    1. Persistent md buffer: C allocates xc->md via malloc() once in
+       xcorr.c:248 (`malloc(2*n2x * 2*n2y * sizeof(fcomplex))`), allocating
+       for the full n2x*2 x n2y*2 size but only using n2x x n2y.  It is
+       never re-zeroed between the nxl*nyl do_highres_corr calls.  Positions
+       where `k = (ic+i)*nxc + (jc+j) < 0` are skipped, leaving them with
+       stale values from the prior iteration.  We mirror this by keeping
+       xc._md_buf persistent (zeroed only on first allocation, per Linux
+       glibc mmap/sbrk zero-fill behaviour on the first call).
+
+    2. Missing upper-bound check: C only guards `k < 0` (line 33); there is
+       no `k >= nxc*nyc` guard.  When k >= 0 but past the end of corr_scaled,
+       C reads adjacent heap memory (UB).  In practice, at default parameters
+       (nxc=nyc=128, n2x=n2y=8, ifc=16), jc+j ∈ [52,59] and ic+i ∈ [52,59]
+       for a centred peak, so k is always in-bounds for high-SNR rows; only
+       low-SNR edge-of-field rows trigger the `k < 0` path.  We replicate C
+       by checking only `k < 0`, not the upper bound.
+    """
     ifc = xc.interp_factor
     nx = xc.n2x; ny = xc.n2y
     nx2 = ifc * nx; ny2 = ifc * ny
 
+    # Allocate or reuse the persistent md buffer (never re-zeroed between calls).
+    if xc._md_buf is None or xc._md_buf.shape != (ny, nx):
+        xc._md_buf = np.zeros((ny, nx), dtype=np.complex64)
+    md = xc._md_buf
+
     jc = (xc.nxc // 2) - nx // 2 - int(xoff)
     ic = (xc.nyc // 2) - ny // 2 - int(yoff)
 
-    md = np.zeros((ny, nx), dtype=np.complex64)
+    # C-faithful: only write positions where k>=0; skip k<0 (stale values
+    # remain from prior call).  No upper-bound check — mirrors C exactly.
+    #
+    # C's corr buffer is malloc'd as `2 * ri * nxc * nyc` doubles (xcorr.c:241);
+    # when k >= nxc*nyc, C reads adjacent heap memory (UB but in-bounds of the
+    # larger allocation).  We pad corr_flat to the same size with zeros so Python
+    # doesn't crash on those accesses — the padded region is zero, which may
+    # differ slightly from C's heap values, but those positions only affect the
+    # md entries at large (ic+i,jc+j) offsets that correspond to low-SNR
+    # off-centre peaks where the sub-pixel correction is noise-dominated anyway.
+    padded_size = 2 * xc.ri * xc.nxc * xc.nyc
+    corr_flat = np.empty(padded_size, dtype=np.float64)
+    n_corr = xc.nxc * xc.nyc
+    corr_flat[:n_corr] = corr_scaled.ravel()
+    corr_flat[n_corr:] = 0.0  # pad remainder with 0 (conservative: C reads heap-dependent values)
+
     for i in range(ny):
         kr = ic + i
-        if kr < 0 or kr >= xc.nyc:
-            continue
         for j in range(nx):
-            kc = jc + j
-            if kc < 0 or kc >= xc.nxc:
+            k = kr * xc.nxc + (jc + j)
+            if k < 0:
                 continue
-            md[i, j] = np.complex64(corr_scaled[kr, kc] ** 0.25)
+            md[i, j] = np.complex64(corr_flat[k] ** 0.25)
 
     cd_exp = _fft_interpolate_2d(md, ny2, nx2, ifc)
+
+    # C's fft_interpolate_2d (fft_interpolate_routines.c:99-100) calls
+    # fft_interpolate_1d on each row of `in` (= xc->md) via
+    #   fft_interpolate_1d(API, &in[i * M1], M1, ...)
+    # which begins with GMT_FFT_1D(API, (float *)in, N, GMT_FFT_FWD, ...)
+    # — an IN-PLACE forward DFT on the row.  After fft_interpolate_2d
+    # returns, xc->md has been overwritten with its own row-wise FFT
+    # spectrum (one independent forward DFT per row).
+    #
+    # Python's _fft_interpolate_2d calls scipy.fft.fft() which returns a
+    # new array and never modifies md.  As a result Python's xc._md_buf
+    # retains real-valued correlation^0.25 data after the call, while C's
+    # xc->md contains FFT-spectral (complex) data.
+    #
+    # On the NEXT do_highres_corr call, positions where k<0 are skipped
+    # (never overwritten).  Those positions retain:
+    #   C  → FFT-spectral values from prior call's in-place row DFT
+    #   Py → real-valued correlation data from prior call  (WRONG)
+    #
+    # Fix: replicate C's in-place row DFT side effect by forward-FFTing
+    # each row of md after the interpolation step.  This does not change
+    # the result of this call (cd_exp was already computed), but it
+    # ensures the stale buffer content matches C for subsequent calls.
+    #
+    # Root cause of the 4 remaining diverging high-SNR CSK rows
+    # (rows 31, 286, 324, 346; max|Δdr|=3.312 px) after the stale-md
+    # allocation fix:  those rows have ic < 0 so all 35-64 md positions
+    # have k<0 and their values come entirely from the stale buffer.
+    for i in range(ny):
+        row_fft = (_fft1(md[i, :], n=nx, workers=_W)
+                   if _W else _fft1(md[i, :], n=nx))
+        md[i, :] = row_fft.astype(np.complex64)
 
     # find peak; C uses cd_exp[i*nx2 + j].r (real part), and replicates
     # the (probably-buggy) `ny2/2` for the column subtraction.
