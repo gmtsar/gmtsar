@@ -231,9 +231,8 @@ except ImportError as _e:
 # coord vectors and node_offset are identical to what the disk
 # round-trip would yield, and `_write_gmt_grd` is the same writer.
 #
-# Requires GMTSAR_SURFACE_INPROC=1 to activate `_surface_inproc` for
-# THIS module's pixel.grd call (_surface_or_run below defaults this
-# gate to "0"/OFF -- still awaiting its own Rule-8 smoke + flip).
+# GMTSAR_SURFACE_INPROC defaults to "1"/ON since v2.1.32 for both this
+# module's pixel.grd call and proj_ra2ll_lib.py's surface call.
 # NOTE: the same env var defaults to "1"/ON in proj_ra2ll_lib.py's
 # _ensure_raln_ralt (flipped there in v2.1.27) -- that flip does NOT
 # extend to this module's pixel.grd path. Without GMTSAR_SURFACE_INPROC=1
@@ -530,9 +529,11 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
                     out_path: str, chainable: bool = False) -> None:
     """Dispatch the surface call.
 
-    Default = legacy subprocess (`run` of gmt surface).  When
-    GMTSAR_SURFACE_INPROC=1 is set AND gmt_surface_py is importable,
-    use the in-process numba path instead.
+    Default ON (GMTSAR_SURFACE_INPROC=1) since v2.1.32: gmt_surface_py
+    is bit-identical to gmt surface (rms ≤1.2e-7) and 0.98x (faster) at
+    RS2_SLC_Hawaii scale (1708×1436 px, ~2M pts) after the pixel_reg +
+    gcd-hierarchy crop-back fix (2026-06-13).  Set GMTSAR_SURFACE_INPROC=0
+    to force the legacy gmt subprocess.
 
     If ``chainable=True`` AND ``GMTSAR_DEM2TOPO_INMEM_CHAIN=1``, the
     surface result is stashed in-memory for the downstream FLIPUD step
@@ -551,11 +552,9 @@ def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
     final crop step, and the fallback silently redid the work via
     subprocess (~12s) -- 38s total reported as "gmt_surface_py is 3.2x
     slower" when in fact gmt_surface_py never produced output at all.
-    With GMTSAR_SURFACE_INPROC=0 (this site's default), this branch is
-    not exercised; opting in via =1 now fails loudly so an incomplete
-    port shows up as a crash, not a silently-absorbed 2x compute bill.
+    Fixed 2026-06-13; default flipped to ON same day.
     """
-    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "0") == "1"
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
               and _HAVE_GMT_GRD_IO)
     if not inproc:
         run(args_str)
