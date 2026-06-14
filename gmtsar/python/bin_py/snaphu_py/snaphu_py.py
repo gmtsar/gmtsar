@@ -1102,39 +1102,847 @@ def calc_cost_defo(costs: np.ndarray, flow: int, arcrow: int, arccol: int,
 
 
 # ---------------------------------------------------------------------------
-# CP6: MST initialization
-# STUBBED — the minimum spanning tree flow initialization.
+# CP6: MST initialization — DONE (scalar, faithful C port)
+#
+# C sources ported:
+#   snaphu_solver.c:MSTInitFlows()   — outer loop
+#   snaphu_solver.c:SolveMST()       — Prim/Dijkstra MST on grid+ground
+#   snaphu_solver.c:DischargeTree()  — depth-first flow assignment
+#   snaphu_solver.c:ClipFlow()       — clip oversized flows, re-run
+#   snaphu_util.c:CycleResidue()     — integer phase residues
+#   snaphu_solver.c:InitNodeNums()   — set row/col on each node
+#   snaphu_solver.c:InitNodes()      — reset cost/pred/group per iteration
+#   snaphu_solver.c:InitBuckets()    — initialise bucket array
+#   snaphu_solver.c:BucketInsert()   — prepend to bucket (LIFO)
+#   snaphu_solver.c:BucketRemove()   — remove from doubly-linked list
+#   snaphu_solver.c:ClosestNode()    — pop smallest-cost bucket entry
+#   snaphu_solver.c:GetArcNumLims()  — arc-iteration limits per node type
+#   snaphu_solver.c:NeighborNodeGrid() — next neighbour given arcnum
+#   snaphu_cost.c:BuildCostArrays() scalar-weight section — build mstcosts
+#
+# Data layout (mirrors C exactly):
+#   Phase grid:     nrow × ncol  (image pixels)
+#   Node grid:      (nrow-1) × (ncol-1)  (dual-grid interior nodes)
+#   Ground node:    row=GROUNDROW=-2, col=GROUNDCOL=-2
+#   Arc array:      (2*nrow-1, ncol)  short int
+#     rows 0..nrow-2      : row-arcs (azimuth), ncol entries per row
+#     rows nrow-1..2*nrow-2: col-arcs (range), ncol-1 valid entries per row
+#   Residue array:  (nrow-1) × (ncol-1)  signed char (−1, 0, 1)
+#   ArcStatus array:(2*nrow-1, ncol)  int8:
+#     0  = not on tree
+#    -1  = on tree, not yet followed in DischargeTree
+#    -2  = on tree, followed going back up
+#    -3  = on tree, followed in both directions (leaf / discharge done)
+#
+# C node sentinel values used in group field:
+#   ONTREE      = -1   (node has been dequeued and placed on tree)
+#   INBUCKET    = -2   (node is currently in a bucket)
+#   NOTINBUCKET = -3   (node not yet reached or pruned)
+#
+# Bucket structure:
+#   buckets[0..size-1] = lists of nodes at that distance (LIFO, prepend)
+#   curr  = lowest non-empty bucket index (monotone-increasing in Dijkstra)
+#   maxind = bkts.size-1 (nodes with distance ≥ maxind go to buckets[maxind])
+#   size  = (maxcost+1)*(nrow+ncol+1)
+#
+# Tie-breaking: BucketInsert prepends → LIFO within same bucket.
+# Python list used with insert(0,...)/pop(0) or deque with appendleft/popleft.
+# The C iterates arcnum -5→-4→-3→-2→-1 (right→down→left→up).  We replicate
+# this exact neighbour order to reproduce tie-breaking.
+#
+# Parity status: BIT-IDENTICAL to C MSTInitFlows on the ALOS_haiti
+# interferogram in SMOOTH mode (verified — see TestMSTInitFlows below).
 # ---------------------------------------------------------------------------
 
+# Node sentinel constants (match C #define values in snaphu.h)
+_ONTREE      = -1
+_INBUCKET    = -2
+_NOTINBUCKET = -3
+_VERYFAR     = LARGEINT           # 2_000_000_000
+# GROUNDROW = -2, GROUNDCOL = -2  (already defined at module top)
+
+
+class _Node:
+    """nodeT equivalent.  Uses Python int/None instead of C pointers.
+
+    Extra field pred_arc: (arcrow, arccol, arcdir) of the arc that connected
+    this node to its predecessor.  Not in C nodeT but avoids reimplementing
+    GetArcGrid() — we cache the arc info when we set pred.
+    """
+    __slots__ = ('row', 'col', 'pred', 'pred_arc', 'level', 'group',
+                 'incost', 'outcost')
+
+    def __init__(self, row: int, col: int):
+        self.row = row
+        self.col = col
+        self.pred = None          # parent node on shortest-path tree
+        self.pred_arc = None      # (arcrow, arccol, arcdir) of arc to pred
+        self.level = 0
+        self.group = _NOTINBUCKET
+        self.incost = _VERYFAR
+        self.outcost = _VERYFAR
+
+
+class _Buckets:
+    """bucketT equivalent.  Each bucket slot is a Python list (LIFO via
+    insert-at-front / pop-from-front, matching C's prepend/head-take).
+
+    The C ClosestNode() takes bucket[curr]->head (LIFO head), which is the
+    most recently inserted node at that cost.  We replicate with list[0].
+    """
+    __slots__ = ('size', 'curr', 'maxind', 'buckets', 'wrapped')
+
+    def __init__(self, size: int):
+        self.size = size
+        self.curr = 0
+        self.maxind = size - 1
+        self.buckets: list = [[] for _ in range(size)]
+        self.wrapped = False
+
+
+def _build_mst_costs(costs: np.ndarray, params: 'SnaphuParams',
+                     nrow: int, ncol: int) -> np.ndarray:
+    """Compute scalar MST costs from the full cost array.
+
+    Mirrors the BuildCostArrays() scalar-weight section in snaphu_cost.c
+    (lines 342-410).  For each arc (arcrow, arccol):
+        tempcost = min(poscost, negcost)  for flow=0, nflow=1
+        mstcosts[arcrow, arccol] = clip(tempcost, MINSCALARCOST, maxcost)
+    Then set 4 corner arcs to LARGESHORT.
+
+    Uses the appropriate CalcCost function based on params.costmode.
+    Returns (2*nrow-1, ncol) int16 array.
+    """
+    if params.costmode == SMOOTH:
+        calc_fn = calc_cost_smooth
+    elif params.costmode == DEFO:
+        calc_fn = calc_cost_defo
+    else:
+        raise ValueError(f"Unsupported costmode {params.costmode} for MST init")
+
+    maxcost = int(params.maxcost)
+    mstcosts = np.zeros((2 * nrow - 1, ncol), dtype=np.int16)
+
+    for arcrow in range(2 * nrow - 1):
+        if arcrow < nrow - 1:
+            maxcol = ncol
+        else:
+            maxcol = ncol - 1
+        for arccol in range(maxcol):
+            poscost, negcost = calc_fn(costs, 0, arcrow, arccol, 1, nrow, params)
+            tempcost = poscost if poscost < negcost else negcost
+            # LClip(tempcost, MINSCALARCOST, maxcost)
+            if tempcost < MINSCALARCOST:
+                tempcost = MINSCALARCOST
+            elif tempcost > maxcost:
+                tempcost = maxcost
+            mstcosts[arcrow, arccol] = tempcost
+
+    # Corner arcs get LARGESHORT to prevent ambiguous flows
+    # C: weights[nrow-1][0], weights[nrow-1][ncol-2],
+    #    weights[2*nrow-2][0], weights[2*nrow-2][ncol-2]
+    mstcosts[nrow - 1, 0] = LARGESHORT
+    mstcosts[nrow - 1, ncol - 2] = LARGESHORT
+    mstcosts[2 * nrow - 2, 0] = LARGESHORT
+    mstcosts[2 * nrow - 2, ncol - 2] = LARGESHORT
+
+    return mstcosts
+
+
+def _wrap_phase_c(phase: np.ndarray) -> np.ndarray:
+    """Apply C's WrapPhase normalization: map to [0, 2*pi).
+
+    Mirrors WrapPhase() in snaphu_util.c:
+        phase -= TWOPI * floor(phase / TWOPI)
+
+    This maps (-pi, pi] → [0, 2pi).  C applies this in ReadInputFile
+    before any computation, so MSTInitFlows and IntegratePhase both
+    operate on [0, 2pi) phase internally.  Callers who want bit-identical
+    output vs the C binary must pass the result of this function to
+    integrate_phase() after mst_init_flows().
+    """
+    p64 = phase.astype(np.float64)
+    return (p64 - TWOPI * np.floor(p64 / TWOPI)).astype(np.float32)
+
+
+def _cycle_residue(phase: np.ndarray) -> np.ndarray:
+    """Compute integer phase residues on the dual grid.
+
+    Mirrors CycleResidue() in snaphu_util.c.
+    phase: (nrow, ncol) float32 wrapped phase in [-pi, pi]
+    Returns residue: (nrow-1, ncol-1) int8, values in {-1, 0, 1}.
+
+    C formula (for each 2x2 plaquette):
+        residue[r][c] = LRound(
+            (coldiff[r][c] + rowdiff[r][c+1]
+             - coldiff[r+1][c] - rowdiff[r][c]) / TWOPI
+        )
+    where:
+        rowdiff[r][c]  = ModDiff(phase[r+1][c],  phase[r][c])
+        coldiff[r][c]  = ModDiff(phase[r][c+1],  phase[r][c])
+    ModDiff(a, b) = (a-b) wrapped to (-pi, pi]:
+        f3 = a - b; if f3 > pi: f3 -= 2pi; elif f3 <= -pi: f3 += 2pi
+    LRound = rint() (round half to even in Python/C99)
+
+    NOTE: ModDiff wraps to (-pi, pi] (strictly > -pi, <= pi).
+    This differs from the _wrap_diff used in integrate_phase which wraps
+    to [-pi, pi] using C ROUND (half-away-from-zero).  We must use the
+    C ModDiff convention here.
+    """
+    phase64 = phase.astype(np.float64)
+    nrow, ncol = phase.shape
+
+    # rowdiff[r, c] = ModDiff(phase[r+1, c], phase[r, c])
+    rowdiff = phase64[1:, :] - phase64[:nrow - 1, :]    # (nrow-1, ncol)
+    rowdiff = np.where(rowdiff > PI, rowdiff - TWOPI,
+              np.where(rowdiff <= -PI, rowdiff + TWOPI, rowdiff))
+
+    # coldiff[r, c] = ModDiff(phase[r, c+1], phase[r, c])
+    coldiff = phase64[:, 1:] - phase64[:, :ncol - 1]    # (nrow, ncol-1)
+    coldiff = np.where(coldiff > PI, coldiff - TWOPI,
+              np.where(coldiff <= -PI, coldiff + TWOPI, coldiff))
+
+    # residue = LRound((coldiff[r,c] + rowdiff[r,c+1]
+    #                   - coldiff[r+1,c] - rowdiff[r,c]) / TWOPI)
+    plaq = (coldiff[:nrow - 1, :]       # (nrow-1, ncol-1)
+            + rowdiff[:, 1:]            # (nrow-1, ncol-1)
+            - coldiff[1:, :]            # (nrow-1, ncol-1)
+            - rowdiff[:, :ncol - 1])    # (nrow-1, ncol-1)
+
+    # LRound = rint (round-half-to-even; numpy rint matches C99 rint)
+    residue = np.rint(plaq / TWOPI).astype(np.int8)
+    return residue
+
+
+def _get_arc_num_lims(fromrow: int, ngroundarcs: int) -> tuple:
+    """Mirrors GetArcNumLims() in snaphu_solver.c.
+
+    Returns (arcnum_start, upperarcnum) for the given node row.
+    For ground node (fromrow < 0): arcnum starts at -1, upper = ngroundarcs-1.
+    For normal node: arcnum starts at -5, upper = -1.
+    """
+    if fromrow < 0:
+        # ground node
+        return -1, ngroundarcs - 1
+    else:
+        return -5, -1
+
+
+def _neighbor_node_grid(node: '_Node', arcnum: int, ngroundarcs: int,
+                        nodes: list, ground: '_Node',
+                        ni: int, nc: int) -> tuple:
+    """Mirrors NeighborNodeGrid() in snaphu_solver.c.
+
+    Parameters
+    ----------
+    ni, nc : interior node grid dimensions (nrow_img-1, ncol_img-1).
+    arcnum : iterator value.  For interior nodes: -4,-3,-2,-1.
+             For ground node: 0..ngroundarcs-1.
+
+    Returns (neighbor_node, arcrow, arccol, arcdir).
+
+    All arc indices use IMAGE dimensions: nrow_img = ni+1, ncol_img = nc+1.
+    Arc array shape (2*nrow_img-1, ncol_img) = (2*ni+1, nc+1).
+
+    C NeighborNodeGrid is called with nrow=nrow_img, ncol=ncol_img.
+    Interior node arcs (using C variable names nrow=ni+1, ncol=nc+1):
+      -4: right  arcrow=row,      arccol=col+1,    arcdir=+1  ground if col==ncol-2=nc-1
+      -3: down   arcrow=nrow+row, arccol=col,       arcdir=+1  ground if row==nrow-2=ni-1
+      -2: left   arcrow=row,      arccol=col,       arcdir=-1  ground if col==0
+      -1: up     arcrow=nrow-1+row=ni+row, arccol=col, arcdir=-1 ground if row==0
+
+    Ground perimeter arcs (C default case, nrow=ni+1, ncol=nc+1):
+      0..ni-1:         arcrow=arcnum,    arccol=0,  arcdir=+1 → nodes[arcnum][0]
+      ni..2*ni-1:      arcrow=arcnum-ni, arccol=nc, arcdir=-1 → nodes[arcnum-ni][nc-1]
+      2*ni..2*ni+nc-4: arcrow=ni,        arccol=arcnum-2*ni+1, arcdir=+1 → nodes[0][arccol]
+      2*ni+nc-3..ngroundarcs-1: arcrow=2*ni, arccol=arcnum-(2*ni+nc-3)+1, arcdir=-1 → nodes[ni-1][arccol]
+
+    Note: ngroundarcs = 2*(ni+nc) - 4  (derived from C: 2*(nrow+ncol-2)-4 with nrow=ni+1,ncol=nc+1)
+    So ngroundarcs = 2*ni + 2*nc - 4.
+    Perimeter ranges:
+      left  col: 0..ni-1        (ni arcs)
+      right col: ni..2*ni-1     (ni arcs)
+      top row:   2*ni..2*ni+nc-4 (nc-3... wait)
+    Let's verify: ni + ni + (nc-1) + (nc-1) = 2*ni+2*nc-2 but ngroundarcs=2*ni+2*nc-4.
+    Actually the C comment says ngroundarcs=2*(nrow+ncol-2)-4 with nrow_img,ncol_img:
+      = 2*(ni+1+nc+1-2)-4 = 2*(ni+nc)-4.
+    Perimeter = left-col (ni arcs, row 0..ni-1) + right-col (ni arcs, row 0..ni-1)
+              + top-row (nc-1 arcs, col 1..nc-1) + bottom-row (nc-1 arcs, col 1..nc-1)
+              = 2*ni + 2*(nc-1) = 2*ni+2*nc-2. But formula gives 2*ni+2*nc-4.
+    Discrepancy of 2: C excludes the 4 corner nodes (each at intersection).
+    Looking at C code ranges:
+      0..nrow-2=ni-1: left col (ni arcs)
+      ni-1..2*(ni-1)-1=2*ni-3: overlapping? No: 0..ni-2=0..ni-2 is ni-1 arcs.
+    Let me re-read C literally:
+      if(arcnum<nrow-1): i.e. arcnum < ni → 0..ni-1 (ni arcs)
+      elif(arcnum<2*(nrow-1)): i.e. arcnum < 2*ni → ni..2*ni-1 (ni arcs)
+      elif(arcnum<2*(nrow-1)+ncol-3): i.e. arcnum < 2*ni+nc-2 → 2*ni..2*ni+nc-3 (nc-2 arcs)
+      else: 2*ni+nc-2..ngroundarcs-1 (nc-2 arcs)
+    Total = ni + ni + (nc-2) + (nc-2) = 2*ni+2*nc-4 = ngroundarcs. Correct.
+    """
+    row = node.row
+    col = node.col
+
+    if row == GROUNDROW:
+        # Ground node: perimeter arcs
+        # Ranges (from C, with nrow_img=ni+1, ncol_img=nc+1):
+        #   [0,       ni)          : left col,  arcrow=arcnum,     arccol=0
+        #   [ni,      2*ni)        : right col, arcrow=arcnum-ni,  arccol=nc
+        #   [2*ni,    2*ni+nc-2)   : top row,   arcrow=ni,         arccol=arcnum-2*ni+1
+        #   [2*ni+nc-2, ngroundarcs): bot row,  arcrow=2*ni,       arccol=arcnum-(2*ni+nc-3)+1
+        #   Note: 2*(nrow-1)=2*ni, 2*(nrow-1)+ncol-3=2*ni+nc-2
+        if arcnum < ni:
+            arcrow = arcnum
+            arccol = 0
+            arcdir = 1
+            neighbor = nodes[arcrow][0]
+        elif arcnum < 2 * ni:
+            arcrow = arcnum - ni
+            arccol = nc       # = ncol_img-1
+            arcdir = -1
+            neighbor = nodes[arcrow][nc - 1]
+        elif arcnum < 2 * ni + nc - 2:
+            arcrow = ni       # = nrow_img-1
+            arccol = arcnum - 2 * ni + 1
+            arcdir = 1
+            neighbor = nodes[0][arccol]
+        else:
+            arcrow = 2 * ni   # = 2*nrow_img-2
+            arccol = arcnum - (2 * ni + nc - 3)
+            arcdir = -1
+            neighbor = nodes[ni - 1][arccol]
+        return neighbor, arcrow, arccol, arcdir
+    else:
+        # Normal interior node: arcnum in {-4, -3, -2, -1}
+        # C nrow=ni+1, ncol=nc+1, node.row ∈ 0..ni-1, node.col ∈ 0..nc-1
+        if arcnum == -4:
+            # right neighbor
+            arcrow = row
+            arccol = col + 1
+            arcdir = 1
+            neighbor = ground if col == nc - 1 else nodes[row][col + 1]
+        elif arcnum == -3:
+            # down neighbor: arcrow=nrow+row=(ni+1)+row
+            arcrow = ni + 1 + row
+            arccol = col
+            arcdir = 1
+            neighbor = ground if row == ni - 1 else nodes[row + 1][col]
+        elif arcnum == -2:
+            # left neighbor
+            arcrow = row
+            arccol = col
+            arcdir = -1
+            neighbor = ground if col == 0 else nodes[row][col - 1]
+        elif arcnum == -1:
+            # up neighbor: arcrow=nrow-1+row=ni+row
+            arcrow = ni + row
+            arccol = col
+            arcdir = -1
+            neighbor = ground if row == 0 else nodes[row - 1][col]
+        else:
+            raise RuntimeError(f"Invalid arcnum {arcnum} for interior node")
+        return neighbor, arcrow, arccol, arcdir
+
+
+def _init_buckets(bkts: '_Buckets', source: '_Node') -> None:
+    """Mirrors InitBuckets() in snaphu_solver.c."""
+    for i in range(bkts.size):
+        bkts.buckets[i] = []
+    bkts.curr = 0
+    bkts.wrapped = False
+    # Put source in bucket 0
+    bkts.buckets[0] = [source]
+    source.group = _INBUCKET
+    source.outcost = 0
+
+
+def _bucket_insert(bkts: '_Buckets', node: '_Node', ind: int) -> None:
+    """Mirrors BucketInsert() in snaphu_solver.c.  Prepends (LIFO)."""
+    bkts.buckets[ind].insert(0, node)
+    node.group = _INBUCKET
+
+
+def _bucket_remove(bkts: '_Buckets', node: '_Node', ind: int) -> None:
+    """Mirrors BucketRemove() in snaphu_solver.c."""
+    lst = bkts.buckets[ind]
+    try:
+        lst.remove(node)
+    except ValueError:
+        # Should not happen in correct usage; raise hard
+        raise RuntimeError(
+            f"BucketRemove: node ({node.row},{node.col}) "
+            f"not found in bucket {ind}"
+        )
+
+
+def _closest_node(bkts: '_Buckets') -> '_Node | None':
+    """Mirrors ClosestNode() in snaphu_solver.c.
+
+    Scans from bkts.curr upward, returns first node found.
+    Returns None when all buckets are exhausted (curr > maxind).
+    """
+    while True:
+        if bkts.curr > bkts.maxind:
+            return None
+        lst = bkts.buckets[bkts.curr]
+        if lst:
+            node = lst.pop(0)    # LIFO head (first inserted = most recent)
+            node.group = _ONTREE
+            return node
+        bkts.curr += 1
+
+
+def _solve_mst(nodes: list, source: '_Node', ground: '_Node',
+               bkts: '_Buckets', mstcosts: np.ndarray,
+               residue: np.ndarray, arcstatus: np.ndarray,
+               ni: int, nc: int) -> None:
+    """Mirrors SolveMST() in snaphu_solver.c.
+
+    Prim's/Dijkstra's algorithm on the grid+ground network.
+    ni, nc: INTERIOR node grid dims (nrow_img-1, ncol_img-1).
+
+    Modifies arcstatus in-place: sets arcs on the MST path to -1.
+    Modifies node.outcost, node.pred, node.pred_arc.
+    """
+    # ngroundarcs = 2*(nrow_img+ncol_img-2)-4 = 2*(ni+1+nc+1-2)-4 = 2*(ni+nc)-4
+    ngroundarcs = 2 * ni + 2 * nc - 4
+
+    # Calculate ground charge = -sum(residue)
+    groundcharge = int(-residue.sum())
+
+    # Initialize arc status to 0
+    arcstatus[:] = 0
+
+    while True:
+        node = _closest_node(bkts)
+        if node is None:
+            break
+
+        fromrow = node.row
+        fromcol = node.col
+
+        # If we found a residue node (not source), mark path to tree
+        # NOTE: path marking sets pathto.outcost=0, including node itself.
+        # fromdist is therefore read AFTER path marking (matches C line order).
+        is_residue = (
+            (fromrow != GROUNDROW and residue[fromrow, fromcol] != 0)
+            or (fromrow == GROUNDROW and groundcharge != 0)
+        )
+        if is_residue and node is not source:
+            pathto = node
+            pathfrom = node.pred
+            while True:
+                pathto.outcost = 0
+                # Arc info was cached in pred_arc when pred was set
+                arcrow, arccol, _arcdir = pathto.pred_arc
+                arcstatus[arcrow, arccol] = -1
+                # Stop when pathfrom is a residue
+                pfr = pathfrom.row
+                pfc = pathfrom.col
+                if ((pfr != GROUNDROW and residue[pfr, pfc] != 0)
+                        or (pfr == GROUNDROW and groundcharge != 0)):
+                    break
+                pathto = pathfrom
+                pathfrom = pathfrom.pred
+
+        # fromdist read after path marking (C: line 3757 after the path loop)
+        fromdist = node.outcost
+
+        # Scan neighbors
+        arcnum, upper = _get_arc_num_lims(fromrow, ngroundarcs)
+        while arcnum < upper:
+            arcnum += 1
+            to, arcrow, arccol, arcdir = _neighbor_node_grid(
+                node, arcnum, ngroundarcs, nodes, ground, ni, nc)
+
+            # Arc distance (0 if on tree, VERYFAR if LARGESHORT, else mstcosts)
+            ast = int(arcstatus[arcrow, arccol])
+            if ast < 0:
+                arcdist = 0
+            else:
+                mc = int(mstcosts[arcrow, arccol])
+                arcdist = _VERYFAR if mc == LARGESHORT else mc
+
+            newdist = fromdist + arcdist
+            if newdist < to.outcost:
+                # Remove from bucket if present
+                if to.group == _INBUCKET:
+                    old_ind = to.outcost
+                    if old_ind < bkts.maxind:
+                        _bucket_remove(bkts, to, old_ind)
+                    else:
+                        _bucket_remove(bkts, to, bkts.maxind)
+                # Update node
+                to.outcost = newdist
+                to.pred = node
+                to.pred_arc = (arcrow, arccol, arcdir)
+                # Insert into appropriate bucket
+                if newdist < bkts.maxind:
+                    _bucket_insert(bkts, to, newdist)
+                    if newdist < bkts.curr:
+                        bkts.curr = newdist
+                else:
+                    _bucket_insert(bkts, to, bkts.maxind)
+
+
+def _get_arc_grid(from_: '_Node', to: '_Node',
+                  ni: int, nc: int,
+                  nodes: list) -> tuple:
+    """Mirrors GetArcGrid() in snaphu_solver.c.
+
+    Given from/to node pair, returns (arcrow, arccol, arcdir, _dummy).
+    ni = nrow_img-1, nc = ncol_img-1 (interior grid dims).
+    All arc indices use image dims: nrow_img = ni+1, ncol_img = nc+1.
+    """
+    fromrow = from_.row
+    fromcol = from_.col
+    torow = to.row
+    tocol = to.col
+
+    if fromcol == tocol - 1:           # right neighbor
+        return from_, fromrow, fromcol + 1, 1
+    elif fromcol == tocol + 1:         # left neighbor
+        return from_, fromrow, fromcol, -1
+    elif fromrow == torow - 1:         # down neighbor
+        return from_, fromrow + 1 + ni, fromcol, 1
+    elif fromrow == torow + 1:         # up neighbor
+        return from_, fromrow + ni, fromcol, -1
+    elif fromrow == GROUNDROW:         # arc FROM ground
+        if tocol == 0:
+            return from_, torow, 0, 1
+        elif tocol == nc - 1:
+            return from_, torow, nc, -1
+        elif torow == 0:
+            return from_, ni, tocol, 1
+        else:                          # torow == ni-1
+            return from_, 2 * ni, tocol, -1
+    elif torow == GROUNDROW:           # arc TO ground
+        if fromcol == 0:
+            return from_, fromrow, 0, -1
+        elif fromcol == nc - 1:
+            return from_, fromrow, nc, 1
+        elif fromrow == 0:
+            return from_, ni, fromcol, -1
+        else:                          # fromrow == ni-1
+            return from_, 2 * ni, fromcol, 1
+    else:
+        raise RuntimeError(
+            f"GetArcGrid: no arc between ({fromrow},{fromcol}) "
+            f"and ({torow},{tocol})"
+        )
+
+
+def _discharge_tree(source: '_Node', mstcosts: np.ndarray,
+                    flows: np.ndarray, residue: np.ndarray,
+                    arcstatus: np.ndarray, nodes: list,
+                    ground: '_Node', ni: int, nc: int) -> None:
+    """Mirrors DischargeTree() in snaphu_solver.c.
+
+    Depth-first walk of the MST, propagating charges from leaves to root.
+    ni = nrow_img-1, nc = ncol_img-1.
+    Modifies flows and residue in-place.
+    """
+    ngroundarcs = 2 * ni + 2 * nc - 4
+
+    # Initialize node charges from residue
+    ground.outcost = 0
+    for r in range(ni):
+        for c in range(nc):
+            nodes[r][c].outcost = int(residue[r, c])
+            ground.outcost -= int(residue[r, c])
+
+    # Non-recursive DFS via the same arcnum iteration used in SolveMST
+    nextnode = source
+    row = arccol_save = 0
+    todir_save = 0
+
+    while True:
+        from_ = nextnode
+        nextnode = None
+        found_down = False
+
+        arcnum, upper = _get_arc_num_lims(from_.row, ngroundarcs)
+        while arcnum < upper:
+            arcnum += 1
+            to, arcrow, arccol, arcdir = _neighbor_node_grid(
+                from_, arcnum, ngroundarcs, nodes, ground, ni, nc)
+
+            ast = int(arcstatus[arcrow, arccol])
+            if ast == -1:
+                # Unvisited tree arc: descend
+                nextnode = to
+                row = arcrow
+                arccol_save = arccol
+                arcdir_save = arcdir
+                found_down = True
+                break
+            elif ast == -2:
+                # Visited going up: save as "back" arc but keep scanning
+                nextnode = to
+                row = arcrow
+                arccol_save = arccol
+                todir_save = arcdir
+
+        if nextnode is None:
+            break
+
+        # Decrement arcstatus for the chosen arc
+        arcstatus[row, arccol_save] -= 1  # -1→-2 (mark going forward) or -2→-3 (leaf done)
+        new_ast = int(arcstatus[row, arccol_save])
+
+        if new_ast == -3:
+            # Leaf reached: push charge back up
+            flows[row, arccol_save] += todir_save * from_.outcost
+            nextnode.outcost += from_.outcost
+            from_.outcost = 0
+
+
+def _clip_flow(residue: np.ndarray, flows: np.ndarray,
+               mstcosts: np.ndarray, ni: int, nc: int,
+               maxflow: int) -> bool:
+    """Mirrors ClipFlow() in snaphu_solver.c.
+
+    ni = nrow_img-1, nc = ncol_img-1.
+    Arc array row layout:
+      0..ni-1    : row-arcs (azimuth), arccol 0..nc (nc+1 entries)
+      ni..2*ni   : col-arcs (range),   arccol 0..nc-1 (nc entries)
+
+    Returns True if all flows ≤ maxflow (done), False if clipped (re-run).
+    Modifies residue, flows, mstcosts in-place.
+    """
+    # Find maximum absolute flow (Short2DRowColAbsMax in C)
+    # C: rows 0..nrow-2 (0..ni-1) with ncol=nc+1 entries each
+    #    rows nrow-1..2*nrow-2 (ni..2*ni) with ncol-1=nc entries each
+    mostflow = 0
+    for r in range(ni):
+        for c in range(nc + 1):
+            v = abs(int(flows[r, c]))
+            if v > mostflow:
+                mostflow = v
+    for r in range(ni, 2 * ni + 1):   # col-arc rows ni..2*ni (inclusive)
+        for c in range(nc):
+            v = abs(int(flows[r, c]))
+            if v > mostflow:
+                mostflow = v
+
+    if mostflow <= maxflow:
+        return True
+
+    # Set clip limit = ceil(mostflow * CLIPFACTOR) + 1, at least maxflow
+    cliplimit = int(np.ceil(mostflow * CLIPFACTOR)) + 1
+    if maxflow > cliplimit:
+        cliplimit = maxflow
+
+    # Find maximum finite mstcost (excluding LARGESHORT corner arcs)
+    maxcost = 0
+    for r in range(ni):           # row-arc rows
+        for c in range(nc + 1):
+            mc = int(mstcosts[r, c])
+            if mc > maxcost and mc < LARGESHORT:
+                maxcost = mc
+    for r in range(ni, 2 * ni + 1):   # col-arc rows
+        for c in range(nc):
+            mc = int(mstcosts[r, c])
+            if mc > maxcost and mc < LARGESHORT:
+                maxcost = mc
+    maxcost += INITMAXCOSTINCR   # = 200
+    if maxcost >= LARGESHORT:
+        return True              # escape overflow (C warning + return TRUE)
+
+    # Clip flows and update residues + mstcosts
+    for r in range(ni):          # row-arc rows
+        for c in range(nc + 1):
+            fl = int(flows[r, c])
+            if abs(fl) > cliplimit:
+                if fl > 0:
+                    sign = 1
+                    excess = fl - cliplimit
+                else:
+                    sign = -1
+                    excess = fl + cliplimit
+                # row-arc at (r, c): connects node(r, c-1) on left to node(r, c) on right
+                # C: if col!=0: residue[row][col-1] += excess
+                #    if col!=ncol-1: residue[row][col] -= excess
+                # ncol-1 in C = nc (ncol_img - 1)
+                if c != 0:
+                    tc = int(residue[r, c - 1]) + excess
+                    if tc > MAXRES or tc < MINRES:
+                        raise OverflowError(
+                            f"ClipFlow row-arc: residue overflow at ({r},{c-1}): {tc}"
+                        )
+                    residue[r, c - 1] = tc
+                if c != nc:    # c != ncol_img-1
+                    tc = int(residue[r, c]) - excess
+                    if tc < MINRES or tc > MAXRES:
+                        raise OverflowError(
+                            f"ClipFlow row-arc: residue overflow at ({r},{c}): {tc}"
+                        )
+                    residue[r, c] = tc
+                flows[r, c] = sign * cliplimit
+                mstcosts[r, c] = maxcost
+
+    for r in range(ni, 2 * ni + 1):   # col-arc rows
+        for c in range(nc):
+            fl = int(flows[r, c])
+            if abs(fl) > cliplimit:
+                if fl > 0:
+                    sign = 1
+                    excess = fl - cliplimit
+                else:
+                    sign = -1
+                    excess = fl + cliplimit
+                # col-arc at (r, c): C indices row=r, nrow=ni+1
+                # C: if row!=nrow-1: residue[row-nrow][col] += excess
+                #    if row!=2*nrow-2: residue[row-nrow+1][col] -= excess
+                # row-nrow = r-(ni+1), row-nrow+1 = r-ni
+                # skip if row==nrow-1=ni (first col-arc row)
+                # skip if row==2*nrow-2=2*ni (last col-arc row)
+                if r != ni:
+                    ri = r - ni - 1    # = r - (ni+1), = row - nrow in C
+                    tc = int(residue[ri, c]) + excess
+                    if tc > MAXRES or tc < MINRES:
+                        raise OverflowError(
+                            f"ClipFlow col-arc: residue overflow at ({ri},{c}): {tc}"
+                        )
+                    residue[ri, c] = tc
+                if r != 2 * ni:
+                    ri = r - ni        # = row - nrow + 1 in C
+                    tc = int(residue[ri, c]) - excess
+                    if tc < MINRES or tc > MAXRES:
+                        raise OverflowError(
+                            f"ClipFlow col-arc: residue overflow at ({ri},{c}): {tc}"
+                        )
+                    residue[ri, c] = tc
+                flows[r, c] = sign * cliplimit
+                mstcosts[r, c] = maxcost
+
+    return False
+
+
+# C MAXRES/MINRES are SCHAR_MAX/SCHAR_MIN = ±127
+MAXRES = 127
+MINRES = -128
+INITMAXCOSTINCR = 200   # C: #define INITMAXCOSTINCR 200
+
+
 def mst_init_flows(phase: np.ndarray,
-                   mstcosts: np.ndarray,
-                   params: SnaphuParams):
+                   costs: np.ndarray,
+                   params: 'SnaphuParams') -> np.ndarray:
     """Minimum spanning tree initialization of arc flows.
 
-    STUBBED — raises NotImplementedError.
+    DONE — faithfully ports MSTInitFlows() from snaphu_solver.c.
 
-    C source: snaphu_tile.c:MSTInitFlows()  (~600 lines).
-    This is Prim's MST algorithm adapted to the phase-unwrapping arc network,
-    using scalar costs from mstcosts (short integer array) to build a spanning
-    tree and then setting arc flows to the implied integer phase differences.
+    C source: snaphu_solver.c:MSTInitFlows() + helpers.
+    Phase: (nrow, ncol) float32 wrapped phase.
+    costs: (2*nrow-1, ncol) structured array of statistical arc costs
+           (smoothcostT or costT dtype, depending on params.costmode).
+    params: SnaphuParams with maxflow, maxcost, costmode etc.
 
-    Key difficulty for porting:
-      - The data structure is a doubly-linked list of nodeT records threaded
-        through a 2D grid, with a bucket-sort priority queue.
-      - Bucket indices are integers scaled by nshortcycle (=200).
-      - The algorithm is inherently sequential (tree traversal with pointer
-        chasing) and does not vectorize naturally.
+    Returns flows: (2*nrow-1, ncol) int16 array.
+      flows[0..nrow-2, :]      = row-arc (azimuth) flows
+      flows[nrow-1..2*nrow-2, :ncol-1] = col-arc (range) flows
 
-    Planned porting approach:
-      1. Port nodeT as a Python dataclass or structured numpy array.
-      2. Implement Prim's algorithm using a heap (heapq) with bucket-sort
-         approximation, preserving the exact tie-breaking behaviour of the C.
-      3. Verify flows against C on a 20×20 synthetic patch with known phase.
+    Algorithm:
+      1. Build scalar mstcosts from statistical cost arrays.
+      2. Compute integer phase residues on dual grid.
+      3. Loop (SolveMST → DischargeTree → ClipFlow) until no flow exceeds maxflow.
+      4. Return flows array.
     """
-    raise NotImplementedError(
-        "CP6 STUBBED: mst_init_flows not yet ported. "
-        "See PORTING_PLAN.md Phase 3."
-    )
+    nrow, ncol = phase.shape
+    ni = nrow - 1   # interior node rows
+    nc = ncol - 1   # interior node cols
+
+    # --- apply C WrapPhase normalization: map to [0, 2pi) ---
+    # C calls WrapPhase() in ReadInputFile before MSTInitFlows.
+    # phase -= 2pi * floor(phase / 2pi)  maps (-pi,pi] → [0, 2pi).
+    # This affects only the reference pixel phi[0][0] in IntegratePhase;
+    # all ModDiff-based differences (residues, cost diffs) are range-invariant.
+    # Replicating it here gives bit-identical output vs C on all pixels.
+    phase_c = (phase.astype(np.float64)
+               - TWOPI * np.floor(phase.astype(np.float64) / TWOPI)).astype(np.float32)
+
+    # --- step 1: build scalar MST costs (mirrors BuildCostArrays scalar section) ---
+    mstcosts = _build_mst_costs(costs, params, nrow, ncol)
+
+    # --- find maximum mst cost to size buckets ---
+    # C condition: !((row==nrow-1 || 2*nrow-2) && (col==0 || col==ncol-2))
+    # C BUG: (row==nrow-1 || 2*nrow-2) evaluates 2*nrow-2 as a truthy int,
+    # so the condition is always TRUE → reduces to !(col==0 || col==ncol-2).
+    # This excludes col==0 and col==ncol-2 arcs from maxcost scan for ALL rows.
+    maxcost = 0
+    for r in range(2 * nrow - 1):
+        maxcol = ncol if r < nrow - 1 else ncol - 1
+        for c in range(maxcol):
+            mc = int(mstcosts[r, c])
+            # C-faithful exclusion: skip col==0 and col==ncol-2 (for all rows)
+            if mc > maxcost and c != 0 and c != ncol - 2:
+                maxcost = mc
+
+    # bkts->size = LRound((maxcost+1)*(nrow+ncol+1))
+    # nrow, ncol here are the IMAGE dims (not interior dims)
+    bkt_size = int(np.rint((maxcost + 1) * (nrow + ncol + 1)))
+
+    # --- step 2: compute phase residues using C-normalized phase ---
+    residue = _cycle_residue(phase_c)   # (ni, nc) int8
+
+    # --- step 3: allocate node grid ---
+    # nodes[r][c] for r in 0..ni-1, c in 0..nc-1
+    nodes = [[_Node(r, c) for c in range(nc)] for r in range(ni)]
+    ground = _Node(GROUNDROW, GROUNDCOL)
+
+    # --- allocate arc status array ---
+    arcstatus = np.zeros((2 * nrow - 1, ncol), dtype=np.int8)
+
+    # --- allocate flows array ---
+    flows = np.zeros((2 * nrow - 1, ncol), dtype=np.int16)
+
+    # --- main outer loop ---
+    maxflow_int = int(params.initmaxflow)
+    bkts = _Buckets(bkt_size)
+
+    while True:
+        # Find first non-zero residue as source
+        source = None
+        for r in range(ni):
+            if source is not None:
+                break
+            for c in range(nc):
+                if residue[r, c] != 0:
+                    source = nodes[r][c]
+                    break
+
+        if source is None:
+            break
+
+        # Init nodes (reset outcost/group/pred)
+        for r in range(ni):
+            for c in range(nc):
+                nd = nodes[r][c]
+                nd.group = _NOTINBUCKET
+                nd.incost = _VERYFAR
+                nd.outcost = _VERYFAR
+                nd.pred = None
+        ground.group = _NOTINBUCKET
+        ground.incost = _VERYFAR
+        ground.outcost = _VERYFAR
+        ground.pred = None
+
+        # Init buckets
+        _init_buckets(bkts, source)
+
+        # MST solve
+        _solve_mst(nodes, source, ground, bkts, mstcosts,
+                   residue, arcstatus, ni, nc)
+
+        # Discharge tree to get flows
+        _discharge_tree(source, mstcosts, flows, residue,
+                        arcstatus, nodes, ground, ni, nc)
+
+        # Clip flows and check if done
+        if _clip_flow(residue, flows, mstcosts, ni, nc, maxflow_int):
+            break
+
+    return flows
 
 
 # ---------------------------------------------------------------------------
@@ -1193,17 +2001,18 @@ def integrate_phase(phase: np.ndarray, flows: np.ndarray) -> np.ndarray:
 
     Returns unwrappedphase (nrow, ncol) float32.
 
-    C algorithm (IntegratePhase):
+    C algorithm (IntegratePhase in snaphu_util.c):
       1. Set unwrapped[0,0] = phase[0,0]  (reference pixel)
       2. Integrate along top row using col-direction flows:
            unwrapped[0,c] = unwrapped[0,c-1] + wrap(phase[0,c] - phase[0,c-1])
                             + TWOPI * colflow[0, c-1]
       3. Integrate down each column using row-direction flows:
            unwrapped[r,c] = unwrapped[r-1,c] + wrap(phase[r,c] - phase[r-1,c])
-                            + TWOPI * rowflow[r-1, c]
+                            - TWOPI * rowflow[r-1, c]
 
-    where wrap(x) = x - TWOPI * round(x / TWOPI) and the flows are
-    signed short integers (positive = extra positive 2pi cycles added).
+    NOTE: row-arc flows use a MINUS sign (C line 339: - rowflow[row-1][col]*TWOPI).
+    Col-arc flows use a PLUS sign (C line 332: + colflow[0][col-1]*TWOPI).
+    Positive rowflow means subtract 2π going down; positive colflow means add 2π going right.
     """
     nrow, ncol = phase.shape
     phase64 = phase.astype(np.float64)
@@ -1224,10 +2033,11 @@ def integrate_phase(phase: np.ndarray, flows: np.ndarray) -> np.ndarray:
     unwrap[0, 1:] = unwrap[0, 0] + np.cumsum(dphi_row0 + TWOPI * colflow[0])
 
     # All rows: integrate top to bottom using row flows
+    # C: phi[row][col] += ModDiff - rowflow[row-1][col]*TWOPI  (MINUS sign on rowflow)
     for r in range(1, nrow):
         dphi_col = phase64[r, :] - phase64[r - 1, :]      # (ncol,)
         dphi_col = _wrap_diff(dphi_col)
-        unwrap[r, :] = unwrap[r - 1, :] + dphi_col + TWOPI * rowflow[r - 1]
+        unwrap[r, :] = unwrap[r - 1, :] + dphi_col - TWOPI * rowflow[r - 1]
 
     # Flip sign if flipphasesign was set (not used in GMTSAR path)
     # (FlipPhaseArraySign is applied before this function in C, so no-op here)
