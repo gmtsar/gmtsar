@@ -383,3 +383,187 @@ subprocess fallback). Reverting INPROC fixed correctness AND perf in one move.
   test coverage must use CSK-scale grids to actually guard #72. GMTSAR_SURFACE_INPROC stays OFF.
 - snaphu port: scoped (I/O done, solver stubbed). USER DECISION: pure-Python ~3-4wk (statistical
   parity only on solver) vs `pip install snaphu` CFFI ~1day (exact, keeps C dep). Worktree preserved.
+
+---
+
+## 15-HOUR AUTOPILOT (2026-06-13 20:05 → ~11:05 next day)
+
+User directives: (1) ports must faithfully duplicate the C for BIT-IDENTICAL results
+first, THEN vectorize/numba (Rule 10/10a/10b — now codified); (2) "autopilot for 15h".
+Treating snaphu CFFI as OFF the table (wrapping C ≠ a port) → pure-Python faithful port.
+
+QUEUE (priority order):
+1. #72 surface bit-identical via faithful duplication + dual instrumentation
+   (Mira af20c8e7d24173be6, worktree). On byte-identical CSK-scale parity + real-scale
+   test → land gmt_surface_py fix; only AFTER a full sweep with INPROC=1 passes may the
+   GMTSAR_SURFACE_INPROC default flip ON.
+2. phasefilt default-ON: fast-tier validation w/ GMTSAR_PHASEFILT_PY=1 (blhh7ix99). If all
+   clean → flip default ON in utils/filter, smoke, commit (v2.3.0-track).
+3. snaphu pure-Python port continuation (Phase 2 cost arrays, Phase 3 MST) — faithful
+   duplication of snaphu C. Worktree agent-a95b8ae153c399346 has I/O done.
+4. Optimization (numba/vectorize) of bit-identical ports — only after parity.
+
+Discipline: gate each landing on smoke (RS2 6/6) + relevant unit tests; revert+log on
+regression; patch-bump per landing; never flip a default without a full path-exercising
+sweep; bit-identical FIRST. I own all git/bless.
+
+### Autopilot landings
+- 21:10 LANDED v2.1.37 (7695d0a→amended): phasefilt_py default ON. Validated: fast-tier 6/6
+  py-vs-csh CLEAN (phasefilt complex-rms 0.00002-0.00245), RS2 smoke 6/6 with new default.
+  GMTSAR_PHASEFILT_PY=0 to fall back to C. (Note: avoid backticks in `git -m` — shell substitutes.)
+- 21:12 Dispatched snaphu Phase-2 Mira a07135dce4810a7ec (worktree): copy I/O layer from
+  agent-a95b8ae153c399346, port BuildStatCostsSmooth/Defo faithfully from snaphu_cost.c with a
+  bit-identical cost-array parity harness vs a real snaphu C dump. Incremental.
+- #72 surface Mira af20c8e7d24173be6 still running (dual-instrument checkpoint-diff).
+ACTIVE MIRAS (2/2 cap): #72 surface, snaphu Phase 2.
+- 21:40 LANDED v2.1.38 (959c829): snaphu_py pure-Python progress — I/O + bit-identical cost
+  arrays (49 tests incl. 6 C cost-parity). NOT wired (snaphu stays C). MST/solver/conncomp stubbed.
+- 21:42 Dispatched snaphu Phase-3 MST Mira a5417906becfe51e7 (off main, which now has cost arrays).
+  Boundary: stop after MST; do NOT start the ~3000-line solver (CP7) — bit-identical likely
+  infeasible there (bucket-sort tie-breaking) → needs USER decision on acceptance bar.
+ACTIVE MIRAS (2/2): #72 surface af20c8e7d24173be6, snaphu MST a5417906becfe51e7.
+- 22:35 LANDED v2.1.39 (01bbdaf): snaphu CP6 MST init flows (structural bit-identity, 0 cycle
+  errors, 61 tests) + 3 layer bugfixes. snaphu CP1-CP6 complete; NOT wired.
+  >>> CP7 SOLVER = USER DECISION: not bit-identical-feasible in pure Python (candidate-bag
+  pointer-order + short saturating arith) → topological/statistical equivalence only (fine for
+  InSAR, not byte-for-byte). HOLD autonomously; surface to user. CP9 conncomp also remains.
+ACTIVE MIRAS (1/2): #72 surface af20c8e7d24173be6. snaphu held at CP7 decision.
+Free slot left idle deliberately: remaining work is either #72 (priority, running) or
+low-value (perf already 0.88× faster than csh; optimization is post-all-ports gravy).
+- 23:12 RECOVERY: #72 Mira af20c8e7d24173be6 was thrashing — spent ~3h running filesystem-wide
+  bfs/find for GMT source (load 37, no code progress) because my brief didn't give the path.
+  Source was at /tmp/gmt_src/src/surface.c all along. Stopped it. Partial finding salvaged from
+  its output: Python stride hierarchy MATCHES C on CSK (200,40,8,4,2,1) → divergence is in the
+  PER-STRIDE GS-SOR iteration (update stencil/coefficients/BCs/Briggs/convergence), NOT the
+  hierarchy. Killed orphaned bfs scans; load recovering.
+- 23:13 Re-dispatched #72 Mira a5206e70839154fe3 with HEAD START: hardcoded paths (NO fs search),
+  fold in the pixel_reg fix from agent-a4a633128d13b7699, stride ruled out → focus per-stride.
+LESSON: always give Miras explicit source/binary paths; NFS-wide find is a 3h trap.
+ACTIVE MIRA (1/2): #72 surface a5206e70839154fe3. snaphu held at CP7 (user decision).
+- 00:11 #72 Mira a5206e70839154fe3 BREAKTHROUGH (in progress, 409-line edit): root cause of the
+  CSK 0.458m divergence = gmt_surface_py uses float64 but surface.c uses float32 (gmt_grdfloat)
+  for the GS-SOR grid/coefficients. Dense grids converge to the same fixed point (small tests
+  pass), but real sparse terrain hits max_iter WITHOUT converging → non-converged float32(C) vs
+  float64(Py) states differ → ~0.5m RMS. Fix: float32 GS-SOR to match C's non-converged trajectory.
+  Implementing + validating now. (This is the per-stride iteration bug the head-start pointed at.)
+- 00:43 #72 mis-stop: I TaskStopped a5206e70839154fe3 thinking it stalled (38min low-CPU/no-file).
+  Its final output showed it was actually DEEP in manual index-tracing (ruled out fill_in_forecast:
+  the fraction[i]=i/previous_stride non-standard bilinear is C-intentional; both match). LESSON:
+  reasoning-heavy Miras legitimately show low CPU + no file writes for long stretches — do NOT kill
+  on that alone; require a progress-checkpoint file for liveness.
+  Worktree a5206e70839154fe3 float32 fix: small-scale unit tests pass (19 OK) but CSK-scale parity
+  UNVERIFIED (agent was still hunting a residual). NOT landed.
+- 00:44 Re-dispatched #72 a99c5d172211d2453: continue from prior worktree's float32 fix; STEP 1 =
+  empirically measure CSK topo_ra RMS with float32 fix FIRST; checkpoint to NOTES_72.md each step
+  for visible liveness. Findings carried: float32 root cause, stride OK, fill_in_forecast OK.
+ACTIVE MIRA (1/2): #72 surface a99c5d172211d2453.
+- 01:30 #72 a99c5d172211d2453 ALIVE & progressing (NOT hung — my find-based liveness check was
+  flaky; gmt_surface_py edited 01:21, NOTES_72.md has real content). Findings in NOTES_72.md:
+  per-stride iteration-count diff C-vs-Py shows Python needs ~5x more GS-SOR iters at COARSE
+  strides (stride360: 87 vs 17; stride72-D: 146 vs 31) → beyond float32 there's a convergence/
+  coefficient/BC/Briggs divergence at coarse strides. Mira hunting it now.
+  LIVENESS LESSON: use direct `stat` of gmt_surface_py mtime + NOTES_72.md content; find -newermt
+  and transcript-size are unreliable. Do NOT kill on those alone.
+ACTIVE MIRA (1/2): #72 surface a99c5d172211d2453 (active, editing gmt_surface_py).
+- 03:00 USER DECISION: snaphu CP7 → GO pure-Python (CFFI off table). User pushed on "why only
+  statistical parity"; correct to: int16 saturating arith IS replicable (np.int16); only the
+  qsort tie-break on equal-cost candidates is the real question. Dispatched CP7 Mira
+  ae58c2e25473ad9e5 with AIM-BIT-IDENTICAL mandate: read snaphu_solver.c candidatebag/qsort
+  comparator, determine if it's a total order (→ bit-identical achievable) vs returns-0-on-ties
+  (→ qsort-impl-dependent), prove the verdict with file:line; statistical fallback only for a
+  named irreducible tie-break. Source /home/utig5/dliu/gmtsar/snaphu/src/{snaphu_solver.c,snaphu.c},
+  binary .../snaphu/src/snaphu. Checkpoints to NOTES_CP7.md. Builds on landed CP1-6 (v2.1.39).
+ACTIVE MIRAS (2/2): #72 surface a99c5d172211d2453; snaphu CP7 ae58c2e25473ad9e5.
+- 03:33 BOTH Miras active. CP7 ae58c2e25473ad9e5 MAJOR PROGRESS (NOTES_CP7): full SCALAR solver
+  port done — get_cost/recalc_cost/setup_incr_flow_costs/add_new_node/tree_solve(core)/init_network/
+  network_flow_optimize + CP9 grow_conn_comps, with unit tests (running test_snaphu_cp7_cp9 now).
+  CAVEAT: synthetic-validated only; "no real-intf data available for byte-identical comparison" →
+  the bit-identical-vs-statistical VERDICT is still PENDING real-data run vs C snaphu binary.
+  FOLLOW-UP when it returns: land scalar port (additive, not wired) + prepare real wrapped-intf in
+  snaphu .in format and run C-vs-py parity to settle the verdict.
+  #72 a99c5d172211d2453 still ACTIVE (gmt surface comparison proc 86s/103%CPU confirms liveness
+  despite gmt_surface_py 64min source-stale — it runs long CSK comparisons between source edits).
+  LIVENESS REFINED: also check for live `gmt surface` procs, not just source mtime + NOTES.
+ACTIVE MIRAS (2/2): #72 surface a99c5d172211d2453; snaphu CP7 ae58c2e25473ad9e5.
+- 04:05 LANDED v2.1.40 (117831d): snaphu CP7 (TreeSolve/InitNetwork/network_flow_optimize) + CP9
+  (GrowConnComps) — FULL scalar solver port (~3000 lines), 91 tests, 2 real bugs fixed. snaphu_py
+  now CP1-CP9 complete, pure Python, NOT wired (snaphu stays C). Bit-identical verdict was unrun
+  (porting worktree lacked work/ data).
+- 04:05 Dispatched snaphu VERDICT Mira a739b346dc413719d (worktree, reads main work/ via ABSOLUTE
+  path): run C snaphu vs snaphu_py on a real small-case intf (RS2/CSK), compare byte-for-byte,
+  return verdict — bit-identical / statistical-with-named-qsort-tiebreak(file:line) / port-bug.
+  This answers the user's "why only statistical parity" question with hard evidence.
+ACTIVE MIRAS (2/2): #72 surface a99c5d172211d2453; snaphu verdict a739b346dc413719d.
+- 04:38 snaphu VERDICT (a739b346dc413719d) — INCONCLUSIVE on bit-identical. snaphu_py crashes on
+  REAL gmtsar input at CP4 corr-read (ValueError: corr.in size mismatch) BEFORE the solver, so the
+  bit-identical-vs-statistical solver question is STILL UNANSWERED. Root cause = snaphu_py_main I/O
+  format-dispatch bug: hardcodes infileformat=FLOAT_DATA and calls read_alt_line_corr(nrow) instead
+  of (nrow//2). (Rule 10a again: 91 synthetic tests passed; real data exposed it.)
+  CAUTION on the Mira's "C default is COMPLEX_DATA, fix the conf" claim — that's the Rule-10
+  anti-pattern; gmtsar's snaphu WORKS in production so its actual conf/invocation almost certainly
+  sets FLOAT_DATA. Must verify gmtsar's REAL snaphu invocation (utils/snaphu.py + the conf it
+  generates) before "fixing" anything. The port must match gmtsar's actual C behavior, not a
+  "corrected" one.
+  DECISION: snaphu is library-only (NOT wired; pipeline uses C snaphu), so this is off critical
+  path. NOT chasing the format rabbit hole now — #72 surface is higher value. FOLLOW-UP (logged):
+  fix snaphu_py_main I/O dispatch (nrow//2) + verify gmtsar's real format + re-run solver parity to
+  finally settle bit-identical. Bit-identical SOLVER verdict remains OPEN.
+ACTIVE MIRA: #72 surface a99c5d172211d2453 (verdict Mira wrapping up; not replacing its slot — give #72 resources).
+- 05:38 Key clue on snaphu verdict: snaphu.conf.brief leaves INFILEFORMAT/CORRFILEFORMAT COMMENTED
+  (#COMPLEX_DATA / #ALT_LINE_DATA) → gmtsar runs snaphu at DEFAULTS (COMPLEX_DATA in / ALT_LINE corr).
+  So gmtsar's phase.in is almost certainly COMPLEX re/im interleaved (2 floats/px), NOT scalar phase
+  → the prior verdict CRASH was a PREP error (prepared scalar phase.in), not a port bug. Confirms
+  the Rule-10 caution (match gmtsar's REAL invocation).
+  Dispatched verdict-closer Mira ac8347aa47a64373d (worktree, reads main work/+utils/snaphu.py via
+  abs path): STEP1 nail gmtsar's exact phase.in/corr.in format + snaphu CLI from utils/snaphu.py +
+  csh/snaphu.csh → STEP2 reproduce prep on real RS2 intf → STEP3 run C vs snaphu_py same format →
+  STEP4 verdict (bit-identical / statistical+named-tiebreak / port-bug). Any snaphu_py_main I/O fix
+  noted for landing.
+ACTIVE MIRAS (2/2): #72 surface a99c5d172211d2453 (edited 05:20); snaphu verdict-closer ac8347aa47a64373d.
+- 06:35 snaphu VERDICT (definitive, ac8347aa47a64373d):
+  * gmtsar I/O: phase.in = grd2xyz -ZTLf (FLOAT_DATA on disk) but C reads as COMPLEX_DATA default
+    (conf comments it out) → nrow=359 (not 718); corr.in ALT_LINE_DATA. Confirmed via C output sizes.
+  * I/O+cost layers: BIT-IDENTICAL achievable — corr bit-identical, mag float32-precision (4.77e-7).
+    Fix (in /tmp/snaphu_py_work, NOT committed): SnaphuParams.infileformat default COMPLEX_DATA,
+    remove FLOAT_DATA override in snaphu_py_main, add read_complex_data() mirroring ReadComplexFile
+    (snaphu_io.c:2958), dispatch on infileformat.
+  * CP7 SOLVER HANGS on real data (completes only on synthetic 5x5). Candidates: nnondecreasedcostiter
+    never incremented (missing EvaluateTotalCost block) + _tree_solve_ts inner loop /
+    _min_out_cost_node_ts not finding nodes after _init_tree_ts (bkts.curr not updated). 
+  * => v2.1.40 "full scalar port, 91 tests" OVERCLAIMED: tests were synthetic-only and missed the
+    real-data hang (Rule 10a violation — must test on real data). snaphu_py NOT usable end-to-end.
+  * BIT-IDENTICAL ANSWER: I/O+costs bit-identical; SOLVER design target is STATISTICAL equivalence
+    (median|Δ|≤1rad, ≥95% within 2π) per the port's PORTING_PLAN — due to network-flow tie-breaking.
+    Tie-break irreducibility NOT empirically proven (hang blocks the real run). snaphu off critical
+    path (not wired), so no pipeline impact.
+ACTION 06:36: dispatching CP7-hang-fix Mira to apply the /tmp I/O fix + fix the tree_solve hang +
+run on real RS2 data (settle statistical-vs-bit-identical for real). #72 still active (other slot).
+- 07:15 LANDED v2.1.41 (ffd6d5f): #72 gmt_surface_py float32 GS-SOR fix. CSK topo_ra 0.458m→0.066m
+  vs gmt surface. 24 unit tests pass + gated real-scale CSK test (0.066m<0.15m). HONEST LIMIT:
+  0.066m NOT bit-identical, provably can't reach <1e-3m at tol=1e-4/z_rms=408m (both C & Py stop
+  ~40mm from fixed point on different compiler-FP trajectories; true bit-identity needs C's exact
+  FP codegen = infeasible). 66mm = 0.016% on 408m relief, functionally fine. GMTSAR_SURFACE_INPROC
+  stays OFF pending the INPROC=1 full-sweep gate.
+- 07:15 snaphu DEFINITIVE VERDICT (a7798a134c1a1e465): fixed 3 more bugs (integrate_phase WrapPhase
+  seed; tree_solve cyclecost<0 guard + skipthread; network_flow_optimize EvaluateTotalCost). On a
+  30x30 REAL RS2 crop: FLOAT32-EXACT parity with C (CP6/7/8 bit-match) → pure-Python snaphu IS
+  bit-identical-CAPABLE on correctness. BUT: (1) tree_solve CYCLES at >=32x32 (network-simplex
+  strongly-feasible-tree invariant violation, unfixed); (2) PERF ~2800x slower → ~14h/full-grid,
+  spanning-tree simplex non-vectorizable. => pure-Python snaphu is a correct-but-impractical
+  research/audit artifact; production needs the C binary or a cffi extension. Fixes in
+  /tmp/snaphu_py_work (NOT landed — cycling remains + library-only). PAUSING snaphu (verdict clear).
+- 07:16 LAUNCHING INPROC=1 full sweep: test if the float32 surface (0.066m) passes all 21 py-vs-csh
+  → if yes, flip GMTSAR_SURFACE_INPROC default ON = full-Python surface, v2.3.0 candidate.
+- 10:16 INPROC=1 full sweep DONE: 20/21 CLEAN, 1 FAIL → S1_Ridgecrest_EQ phasefilt 0.3516 (>0.15).
+  v2.3.0 (re-enable Python surface default) = NO-GO. The v2.1.41 float32 surface fix resolved CSK
+  (phasefilt 0.23→0.012) but did NOT help S1_Ridgecrest (~0.358→0.3516, unchanged). Root: S1_Ridgecrest
+  H_res is a 77M-cell HIGH-RELIEF grid; its tol=1e-4 GS-SOR convergence-floor residual is large enough
+  that the in-proc surface diverges past phasefilt threshold. CSK (same 77M size, lower relief) passes —
+  so NOT cleanly gateable by grid size. Re-enabling the Python-surface default would risk silent
+  failures on high-relief cases. DECISION: surface stays on the C subprocess (default OFF, unchanged).
+  v2.1.41 float32 fix STANDS as a banked improvement + available opt-in via GMTSAR_SURFACE_INPROC=1
+  (it makes the in-proc surface much more faithful: CSK 0.458m→0.066m). NO v2.3.0 tag.
+  CONCLUSION of the port arc: phasefilt = Python default (v2.1.37); surface = improved float32 but
+  stays C-default (S1_Ridgecrest high-relief convergence floor); snaphu = fully ported but impractical
+  (cycling + 2800x slow), stays C. The two hardest (snaphu solver perf, surface S1_Ridgecrest) are
+  genuine walls (compiler-FP determinism / tol-floor / non-vectorizable simplex), honestly characterized.
