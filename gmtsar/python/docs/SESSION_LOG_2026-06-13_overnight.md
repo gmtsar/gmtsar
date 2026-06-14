@@ -370,6 +370,16 @@ subprocess fallback). Reverting INPROC fixed correctness AND perf in one move.
 ### Post-v2.2.0 (v2.3.0-track) — 3 Miras for the remaining C steps
 - phasefilt port: DONE & validated (bin_py/phasefilt_py, complex-RMS 8.6e-6, 25 tests). Landed
   post-tag, env-gated GMTSAR_PHASEFILT_PY default OFF pending end-to-end sweep.
-- gmt surface fix (Mira #72): in progress.
+- gmt surface fix (Mira #72): RETURNED — **partial, #72 NOT resolved.** The Mira found+fixed a
+  real pixel_reg bug: y_to_row applied floor in the wrong order vs surface.c (±1 row misassignment
+  for pixel-registered grids) + dedup distance missing the +0.5 pixel-center term for sug=None.
+  That improves SMALL-SCALE off-grid parity (0.93m→0.57mm) and 27 unit tests pass. BUT the
+  definitive CSK full-scale check (GMTSAR_SURFACE_INPROC=1 + the fix, 3.3M pts) still gives
+  topo_ra RMS **0.4578m — bit-identical to pre-fix** → the CSK real-terrain divergence comes from
+  a SEPARATE, still-unidentified source in gmt_surface_py (likely solver convergence / multigrid /
+  BCs on huge anisotropic grids, NOT the pixel_reg assignment). Partial fix REVERTED from main
+  (kept clean); preserved in worktree agent-a4a633128d13b7699. #72 remains OPEN. Lesson: the new
+  "RealTerrainParity" tests passed at 64×64 but the real CSK case (6144×12600) still fails — the
+  test coverage must use CSK-scale grids to actually guard #72. GMTSAR_SURFACE_INPROC stays OFF.
 - snaphu port: scoped (I/O done, solver stubbed). USER DECISION: pure-Python ~3-4wk (statistical
   parity only on solver) vs `pip install snaphu` CFFI ~1day (exact, keeps C dep). Worktree preserved.
