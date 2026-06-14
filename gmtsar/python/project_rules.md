@@ -262,6 +262,26 @@ oracle natural — diff our Python output against the C reference on the
 same input, byte-by-byte. No "I think this should give the same answer
 within tolerance" hand-waving.
 
+**10a. The parity test MUST use real, FULL-SCALE input.** (Lesson: Mira #72,
+2026-06-13.) `gmt_surface_py` passed every 64×64 synthetic parity test yet
+diverged 0.458m RMS from `gmt surface` on the real CSK grid (6144×12600,
+3.3M pts). Small/smooth grids hide algorithm-detail divergences (BC handling,
+multigrid stride behavior, convergence on anisotropic heterogeneous data). A
+port is NOT "bit-faithful" until it matches the C binary on a real, full-size
+case from the actual pipeline. Toy-grid tests are necessary but never
+sufficient — they give false confidence.
+
+**10b. When a "verbatim" port still diverges, instrument BOTH sides and
+binary-search to the first divergence.** Don't conclude "the solver is
+inaccurate" — that's never the answer for deterministic visible C. Instead:
+build a debug C binary that dumps intermediate state (per-stride node values,
+constraint coefficients, BC rows, iteration residuals), dump the SAME points
+from the Python on the SAME input, and diff to find the FIRST checkpoint where
+they differ. Fix that one deviation to match C exactly; repeat until the final
+output is byte-identical. Bit-identical is always achievable for deterministic
+open-source C — the only question is finding which line you didn't duplicate.
+THEN vectorize / numba-optimize (Rule 10 step 4).
+
 When in doubt: read the C source. The C author already solved the
 hard problem. Don't re-derive it.
 
