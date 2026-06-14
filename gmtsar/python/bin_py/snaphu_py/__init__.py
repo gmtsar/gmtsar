@@ -16,7 +16,11 @@ from snaphu_py.snaphu_py import (  # noqa: F401
     _calc_wrapped_range_diffs, _calc_wrapped_az_diffs,
     calc_cost_smooth, calc_cost_defo,
     costs_to_bytes_smooth, costs_to_bytes_defo,
+    # CP6: MST init flows
+    mst_init_flows,
+    _cycle_residue, _build_mst_costs, _wrap_phase_c,
+    _Node, _Buckets,
     FLOAT_DATA, ALT_LINE_DATA, SMOOTH, DEFO, TOPO,
-    LARGESHORT, NOCOSTSHELF,
+    LARGESHORT, NOCOSTSHELF, MINSCALARCOST,
     PI, TWOPI,
 )
