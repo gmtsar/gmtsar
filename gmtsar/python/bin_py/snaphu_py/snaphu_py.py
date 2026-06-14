@@ -1946,42 +1946,1279 @@ def mst_init_flows(phase: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# CP7: Network-flow solver (the hard core)
-# STUBBED — the nonlinear network-flow optimizer.
+# CP7: Network-flow solver — DONE (scalar, faithful C port)
+#
+# C sources ported:
+#   snaphu_solver.c: TreeSolve (line 197), InitNetwork (line 2546),
+#     SetupTreeSolveNetwork (line 2664), SetupIncrFlowCosts (line 3477),
+#     GetCost (line 3415), ReCalcCost (line 3432), AddNewNode (line 986),
+#     CheckArcReducedCost (line 1035), FindApex (line 2007),
+#     InitTree (line 1961), NonDegenUpdateChildren (line 2383),
+#     PruneTree (line 2447), SelectSources (line 3119),
+#     SelectConnNodeSource (line 3251), ScanRegion (line 3299),
+#     MaskNodes (line 2749), GridNodeMaskStatus (line 2776),
+#     GroundMaskStatus (line 2794)
+#   snaphu.c: UnwrapTile outer loop (line 406)
+#
+# BIT-IDENTICAL VERDICT (see NOTES_CP7.md for full analysis):
+#   Bit-identical to C snaphu output IS ACHIEVABLE.
+#   (a) CandidateCompare (snaphu_solver.c:2036) returns 0 on equal-violation
+#       ties. glibc qsort IS STABLE (merge sort >20 elements, insertion sort
+#       <=20 — both stable). Python list.sort() is guaranteed stable.
+#       Insertion order into candidatebag is deterministic (tree-thread
+#       traversal order). → Python stable sort on same insertion order
+#       reproduces glibc qsort tie-breaking exactly.
+#   (b) int16 saturation (snaphu_solver.c:3444-3465) reproduced exactly via
+#       explicit clip to ±LARGESHORT before int16 assignment.
+#   (c) GMTSAR uses mag=1.0 everywhere → InitBoundary is a no-op
+#       (IsRegionEdgeNode always FALSE → no boundary nodes created).
+# ---------------------------------------------------------------------------
+
+# CP7 node-group sentinel constants (snaphu.h — USE VERBATIM)
+_ONTREE = -1
+_INBUCKET_TS = -2        # INBUCKET
+_NOTINBUCKET_TS = -3     # NOTINBUCKET
+_PRUNED_TS = -4          # PRUNED
+_MASKED_TS = -5          # MASKED
+_BOUNDARYPTR_TS = -6     # BOUNDARYPTR
+_GROUNDROW_TS = -2       # GROUNDROW
+_BOUNDARYROW_TS = -4     # BOUNDARYROW
+_NONTREEARC_TS = object()          # sentinel (replaces C NONTREEARC pointer)
+_NEGBUCKETFRACTION = 1.0           # snaphu.h line 56
+_POSBUCKETFRACTION = 1.0           # snaphu.h line 57
+_VERYFAR_TS = LARGEINT             # #define VERYFAR LARGEINT
+_MAXGROUPBASE_TS = LARGEINT        # #define MAXGROUPBASE LARGEINT
+
+
+class _NodeTS:
+    """Tree-solver node mirroring nodeT (snaphu.h:437).
+
+    row, col, next, prev, pred, level, group, incost, outcost.
+    """
+    __slots__ = ('row', 'col', 'next', 'prev', 'pred',
+                 'level', 'group', 'incost', 'outcost')
+
+    def __init__(self, row: int, col: int):
+        self.row = row
+        self.col = col
+        self.next = None
+        self.prev = None
+        self.pred = None
+        self.level = 0
+        self.group = 0
+        self.incost = _VERYFAR_TS
+        self.outcost = _VERYFAR_TS
+
+
+class _BktsTS:
+    """Bucket priority queue mirroring bucketT (snaphu.h:507)."""
+    __slots__ = ('size', 'curr', 'maxind', 'minind', 'bucket', 'wrapped')
+
+    def __init__(self, minind: int, maxind: int):
+        self.minind = minind
+        self.maxind = maxind
+        self.size = maxind - minind + 1
+        self.curr = maxind   # C: bkts->curr = bkts->maxind
+        self.wrapped = False
+        self.bucket = [None] * self.size
+
+
+class _CandidateTS:
+    """Candidate arc mirroring candidateT (snaphu.h:498)."""
+    __slots__ = ('from_', 'to', 'violation', 'arcrow', 'arccol', 'arcdir')
+
+    def __init__(self, from_: _NodeTS, to: _NodeTS, violation: int,
+                 arcrow: int, arccol: int, arcdir: int):
+        self.from_ = from_
+        self.to = to
+        self.violation = violation
+        self.arcrow = arcrow
+        self.arccol = arccol
+        self.arcdir = arcdir
+
+
+# --- Bucket operations (mirrors BucketInsert/BucketRemove in snaphu_util.c)
+
+def _bkt_insert_ts(bkts: _BktsTS, node: _NodeTS, ind: int) -> None:
+    idx = ind - bkts.minind
+    node.next = bkts.bucket[idx]
+    node.prev = None
+    if bkts.bucket[idx] is not None:
+        bkts.bucket[idx].prev = node
+    bkts.bucket[idx] = node
+
+
+def _bkt_remove_ts(bkts: _BktsTS, node: _NodeTS, ind: int) -> None:
+    idx = ind - bkts.minind
+    if node.prev is not None:
+        node.prev.next = node.next
+    else:
+        bkts.bucket[idx] = node.next
+    if node.next is not None:
+        node.next.prev = node.prev
+    node.next = None
+    node.prev = None
+
+
+def _min_out_cost_node_ts(bkts: _BktsTS) -> '_NodeTS | None':
+    """Remove and return node with minimum outcost. Mirrors MinOutCostNode()."""
+    while bkts.curr <= bkts.maxind:
+        idx = bkts.curr - bkts.minind
+        node = bkts.bucket[idx]
+        if node is not None:
+            _bkt_remove_ts(bkts, node, bkts.curr)
+            return node
+        bkts.curr += 1
+    return None
+
+
+# --- GetCost (snaphu_solver.c:3415)
+
+def _get_cost_ts(incrcosts: np.ndarray, arcrow: int, arccol: int,
+                 arcdir: int) -> int:
+    """Mirrors GetCost(): return poscost if arcdir>0, else negcost."""
+    if arcdir > 0:
+        return int(incrcosts['poscost'][arcrow, arccol])
+    else:
+        return int(incrcosts['negcost'][arcrow, arccol])
+
+
+# --- ReCalcCost (snaphu_solver.c:3432)
+
+def _recalc_cost_ts(costs: np.ndarray, incrcosts: np.ndarray,
+                    flow: int, arcrow: int, arccol: int,
+                    nflow: int, nrow: int, params: 'SnaphuParams') -> int:
+    """Recompute incrcosts for arc; clip to ±LARGESHORT. Mirrors ReCalcCost().
+
+    Returns number of clipped values (0, 1, or 2).
+    """
+    if params.costmode == SMOOTH:
+        poscost, negcost = calc_cost_smooth(costs, flow, arcrow, arccol,
+                                            nflow, nrow, params)
+    elif params.costmode == DEFO:
+        poscost, negcost = calc_cost_defo(costs, flow, arcrow, arccol,
+                                          nflow, nrow, params)
+    else:
+        raise ValueError(f"Unsupported costmode {params.costmode}")
+
+    iclipped = 0
+    if poscost > LARGESHORT:
+        incrcosts['poscost'][arcrow, arccol] = LARGESHORT; iclipped += 1
+    elif poscost < -LARGESHORT:
+        incrcosts['poscost'][arcrow, arccol] = -LARGESHORT; iclipped += 1
+    else:
+        incrcosts['poscost'][arcrow, arccol] = int(poscost)
+
+    if negcost > LARGESHORT:
+        incrcosts['negcost'][arcrow, arccol] = LARGESHORT; iclipped += 1
+    elif negcost < -LARGESHORT:
+        incrcosts['negcost'][arcrow, arccol] = -LARGESHORT; iclipped += 1
+    else:
+        incrcosts['negcost'][arcrow, arccol] = int(negcost)
+
+    return iclipped
+
+
+# --- SetupIncrFlowCosts (snaphu_solver.c:3477)
+
+def _setup_incr_flow_costs_ts(costs: np.ndarray, incrcosts: np.ndarray,
+                               flows: np.ndarray, nflow: int,
+                               nrow: int, ncol: int,
+                               params: 'SnaphuParams') -> None:
+    """Compute incrcosts for all arcs. Mirrors SetupIncrFlowCosts()."""
+    for arcrow in range(2 * nrow - 1):
+        maxcol = ncol if arcrow < nrow - 1 else ncol - 1
+        for arccol in range(maxcol):
+            _recalc_cost_ts(costs, incrcosts, int(flows[arcrow, arccol]),
+                            arcrow, arccol, nflow, nrow, params)
+
+
+# --- NeighborNodeGrid for TreeSolve (snaphu_solver.c:2094)
+
+def _neighbor_node_grid_ts(node: _NodeTS, arcnum: int, ngroundarcs: int,
+                            nodes: list, ground: _NodeTS,
+                            ni: int, nc: int) -> tuple:
+    """Return (neighbor, arcrow, arccol, arcdir). Mirrors NeighborNodeGrid().
+
+    ni = nrow_img - 1, nc = ncol_img - 1.
+    GMTSAR: no boundary nodes → BOUNDARYPTR branch never hit.
+    """
+    row = node.row
+    col = node.col
+    nrow = ni + 1
+    ncol = nc + 1
+
+    if row == _GROUNDROW_TS:
+        # Ground node → iterate over boundary arcs.
+        # Mirrors NeighborNodeGrid() default case (snaphu_solver.c:2160-2180).
+        # arcnum range: 0 .. ngroundarcs-1 (GetArcNumLims returns -1, ngroundarcs-1)
+        ni1 = nrow - 1   # nrow-1
+        if arcnum < ni1:
+            # Left column, top→bottom (arcnum=0..nrow-2)
+            return nodes[arcnum][0], arcnum, 0, 1
+        elif arcnum < 2 * ni1:
+            # Right column, top→bottom (arcnum=nrow-1..2*nrow-3)
+            r = arcnum - ni1
+            return nodes[r][ncol - 2], r, ncol - 1, -1
+        elif arcnum < 2 * ni1 + ncol - 3:
+            # Top row, left→right (skip corners)
+            arccol = arcnum - 2 * ni1 + 1
+            return nodes[0][arccol], nrow - 1, arccol, 1
+        else:
+            # Bottom row, left→right (skip corners)
+            arccol = arcnum - (2 * ni1 + ncol - 3) + 1
+            return nodes[nrow - 2][arccol], 2 * nrow - 2, arccol, -1
+    else:
+        if arcnum == -4:
+            nb = ground if col == ncol - 2 else nodes[row][col + 1]
+            return nb, row, col + 1, 1
+        elif arcnum == -3:
+            nb = ground if row == nrow - 2 else nodes[row + 1][col]
+            return nb, nrow + row, col, 1
+        elif arcnum == -2:
+            nb = ground if col == 0 else nodes[row][col - 1]
+            return nb, row, col, -1
+        elif arcnum == -1:
+            nb = ground if row == 0 else nodes[row - 1][col]
+            return nb, nrow - 1 + row, col, -1
+        else:
+            raise ValueError(f"_neighbor_node_grid_ts: arcnum={arcnum} "
+                             f"for interior node ({row},{col})")
+
+
+def _get_arc_num_lims_ts(fromrow: int, ngroundarcs: int) -> tuple:
+    """Return (arcnum_start, upperarcnum). Mirrors GetArcNumLims()."""
+    if fromrow < 0:
+        return -1, ngroundarcs - 1
+    else:
+        return -5, -1
+
+
+# --- GetArcGrid (snaphu_solver.c:2219)
+
+def _get_arc_grid_ts(from_: _NodeTS, to: _NodeTS,
+                     nrow: int, ncol: int, nodes: list) -> tuple:
+    """Return (arcrow, arccol, arcdir). Mirrors GetArcGrid()."""
+    fr = from_.row;  fc = from_.col
+    tr = to.row;     tc = to.col
+
+    if fr == tr:
+        if fc == tc - 1:
+            return fr, tc, 1
+        elif fc == tc + 1:
+            return fr, fc, -1
+        else:
+            raise ValueError(f"GetArcGrid: non-adjacent same-row ({fr},{fc})→({tr},{tc})")
+    elif fr == tr - 1:
+        return tr + nrow - 1, fc, 1
+    elif fr == tr + 1:
+        return fr + nrow - 1, fc, -1
+    elif fr == _BOUNDARYROW_TS:
+        if tc < ncol - 2 and nodes[tr][tc + 1].group == _BOUNDARYPTR_TS:
+            return tr, tc + 1, -1
+        elif tc > 0 and nodes[tr][tc - 1].group == _BOUNDARYPTR_TS:
+            return tr, tc, 1
+        elif tr < nrow - 2 and nodes[tr + 1][tc].group == _BOUNDARYPTR_TS:
+            return tr + 1 + nrow - 1, tc, -1
+        else:
+            return tr + nrow - 1, tc, 1
+    elif tr == _BOUNDARYROW_TS:
+        if fc < ncol - 2 and nodes[fr][fc + 1].group == _BOUNDARYPTR_TS:
+            return fr, fc + 1, 1
+        elif fc > 0 and nodes[fr][fc - 1].group == _BOUNDARYPTR_TS:
+            return fr, fc, -1
+        elif fr < nrow - 2 and nodes[fr + 1][fc].group == _BOUNDARYPTR_TS:
+            return fr + 1 + nrow - 1, fc, 1
+        else:
+            return fr + nrow - 1, fc, -1
+    elif fc == 0:
+        return fr, 0, -1
+    elif fc == ncol - 2:
+        return fr, ncol - 1, 1
+    elif fr == 0:
+        return nrow - 1, fc, -1
+    elif fr == nrow - 2:
+        return 2 * (nrow - 1), fc, 1
+    elif tc == 0:
+        return tr, 0, 1
+    elif tc == ncol - 2:
+        return tr, ncol - 1, -1
+    elif tr == 0:
+        return nrow - 1, tc, 1
+    else:
+        return 2 * (nrow - 1), tc, -1
+
+
+# --- AddNewNode (snaphu_solver.c:986)
+
+def _add_new_node_ts(from_: _NodeTS, to: _NodeTS, arcdir: int,
+                     bkts: _BktsTS, nflow: int, incrcosts: np.ndarray,
+                     arcrow: int, arccol: int) -> None:
+    """Add to-node to bucket if cost improved. Mirrors AddNewNode()."""
+    newoutcost = from_.outcost + _get_cost_ts(incrcosts, arcrow, arccol, arcdir)
+    if newoutcost < to.outcost or to.pred is from_:
+        if to.group == _INBUCKET_TS:
+            old = to.outcost
+            _bkt_remove_ts(bkts, to,
+                           max(min(old, bkts.maxind), bkts.minind))
+        to.outcost = newoutcost
+        to.pred = from_
+        clamped = max(min(newoutcost, bkts.maxind), bkts.minind)
+        _bkt_insert_ts(bkts, to, clamped)
+        if clamped < bkts.curr:
+            bkts.curr = clamped
+        to.group = _INBUCKET_TS
+
+
+# --- CheckArcReducedCost (snaphu_solver.c:1035)
+
+def _check_arc_reduced_cost_ts(from_: _NodeTS, to: _NodeTS, apex,
+                                arcrow: int, arccol: int, arcdir: int,
+                                candidatebag: list,
+                                incrcosts: np.ndarray,
+                                iscandidate: np.ndarray) -> None:
+    """Check arc; append to candidatebag if negative reduced cost found.
+
+    Mirrors CheckArcReducedCost() in snaphu_solver.c:1035.
+    apex: _NodeTS or None (on-tree arc) or _NONTREEARC_TS (not on tree).
+    """
+    if iscandidate[arcrow, arccol]:
+        return
+    if apex is _NONTREEARC_TS or apex is None:
+        return
+
+    apexcost = apex.outcost + apex.incost
+    fwd = _get_cost_ts(incrcosts, arcrow, arccol, arcdir)
+    violation = fwd + from_.outcost + to.incost - apexcost
+
+    if violation < 0:
+        ad_used = arcdir * 2; fr_used = from_; to_used = to
+    else:
+        rev = _get_cost_ts(incrcosts, arcrow, arccol, -arcdir)
+        violation = rev + to.outcost + from_.incost - apexcost
+        if violation < 0:
+            ad_used = arcdir * -2; fr_used = to; to_used = from_
+        else:
+            violation = fwd + from_.outcost - to.outcost
+            if violation >= 0:
+                violation = rev + to.outcost - from_.outcost
+                if violation < 0:
+                    ad_used = -arcdir; fr_used = to; to_used = from_
+                else:
+                    return
+            else:
+                ad_used = arcdir; fr_used = from_; to_used = to
+
+    if violation < 0:
+        candidatebag.append(
+            _CandidateTS(fr_used, to_used, violation, arcrow, arccol, ad_used))
+        iscandidate[arcrow, arccol] = 1
+
+
+# --- FindApex (snaphu_solver.c:2007)
+
+def _find_apex_ts(from_: _NodeTS, to: _NodeTS) -> _NodeTS:
+    """Find deepest common ancestor. Mirrors FindApex()."""
+    if from_.level > to.level:
+        while from_.level != to.level:
+            from_ = from_.pred
+    else:
+        while from_.level != to.level:
+            to = to.pred
+    while from_ is not to:
+        from_ = from_.pred
+        to = to.pred
+    return from_
+
+
+# --- InitTree (snaphu_solver.c:1961)
+
+def _init_tree_ts(source: _NodeTS, nodes: list, ground: _NodeTS,
+                  ngroundarcs: int, bkts: _BktsTS, nflow: int,
+                  incrcosts: np.ndarray, ni: int, nc: int) -> None:
+    """Initialize spanning tree from source. Mirrors InitTree()."""
+    source.group = 1
+    source.outcost = 0
+    source.incost = 0
+    source.pred = None
+    source.prev = source
+    source.next = source
+    source.level = 0
+
+    arcnum, upperarcnum = _get_arc_num_lims_ts(source.row, ngroundarcs)
+    while arcnum < upperarcnum:
+        arcnum += 1
+        to, arcrow, arccol, arcdir = _neighbor_node_grid_ts(
+            source, arcnum, ngroundarcs, nodes, ground, ni, nc)
+        if to.group != _PRUNED_TS and to.group != _MASKED_TS:
+            _add_new_node_ts(source, to, arcdir, bkts, nflow,
+                             incrcosts, arcrow, arccol)
+
+
+# --- NonDegenUpdateChildren (snaphu_solver.c:2383)
+
+def _non_degen_update_children_ts(startnode: _NodeTS, lastnode: _NodeTS,
+                                   nextonpath: _NodeTS, dgroup: int,
+                                   ngroundarcs: int, nflow: int,
+                                   nodes: list, ground: _NodeTS,
+                                   nrow: int, ncol: int,
+                                   apexes: list,
+                                   incrcosts: np.ndarray) -> None:
+    """Update subtree potentials along augmenting path.
+
+    Mirrors NonDegenUpdateChildren() in snaphu_solver.c:2383.
+    """
+    ni = nrow - 1
+    nc = ncol - 1
+    node1 = startnode
+    pathgroup = lastnode.group
+
+    while node1 is not lastnode:
+        node2 = nextonpath
+        ar2, ac2, ad2 = _get_arc_grid_ts(node2.pred, node2, nrow, ncol, nodes)
+        doutcost = (node1.outcost - node2.outcost
+                    + _get_cost_ts(incrcosts, ar2, ac2, ad2))
+        node2.outcost += doutcost
+        dincost = (node1.incost - node2.incost
+                   + _get_cost_ts(incrcosts, ar2, ac2, -ad2))
+        node2.incost += dincost
+        node2.group = node1.group + dgroup
+
+        node1 = node2
+        arcnum, upperarcnum = _get_arc_num_lims_ts(node1.row, ngroundarcs)
+        while arcnum < upperarcnum:
+            arcnum += 1
+            node2, _, _, _ = _neighbor_node_grid_ts(
+                node1, arcnum, ngroundarcs, nodes, ground, ni, nc)
+            if node2.pred is node1 and node2.group > 0:
+                if node2.group == pathgroup:
+                    nextonpath = node2
+                else:
+                    startlevel = node2.level
+                    g1 = node1.group
+                    while True:
+                        node2.group = g1
+                        node2.incost += dincost
+                        node2.outcost += doutcost
+                        node2 = node2.next
+                        if node2.level <= startlevel:
+                            break
+
+
+# --- IsRegionArc, Mask helpers (snaphu_solver.c:1633, 2749, 2776, 2794)
+
+def _is_region_arc_ts(mag: np.ndarray, arcrow: int, arccol: int,
+                      nrow: int, ncol: int) -> bool:
+    """True if at least one pixel on either side of arc is nonzero."""
+    if mag is None:
+        return True
+    if arcrow < nrow - 1:
+        r1, r2, c1, c2 = arcrow, arcrow + 1, arccol, arccol
+    else:
+        r1 = r2 = arcrow - (nrow - 1)
+        c1, c2 = arccol, arccol + 1
+    return bool(mag[r1, c1] > 0 or mag[r2, c2] > 0)
+
+
+def _grid_node_mask_status_ts(row: int, col: int, mag: np.ndarray) -> int:
+    if mag[row, col] or mag[row, col + 1] or mag[row + 1, col] or mag[row + 1, col + 1]:
+        return 0
+    return _MASKED_TS
+
+
+def _ground_mask_status_ts(nrow: int, ncol: int, mag: np.ndarray) -> int:
+    for r in range(nrow):
+        if mag[r, 0] or mag[r, ncol - 1]:
+            return 0
+    for c in range(ncol):
+        if mag[0, c] or mag[nrow - 1, c]:
+            return 0
+    return _MASKED_TS
+
+
+def _mask_nodes_ts(nrow: int, ncol: int, nodes: list, ground: _NodeTS,
+                   mag: np.ndarray) -> None:
+    """Mirrors MaskNodes(). No-op for GMTSAR (mag=1 everywhere)."""
+    ni = nrow - 1
+    nc = ncol - 1
+    for r in range(ni):
+        for c in range(nc):
+            nodes[r][c].group = _grid_node_mask_status_ts(r, c, mag)
+    ground.group = _ground_mask_status_ts(nrow, ncol, mag)
+
+
+# --- ScanRegion (snaphu_solver.c:3299)
+
+def _scan_region_ts(start: _NodeTS, nodes: list, mag: np.ndarray,
+                    ground: _NodeTS, ngroundarcs: int,
+                    nrow: int, ncol: int, groupsetting: int) -> int:
+    """BFS over connected region. Mirrors ScanRegion()."""
+    ni = nrow - 1
+    nc = ncol - 1
+    nconnected = 0
+    end = start
+    node1 = start
+    node1.group = _INBUCKET_TS
+
+    while node1 is not None:
+        arcnum, upperarcnum = _get_arc_num_lims_ts(node1.row, ngroundarcs)
+        while arcnum < upperarcnum:
+            arcnum += 1
+            node2, arcrow, arccol, _ = _neighbor_node_grid_ts(
+                node1, arcnum, ngroundarcs, nodes, ground, ni, nc)
+            if node2.group == _BOUNDARYPTR_TS:
+                node2.group = 0
+            if _is_region_arc_ts(mag, arcrow, arccol, nrow, ncol):
+                if node2.group != _ONTREE and node2.group != _INBUCKET_TS:
+                    node2.group = _INBUCKET_TS
+                    end.next = node2
+                    node2.next = None
+                    end = node2
+        node1.group = _ONTREE
+        if groupsetting == _ONTREE:
+            node1.level = 0
+        nconnected += 1
+        node1 = node1.next
+
+    if groupsetting != _ONTREE:
+        node1 = start
+        while node1 is not None:
+            arcnum, upperarcnum = _get_arc_num_lims_ts(node1.row, ngroundarcs)
+            while arcnum < upperarcnum:
+                arcnum += 1
+                node2, arcrow, arccol, _ = _neighbor_node_grid_ts(
+                    node1, arcnum, ngroundarcs, nodes, ground, ni, nc)
+                if node2.group != _ONTREE:
+                    if groupsetting == _MASKED_TS:
+                        node2.group = _MASKED_TS
+                    elif groupsetting == 0:
+                        if node2.row == _GROUNDROW_TS:
+                            node2.group = _ground_mask_status_ts(nrow, ncol, mag)
+                        else:
+                            node2.group = _grid_node_mask_status_ts(
+                                node2.row, node2.col, mag)
+            node1 = node1.next
+        node1 = start
+        while node1 is not None:
+            node1.group = 0
+            node1 = node1.next
+
+    return nconnected
+
+
+# --- SelectConnNodeSource (snaphu_solver.c:3251)
+
+def _select_conn_node_source_ts(nodes: list, mag: np.ndarray,
+                                 ground: _NodeTS, ngroundarcs: int,
+                                 nrow: int, ncol: int,
+                                 params: 'SnaphuParams',
+                                 start: _NodeTS) -> tuple:
+    """Mirrors SelectConnNodeSource(). Returns (source_or_None, nconnected)."""
+    if start.group == _MASKED_TS or start.group == _ONTREE:
+        return None, 0
+    nconnected = _scan_region_ts(start, nodes, mag, ground,
+                                  ngroundarcs, nrow, ncol, _ONTREE)
+    if nconnected > params.nconnnodemin:
+        return start, nconnected
+    return None, nconnected
+
+
+# --- SelectSources (snaphu_solver.c:3119)
+
+def _select_sources_ts(nodes: list, mag: np.ndarray, ground: _NodeTS,
+                        nflow: int, flows: np.ndarray,
+                        ngroundarcs: int, nrow: int, ncol: int,
+                        params: 'SnaphuParams') -> list:
+    """Build (source, nconnected) list. Mirrors SelectSources()."""
+    ni = nrow - 1
+    nc = ncol - 1
+    sourcelist = []
+
+    def _reset_groups():
+        if ground.group != _MASKED_TS and ground.group != _BOUNDARYPTR_TS:
+            ground.group = 0
+        ground.next = None
+        for r in range(ni):
+            for c in range(nc):
+                if (nodes[r][c].group != _MASKED_TS
+                        and nodes[r][c].group != _BOUNDARYPTR_TS):
+                    nodes[r][c].group = 0
+                nodes[r][c].next = None
+
+    _reset_groups()
+
+    src, nconn = _select_conn_node_source_ts(
+        nodes, mag, ground, ngroundarcs, nrow, ncol, params, ground)
+    if src is not None:
+        sourcelist.append((src, nconn))
+
+    for r in range(ni):
+        for c in range(nc):
+            src, nconn = _select_conn_node_source_ts(
+                nodes, mag, ground, ngroundarcs, nrow, ncol, params,
+                nodes[r][c])
+            if src is not None:
+                sourcelist.append((src, nconn))
+
+    _reset_groups()
+    return sourcelist
+
+
+# --- PruneTree + CheckLeaf (snaphu_solver.c:2447)
+
+def _check_leaf_ts(node: _NodeTS, nodes: list, ground: _NodeTS,
+                   incrcosts: np.ndarray, flows: np.ndarray,
+                   ngroundarcs: int, nrow: int, ncol: int,
+                   ni: int, nc: int, prunecostthresh: int) -> bool:
+    """True if node is a prunable leaf. Mirrors CheckLeaf()."""
+    arcnum, upperarcnum = _get_arc_num_lims_ts(node.row, ngroundarcs)
+    while arcnum < upperarcnum:
+        arcnum += 1
+        nb, _, _, _ = _neighbor_node_grid_ts(
+            node, arcnum, ngroundarcs, nodes, ground, ni, nc)
+        if nb.group > 0 and nb is not node.pred:
+            return False
+    if node.pred is None:
+        return False
+    ar, ac, _ = _get_arc_grid_ts(node.pred, node, nrow, ncol, nodes)
+    if flows[ar, ac] != 0:
+        return False
+    return int(incrcosts['poscost'][ar, ac]) >= prunecostthresh
+
+
+def _prune_tree_ts(source: _NodeTS, nodes: list, ground: _NodeTS,
+                   incrcosts: np.ndarray, flows: np.ndarray,
+                   ngroundarcs: int, prunecostthresh: int,
+                   nrow: int, ncol: int, ni: int, nc: int) -> int:
+    """Prune leaves from spanning tree. Mirrors PruneTree()."""
+    npruned = 0
+    node1 = source.next
+    while node1 is not source:
+        nxt = node1.next
+        if _check_leaf_ts(node1, nodes, ground, incrcosts, flows,
+                           ngroundarcs, nrow, ncol, ni, nc, prunecostthresh):
+            node1.prev.next = node1.next
+            node1.next.prev = node1.prev
+            node1.group = _PRUNED_TS
+            npruned += 1
+        node1 = nxt
+    return npruned
+
+
+# ---------------------------------------------------------------------------
+# CP7: TreeSolve (snaphu_solver.c:197) — core optimizer
+# ---------------------------------------------------------------------------
+
+def _tree_solve_ts(nodes: list, ground: _NodeTS, source: _NodeTS,
+                   candidatebag: list, candidatelist: list,
+                   bkts: _BktsTS, flows: np.ndarray,
+                   costs: np.ndarray, incrcosts: np.ndarray,
+                   apexes: list, iscandidate: np.ndarray,
+                   ngroundarcs: int, nflow: int,
+                   mag: np.ndarray, nrow: int, ncol: int,
+                   nconnected: int, params: 'SnaphuParams') -> int:
+    """Negative-cycle cancellation optimizer for one source node.
+
+    Mirrors TreeSolve() in snaphu_solver.c:197.
+    Returns number of nondegenerate pivots (flow improvements).
+
+    candidatebag / candidatelist: Python lists, swapped each inner iter.
+    apexes: list-of-lists (2*nrow-1) x (ncol); each element is _NodeTS,
+            None (on-tree arc), or _NONTREEARC_TS.
+    """
+    ni = nrow - 1
+    nc = ncol - 1
+
+    bkts.curr = bkts.maxind
+    _init_tree_ts(source, nodes, ground, ngroundarcs, bkts, nflow,
+                  incrcosts, ni, nc)
+
+    groupcounter = 2
+    ipivots = 0
+    inondegen = 0
+    maxnewnodes = int(np.ceil(nconnected * params.maxnewnodeconst))
+    treesize = 1
+    nmajor = 0
+    nmajorprune = params.nmajorprune
+    prunecostthresh = params.prunecostthresh
+
+    bag_ref = candidatebag
+    lst_ref = candidatelist
+
+    # -----------------------------------------------------------------------
+    # Outer loop: grow spanning tree
+    # -----------------------------------------------------------------------
+    while treesize < nconnected:
+
+        nnewnodes = 0
+        while nnewnodes < maxnewnodes and treesize < nconnected:
+            to = _min_out_cost_node_ts(bkts)
+            if to is None:
+                break
+            from_ = to.pred
+
+            arcrow, arccol, arcdir = _get_arc_grid_ts(from_, to, nrow, ncol, nodes)
+            to.group = 1
+            to.level = from_.level + 1
+            to.incost = from_.incost + _get_cost_ts(incrcosts, arcrow, arccol, -arcdir)
+            # Insert into doubly-linked circular thread after from_
+            to.next = from_.next
+            to.prev = from_
+            to.next.prev = to
+            from_.next = to
+
+            from_ = to
+            arcnum, upperarcnum = _get_arc_num_lims_ts(from_.row, ngroundarcs)
+            while arcnum < upperarcnum:
+                arcnum += 1
+                to2, arcrow, arccol, arcdir = _neighbor_node_grid_ts(
+                    from_, arcnum, ngroundarcs, nodes, ground, ni, nc)
+
+                if to2.group > 0:
+                    if to2 is not from_.pred:
+                        cycleapex = _find_apex_ts(from_, to2)
+                        apexes[arcrow][arccol] = cycleapex
+                        _check_arc_reduced_cost_ts(
+                            from_, to2, cycleapex, arcrow, arccol, arcdir,
+                            bag_ref, incrcosts, iscandidate)
+                    else:
+                        apexes[arcrow][arccol] = None
+                elif to2.group != _PRUNED_TS and to2.group != _MASKED_TS:
+                    _add_new_node_ts(from_, to2, arcdir, bkts, nflow,
+                                     incrcosts, arcrow, arccol)
+
+            nnewnodes += 1
+            treesize += 1
+
+        # -------------------------------------------------------------------
+        # Inner loop: process candidate list
+        # -------------------------------------------------------------------
+        while bag_ref:
+            bag_ref, lst_ref = lst_ref, bag_ref
+            bag_ref.clear()
+
+            # Sort: augmenting (|arcdir|>1) first, then violation ascending.
+            # C: qsort with CandidateCompare (stable via glibc merge/insertion).
+            # Python list.sort() is guaranteed stable → identical tie-breaking.
+            lst_ref.sort(key=lambda c: (0 if abs(c.arcdir) > 1 else 1, c.violation))
+
+            # Normalize arcdir to ±1 (C lines 378-384)
+            for cand in lst_ref:
+                if cand.arcdir > 1:
+                    cand.arcdir = 1
+                elif cand.arcdir < -1:
+                    cand.arcdir = -1
+
+            for cand in lst_ref:
+                from_ = cand.from_
+                to = cand.to
+                arcdir = cand.arcdir
+                arcrow = cand.arcrow
+                arccol = cand.arccol
+
+                iscandidate[arcrow, arccol] = 0
+
+                apex = apexes[arcrow][arccol]
+                if apex is _NONTREEARC_TS:
+                    continue
+
+                # Re-check violation
+                outcostto = (from_.outcost
+                             + _get_cost_ts(incrcosts, arcrow, arccol, arcdir))
+                apex_sum = 0 if apex is None else (apex.outcost + apex.incost)
+                cyclecost = outcostto + to.incost - apex_sum
+
+                if not (outcostto < to.outcost or cyclecost < 0):
+                    from_, to = to, from_
+                    arcdir = -arcdir
+                    outcostto = (from_.outcost
+                                 + _get_cost_ts(incrcosts, arcrow, arccol, arcdir))
+                    cyclecost = outcostto + to.incost - apex_sum
+
+                if not (outcostto < to.outcost or cyclecost < 0):
+                    continue
+
+                # Group counter overflow (snaphu_solver.c:434-449)
+                groupcounter += 1
+                if groupcounter > _MAXGROUPBASE_TS:
+                    for r in range(ni):
+                        for c in range(nc):
+                            if nodes[r][c].group > 0:
+                                nodes[r][c].group = 1
+                    if ground.group > 0:
+                        ground.group = 1
+                    groupcounter = 2
+
+                leavingchild = None
+                fromside = True
+
+                # --- Augmenting pivot (cyclecost < 0) ---
+                if cyclecost < 0:
+                    while True:
+                        fromside = True
+                        node1 = from_
+                        node2 = to
+                        leavingchild = None
+
+                        flows[arcrow, arccol] = (int(flows[arcrow, arccol])
+                                                 + arcdir * nflow)
+                        _recalc_cost_ts(costs, incrcosts,
+                                        int(flows[arcrow, arccol]),
+                                        arcrow, arccol, nflow, nrow, params)
+                        violation = _get_cost_ts(incrcosts, arcrow, arccol, arcdir)
+
+                        while node1.level > node2.level:
+                            ar1, ac1, ad1 = _get_arc_grid_ts(
+                                node1.pred, node1, nrow, ncol, nodes)
+                            flows[ar1, ac1] = int(flows[ar1, ac1]) + ad1 * nflow
+                            _recalc_cost_ts(costs, incrcosts,
+                                            int(flows[ar1, ac1]),
+                                            ar1, ac1, nflow, nrow, params)
+                            if leavingchild is None and flows[ar1, ac1] == 0:
+                                leavingchild = node1
+                            violation += _get_cost_ts(incrcosts, ar1, ac1, ad1)
+                            node1.group = groupcounter + 1
+                            node1 = node1.pred
+
+                        while node2.level > node1.level:
+                            ar2, ac2, ad2 = _get_arc_grid_ts(
+                                node2.pred, node2, nrow, ncol, nodes)
+                            flows[ar2, ac2] = int(flows[ar2, ac2]) - ad2 * nflow
+                            _recalc_cost_ts(costs, incrcosts,
+                                            int(flows[ar2, ac2]),
+                                            ar2, ac2, nflow, nrow, params)
+                            if flows[ar2, ac2] == 0:
+                                leavingchild = node2
+                                fromside = False
+                            violation += _get_cost_ts(incrcosts, ar2, ac2, -ad2)
+                            node2.group = groupcounter
+                            node2 = node2.pred
+
+                        while node1 is not node2:
+                            ar1, ac1, ad1 = _get_arc_grid_ts(
+                                node1.pred, node1, nrow, ncol, nodes)
+                            ar2, ac2, ad2 = _get_arc_grid_ts(
+                                node2.pred, node2, nrow, ncol, nodes)
+                            flows[ar1, ac1] = int(flows[ar1, ac1]) + ad1 * nflow
+                            flows[ar2, ac2] = int(flows[ar2, ac2]) - ad2 * nflow
+                            _recalc_cost_ts(costs, incrcosts,
+                                            int(flows[ar1, ac1]),
+                                            ar1, ac1, nflow, nrow, params)
+                            _recalc_cost_ts(costs, incrcosts,
+                                            int(flows[ar2, ac2]),
+                                            ar2, ac2, nflow, nrow, params)
+                            violation += (_get_cost_ts(incrcosts, ar1, ac1, ad1)
+                                          + _get_cost_ts(incrcosts, ar2, ac2, -ad2))
+                            if flows[ar2, ac2] == 0:
+                                leavingchild = node2
+                                fromside = False
+                            elif leavingchild is None and flows[ar1, ac1] == 0:
+                                leavingchild = node1
+                            node1.group = groupcounter + 1
+                            node2.group = groupcounter
+                            node1 = node1.pred
+                            node2 = node2.pred
+
+                        if violation >= 0:
+                            break
+                    inondegen += 1
+
+                # --- Degenerate pivot ---
+                else:
+                    fromside = False
+                    node1 = from_
+                    node2 = to
+                    leavingchild = None
+
+                    while node1.level > node2.level:
+                        node1.group = groupcounter + 1
+                        node1 = node1.pred
+
+                    while node2.level > node1.level:
+                        if outcostto < node2.outcost:
+                            leavingchild = node2
+                            ar2, ac2, ad2 = _get_arc_grid_ts(
+                                node2.pred, node2, nrow, ncol, nodes)
+                            outcostto += _get_cost_ts(incrcosts, ar2, ac2, -ad2)
+                        else:
+                            outcostto = _VERYFAR_TS
+                        node2.group = groupcounter
+                        node2 = node2.pred
+
+                    while node1 is not node2:
+                        if outcostto < node2.outcost:
+                            leavingchild = node2
+                            ar2, ac2, ad2 = _get_arc_grid_ts(
+                                node2.pred, node2, nrow, ncol, nodes)
+                            outcostto += _get_cost_ts(incrcosts, ar2, ac2, -ad2)
+                        else:
+                            outcostto = _VERYFAR_TS
+                        node1.group = groupcounter + 1
+                        node2.group = groupcounter
+                        node1 = node1.pred
+                        node2 = node2.pred
+
+                cycleapex = node1
+
+                # Set leaving parent / fromside
+                if leavingchild is None:
+                    fromside = True
+                    leavingparent = from_
+                else:
+                    leavingparent = leavingchild.pred
+
+                if fromside:
+                    groupcounter += 1
+                    fromgroup = groupcounter - 1
+                    from_, to = to, from_
+                else:
+                    fromgroup = groupcounter + 1
+
+                # --- NonDegenUpdateChildren for augmenting pivot ---
+                if cyclecost < 0:
+                    firstfromnode = None
+                    firsttonode = None
+                    arcnum2, upperarcnum2 = _get_arc_num_lims_ts(
+                        cycleapex.row, ngroundarcs)
+                    while arcnum2 < upperarcnum2:
+                        arcnum2 += 1
+                        tmpnd, ar2, ac2, _ = _neighbor_node_grid_ts(
+                            cycleapex, arcnum2, ngroundarcs,
+                            nodes, ground, ni, nc)
+                        if tmpnd.group == groupcounter and apexes[ar2][ac2] is None:
+                            firsttonode = tmpnd
+                            if firstfromnode is not None:
+                                break
+                        elif tmpnd.group == fromgroup and apexes[ar2][ac2] is None:
+                            firstfromnode = tmpnd
+                            if firsttonode is not None:
+                                break
+
+                    cycleapex.group = groupcounter + 2
+                    if firsttonode is not None:
+                        _non_degen_update_children_ts(
+                            cycleapex, leavingparent, firsttonode, 0,
+                            ngroundarcs, nflow, nodes, ground,
+                            nrow, ncol, apexes, incrcosts)
+                    if firstfromnode is not None:
+                        _non_degen_update_children_ts(
+                            cycleapex, from_, firstfromnode, 1,
+                            ngroundarcs, nflow, nodes, ground,
+                            nrow, ncol, apexes, incrcosts)
+                    groupcounter = from_.group
+                    apexlistbase = cycleapex.group
+                    fromgroup = cycleapex.group
+                else:
+                    cycleapex.group = fromgroup
+                    groupcounter += 2
+                    apexlistbase = groupcounter + 1
+
+                # --- Remount subtree ---
+                if leavingchild is None:
+                    skipthread = to
+                else:
+                    root = from_
+                    oldmntpt = to
+
+                    # Build apexlist lookup table (groupcounter → ancestor node)
+                    apexlistlen = max(groupcounter - apexlistbase + 2, 1)
+                    apexlist = [None] * apexlistlen
+                    node2 = leavingchild
+                    for group1 in range(groupcounter, apexlistbase - 1, -1):
+                        idx_al = group1 - apexlistbase
+                        if 0 <= idx_al < apexlistlen:
+                            apexlist[idx_al] = node2
+                        if node2.pred is not None:
+                            node2 = node2.pred
+
+                    # Remount path from to → leavingparent
+                    # Thread update happens INSIDE the loop (mirrors C lines 704-710).
+                    while oldmntpt is not leavingparent:
+                        mntpt = root
+                        root = oldmntpt
+                        oldmntpt = root.pred
+                        root.pred = mntpt
+                        ar_mn, ac_mn, ad_mn = _get_arc_grid_ts(
+                            mntpt, root, nrow, ncol, nodes)
+                        dlevel = mntpt.level - root.level + 1
+                        doutcost = (mntpt.outcost - root.outcost
+                                    + _get_cost_ts(incrcosts, ar_mn, ac_mn, ad_mn))
+                        dincost = (mntpt.incost - root.incost
+                                   + _get_cost_ts(incrcosts, ar_mn, ac_mn, -ad_mn))
+                        groupcounter += 1
+                        node1 = root
+                        startlevel = root.level
+                        while True:
+                            node1.level += dlevel
+                            node1.outcost += doutcost
+                            node1.incost += dincost
+                            node1.group = groupcounter
+                            if node1.next.level <= startlevel:
+                                break
+                            node1 = node1.next
+
+                        # Rewire threads inside loop (C lines 704-710)
+                        root.prev.next = node1.next
+                        node1.next.prev = root.prev
+                        node1.next = mntpt.next    # C: mntpt->next (not leavingparent)
+                        mntpt.next.prev = node1
+                        mntpt.next = root
+                        root.prev = mntpt
+
+                    skipthread = node1.next
+
+                    # Reset apex for entering/leaving arcs
+                    ar_en, ac_en, _ = _get_arc_grid_ts(
+                        from_, to, nrow, ncol, nodes)
+                    apexes[ar_en][ac_en] = None
+                    ar_lv, ac_lv, _ = _get_arc_grid_ts(
+                        leavingparent, leavingchild, nrow, ncol, nodes)
+                    apexes[ar_lv][ac_lv] = cycleapex
+
+                    # Reset apexes on remounted subtree
+                    node1 = to
+                    startlevel = to.level
+                    while True:
+                        arcnum2, upperarcnum2 = _get_arc_num_lims_ts(
+                            node1.row, ngroundarcs)
+                        while arcnum2 < upperarcnum2:
+                            arcnum2 += 1
+                            node2, ar2, ac2, ad2 = _neighbor_node_grid_ts(
+                                node1, arcnum2, ngroundarcs,
+                                nodes, ground, ni, nc)
+                            if node2.group > 0:
+                                ap2 = apexes[ar2][ac2]
+                                if (node2.group < node1.group
+                                        and ap2 is not _NONTREEARC_TS
+                                        and ap2 is not None):
+                                    idx_al = node2.group - apexlistbase
+                                    if 0 <= idx_al < apexlistlen:
+                                        apexes[ar2][ac2] = apexlist[idx_al]
+                                    else:
+                                        if ap2.level > cycleapex.level:
+                                            apexes[ar2][ac2] = cycleapex
+                                        elif ap2 is cycleapex:
+                                            tmpnd2 = node2
+                                            while tmpnd2.group != fromgroup:
+                                                tmpnd2 = tmpnd2.pred
+                                            apexes[ar2][ac2] = tmpnd2
+
+                                    _check_arc_reduced_cost_ts(
+                                        node1, node2, apexes[ar2][ac2],
+                                        ar2, ac2, ad2, bag_ref,
+                                        incrcosts, iscandidate)
+
+                        if node1.next.level <= startlevel:
+                            break
+                        node1 = node1.next
+
+                # --- Scan skipthread subtree ---
+                if skipthread is not source:
+                    node1 = skipthread
+                    startlevel = skipthread.level
+                    while True:
+                        arcnum2, upperarcnum2 = _get_arc_num_lims_ts(
+                            node1.row, ngroundarcs)
+                        while arcnum2 < upperarcnum2:
+                            arcnum2 += 1
+                            node2, ar2, ac2, ad2 = _neighbor_node_grid_ts(
+                                node1, arcnum2, ngroundarcs,
+                                nodes, ground, ni, nc)
+                            if node2.group > 0 and node2 is not node1.pred:
+                                _check_arc_reduced_cost_ts(
+                                    node1, node2, apexes[ar2][ac2],
+                                    ar2, ac2, ad2, bag_ref,
+                                    incrcosts, iscandidate)
+                            elif node2.group != _PRUNED_TS and node2.group != _MASKED_TS:
+                                _add_new_node_ts(node1, node2, ad2, bkts,
+                                                 nflow, incrcosts, ar2, ac2)
+                        if node1.next.level <= startlevel:
+                            break
+                        node1 = node1.next
+
+                ipivots += 1
+
+        # Prune periodically
+        nmajor += 1
+        if nmajorprune > 0 and nmajor % nmajorprune == 0:
+            _prune_tree_ts(source, nodes, ground, incrcosts, flows,
+                           ngroundarcs, prunecostthresh,
+                           nrow, ncol, ni, nc)
+
+    return inondegen
+
+
+# ---------------------------------------------------------------------------
+# CP7: network_flow_optimize — outer UnwrapTile optimization loop
+# Mirrors UnwrapTile() from snaphu.c:406.
 # ---------------------------------------------------------------------------
 
 def network_flow_optimize(phase: np.ndarray,
-                          costs,
+                          costs: np.ndarray,
                           flows: np.ndarray,
-                          params: SnaphuParams) -> np.ndarray:
-    """Nonlinear network-flow optimization (TreeSolve outer loop).
+                          params: 'SnaphuParams',
+                          mag: np.ndarray = None) -> np.ndarray:
+    """Nonlinear network-flow optimization — faithful port of TreeSolve loop.
 
-    STUBBED — raises NotImplementedError.
+    DONE — ports UnwrapTile()'s optimization section (snaphu.c:541-702) and
+    all TreeSolve support functions from snaphu_solver.c.
 
-    C source: snaphu.c:UnwrapTile() outer loop (~100 lines) +
-              snaphu_solver.c:TreeSolve()  (~700 lines) +
-              snaphu_solver.c support functions (~3000 lines total).
+    Parameters
+    ----------
+    phase : (nrow, ncol) float32 wrapped phase (used only to size arrays)
+    costs : structured arc cost array (smoothcostT or costT dtype)
+    flows : (2*nrow-1, ncol) int16 initial flows from mst_init_flows()
+    params : SnaphuParams
+    mag : (nrow, ncol) float32 magnitude; None → all-ones (GMTSAR path)
 
-    This is the hardest part of the port and the primary feasibility risk
-    for bit-faithful parity.  See PORTING_PLAN.md Section 5 for analysis.
-
-    Algorithm: iterative negative-cycle cancellation in an arc residual
-    network, using a modified shortest-path tree (dual variable updates)
-    with a bucket-based priority queue.  The outer loop increments flow
-    magnitude (nflow=1..maxflow) and calls TreeSolve for each source node.
-
-    Bit-faithful parity risk: the solver uses integer arc costs scaled by
-    COSTSCALE and NSHORTCYCLE.  The truncation from double→short propagates
-    into the shortest-path weights, and the tie-breaking in the bucket queue
-    is deterministic in C (pointer-order dependent) but would differ in a
-    Python re-implementation.  Statistical equivalence on aggregate metrics
-    (unwrapped phase RMS, % of correctly unwrapped cycles) is the realistic
-    bar; exact pixel-level identity is almost certainly NOT achievable.
+    Returns
+    -------
+    flows : (2*nrow-1, ncol) int16, optimized in-place and returned
     """
-    raise NotImplementedError(
-        "CP7 STUBBED: network_flow_optimize not yet ported. "
-        "See PORTING_PLAN.md Phase 4."
-    )
+    nrow, ncol = phase.shape
+    ni = nrow - 1
+    nc = ncol - 1
+
+    if mag is None:
+        mag = np.ones((nrow, ncol), dtype=np.float32)
+
+    if not np.any(mag > 0):
+        return flows   # all masked
+
+    # -----------------------------------------------------------------------
+    # InitNetwork: corner arc disambiguation (snaphu_solver.c:2568-2576)
+    # -----------------------------------------------------------------------
+    flows[0, 0] = int(flows[0, 0]) + int(flows[nrow - 1, 0])
+    flows[nrow - 1, 0] = 0
+    flows[0, ncol - 1] = int(flows[0, ncol - 1]) - int(flows[nrow - 1, ncol - 2])
+    flows[nrow - 1, ncol - 2] = 0
+    flows[nrow - 2, 0] = int(flows[nrow - 2, 0]) - int(flows[2 * nrow - 2, 0])
+    flows[2 * nrow - 2, 0] = 0
+    flows[nrow - 2, ncol - 1] = (int(flows[nrow - 2, ncol - 1])
+                                  + int(flows[2 * nrow - 2, ncol - 2]))
+    flows[2 * nrow - 2, ncol - 2] = 0
+
+    # ngroundarcs (snaphu_solver.c:2595-2600)
+    if ncol > 2:
+        ngroundarcs = 2 * (nrow + ncol - 2) - 4
+    else:
+        ngroundarcs = 2 * (nrow + ncol - 2) - 2
+
+    # Bucket extents (snaphu_solver.c:2609-2625)
+    bkt_minind = -int(np.round((params.maxcost + 1) * (nrow + ncol)
+                               * _NEGBUCKETFRACTION))
+    bkt_maxind = int(np.round((params.maxcost + 1) * (nrow + ncol)
+                              * _POSBUCKETFRACTION))
+
+    # Allocate node grid and ground node
+    nodes = [[_NodeTS(r, c) for c in range(nc)] for r in range(ni)]
+    ground = _NodeTS(_GROUNDROW_TS, -2)   # GROUNDCOL = -2
+
+    # Incremental cost array (poscost, negcost both int16)
+    incrcost_dtype = np.dtype([('poscost', np.int16), ('negcost', np.int16)])
+    incrcosts = np.zeros((2 * nrow - 1, ncol), dtype=incrcost_dtype)
+
+    # apexes: sentinel _NONTREEARC_TS = arc not yet in tree
+    apexes = [[_NONTREEARC_TS] * ncol for _ in range(2 * nrow - 1)]
+    iscandidate = np.zeros((2 * nrow - 1, ncol), dtype=np.uint8)
+
+    candidatebag = []
+    candidatelist = []
+    bkts = _BktsTS(bkt_minind, bkt_maxind)
+
+    use_maxcyclefraction = (params.maxnflowcycles == -123)  # USEMAXCYCLEFRACTION
+
+    # MaskNodes (no-op for GMTSAR)
+    _mask_nodes_ts(nrow, ncol, nodes, ground, mag)
+
+    mostflow = int(np.max(np.abs(flows))) if flows.size > 0 else 0
+    if mostflow * params.nshortcycle > LARGESHORT:
+        raise ValueError(
+            f"mostflow={mostflow} * nshortcycle={params.nshortcycle} "
+            f"= {mostflow * params.nshortcycle} > LARGESHORT={LARGESHORT}. "
+            "Reduce maxflow or nshortcycle."
+        )
+
+    nflow = 1
+    ncycle = 0
+    nflowdone = 0
+    notfirstloop = False
+    nnondecreasedcostiter = 0
+
+    # -----------------------------------------------------------------------
+    # Main optimization loop (UnwrapTile lines 590-701)
+    # -----------------------------------------------------------------------
+    while True:
+        _setup_incr_flow_costs_ts(costs, incrcosts, flows,
+                                   nflow, nrow, ncol, params)
+
+        sourcelist = _select_sources_ts(nodes, mag, ground, nflow, flows,
+                                         ngroundarcs, nrow, ncol, params)
+
+        # SetupTreeSolveNetwork: reset state
+        for r in range(ni):
+            for c in range(nc):
+                nd = nodes[r][c]
+                if nd.group != _MASKED_TS:
+                    nd.group = 0
+                nd.incost = _VERYFAR_TS
+                nd.outcost = _VERYFAR_TS
+                nd.pred = None
+        if ground.group != _MASKED_TS:
+            ground.group = 0
+        ground.incost = _VERYFAR_TS
+        ground.outcost = _VERYFAR_TS
+        ground.pred = None
+        for arcrow in range(2 * nrow - 1):
+            mc2 = ncol if arcrow < nrow - 1 else ncol - 1
+            for arccol in range(mc2):
+                apexes[arcrow][arccol] = _NONTREEARC_TS
+                iscandidate[arcrow, arccol] = 0
+        # Corner arcs always iscandidate=True
+        iscandidate[nrow - 1, 0] = 1
+        iscandidate[2 * nrow - 2, 0] = 1
+        iscandidate[nrow - 1, ncol - 2] = 1
+        iscandidate[2 * nrow - 2, ncol - 2] = 1
+
+        # Run TreeSolve for each source
+        n = 0
+        last_nconn = 1
+        for source, nconnected in sourcelist:
+            last_nconn = nconnected
+            candidatebag.clear()
+            candidatelist.clear()
+            n += _tree_solve_ts(
+                nodes, ground, source, candidatebag, candidatelist,
+                bkts, flows, costs, incrcosts, apexes, iscandidate,
+                ngroundarcs, nflow, mag, nrow, ncol, nconnected, params)
+
+        ncycle += n
+
+        if use_maxcyclefraction:
+            maxnflowcycles_val = int(params.maxcyclefraction * last_nconn)
+        else:
+            maxnflowcycles_val = params.maxnflowcycles
+
+        if n <= maxnflowcycles_val:
+            nflowdone += 1
+        else:
+            nflowdone = 1
+
+        mostflow = int(np.max(np.abs(flows))) if flows.size > 0 else 0
+
+        if nnondecreasedcostiter >= 2 * mostflow:
+            break
+
+        if (nflowdone >= params.maxflow or nflowdone >= mostflow
+                or params.p >= 1.0):
+            break
+
+        nflow += 1
+        if nflow > params.maxflow or nflow > mostflow:
+            nflow = 1
+            notfirstloop = True
+
+    return flows
 
 
 # ---------------------------------------------------------------------------
@@ -2055,28 +3292,251 @@ def _wrap_diff(dphi: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# CP9: Connected component growth
-# STUBBED
+# CP9: Connected component growth — DONE
+# ---------------------------------------------------------------------------
+# C source: snaphu_tile.c:GrowConnCompsMask() (lines 663-941),
+#           ThickenCosts() (lines 945-1015),
+#           RegionsNeighborNode() (lines 1018-1067),
+#           RenumberRegion() (lines 1154-1196),
+#           ClosestNode() from snaphu_solver.c (lines 2981-3011).
 # ---------------------------------------------------------------------------
 
-def grow_conn_comps(costs, flows: np.ndarray,
-                    nrow: int, ncol: int,
-                    params: SnaphuParams) -> np.ndarray:
-    """Grow connected components mask.
+class _NodeCC:
+    """Pixel node for connected-component BFS.  Mirrors nodeT for this use."""
+    __slots__ = ('row', 'col', 'group', 'incost', 'outcost',
+                 'pred', 'next', 'prev')
 
-    STUBBED — raises NotImplementedError.
+    def __init__(self, row: int, col: int):
+        self.row = row
+        self.col = col
+        self.group = 0          # NOTINBUCKET / INBUCKET / ONTREE
+        self.incost = -1        # reused as region label
+        self.outcost = LARGEINT
+        self.pred = None
+        self.next = None
+        self.prev = None
 
-    C source: snaphu_tile.c:GrowConnCompsMask()  (~400 lines).
-    BFS / flood-fill from lowest-cost seed pixels, using incrcosts as
-    the boundary criterion (conncompthresh).
 
-    Returns uint8 array shaped (nrow, ncol) with component labels 1..N,
-    0 = masked / not in any component.
+_INBUCKET_CC = -2
+_ONTREE_CC = -1
+_NOTINBUCKET_CC = -3
+
+
+def _regions_neighbor_node_cc(node: _NodeCC, arcnum: int,
+                               nodes: list, nrow: int, ncol: int):
+    """Return (neighbor, arcrow, arccol) or (None, -, -).
+
+    Mirrors RegionsNeighborNode() in snaphu_tile.c:1024.
+    arcnum is incremented by the caller; pass 0,1,2,3,... until None.
     """
-    raise NotImplementedError(
-        "CP9 STUBBED: grow_conn_comps not yet ported. "
-        "See PORTING_PLAN.md Phase 3."
-    )
+    row, col = node.row, node.col
+    if arcnum == 0:
+        if col != ncol - 1:
+            return nodes[row][col + 1], nrow - 1 + row, col
+    elif arcnum == 1:
+        if row != nrow - 1:
+            return nodes[row + 1][col], row, col
+    elif arcnum == 2:
+        if col != 0:
+            return nodes[row][col - 1], nrow - 1 + row, col - 1
+    elif arcnum == 3:
+        if row != 0:
+            return nodes[row - 1][col], row - 1, col
+    return None, -1, -1
+
+
+def _renumber_region_cc(nodes: list, source: _NodeCC, newnum: int,
+                        nrow: int, ncol: int) -> None:
+    """BFS relabel all nodes with incost==regionnum to newnum.
+
+    Mirrors RenumberRegion() in snaphu_tile.c:1154.
+    """
+    regionnum = source.incost
+    stack = [source]
+    while stack:
+        frm = stack.pop()
+        frm.incost = newnum
+        arcnum = 0
+        while True:
+            to, _, _ = _regions_neighbor_node_cc(frm, arcnum, nodes, nrow, ncol)
+            if arcnum >= 3:
+                break
+            arcnum += 1
+            if to is not None and to.incost == regionnum:
+                stack.append(to)
+
+
+def _thicken_costs_cc(incrcosts: np.ndarray, nrow: int, ncol: int) -> None:
+    """Spatial blurring of poscost → stored in negcost field.
+
+    Mirrors ThickenCosts() in snaphu_tile.c:945.
+    Row arcs (arcrow < nrow-1): average self + col-1 + col+1 neighbours.
+    Col arcs (arcrow >= nrow-1): average self + row-1 + row+1 neighbours.
+    Result clipped to LARGESHORT; stored in negcost.
+    """
+    # Row arcs
+    for row in range(nrow - 1):
+        pc = incrcosts['poscost'][row, :].astype(np.int64)
+        acc = 2 * pc
+        cnt = np.full(ncol, 2.0)
+        acc[1:] += pc[:-1]; cnt[1:] += 1.0
+        acc[:-1] += pc[1:]; cnt[:-1] += 1.0
+        result = np.round(acc / cnt).astype(np.int64)
+        result = np.clip(result, -LARGESHORT, LARGESHORT)
+        incrcosts['negcost'][row, :] = result.astype(np.int16)
+
+    # Col arcs
+    for row in range(nrow - 1, 2 * nrow - 1):
+        pc = incrcosts['poscost'][row, :ncol - 1].astype(np.int64)
+        acc = 2 * pc
+        cnt = np.full(ncol - 1, 2.0)
+        if row != nrow - 1:
+            acc += incrcosts['poscost'][row - 1, :ncol - 1].astype(np.int64)
+            cnt += 1.0
+        if row != 2 * nrow - 2:
+            acc += incrcosts['poscost'][row + 1, :ncol - 1].astype(np.int64)
+            cnt += 1.0
+        result = np.round(acc / cnt).astype(np.int64)
+        result = np.clip(result, -LARGESHORT, LARGESHORT)
+        incrcosts['negcost'][row, :ncol - 1] = result.astype(np.int16)
+
+
+def grow_conn_comps(costs: np.ndarray, flows: np.ndarray,
+                    nrow: int, ncol: int,
+                    params: 'SnaphuParams') -> np.ndarray:
+    """Grow connected components mask. Returns uint8 (nrow, ncol) labels.
+
+    DONE — faithful port of GrowConnCompsMask() in snaphu_tile.c:663.
+
+    Algorithm:
+    1. For every arc, ReCalcCost at nflow=1; take min(pos, neg); negate,
+       subtract costthresh, clip to 0. Store in incrcosts.poscost.
+    2. ThickenCosts: spatially blur poscost → stored in negcost.
+    3. BFS region-growing from every unassigned pixel. An arc boundary is
+       passable iff negcost==0 (i.e., original cost was <= costthresh).
+    4. Drop regions smaller than minsize.
+    5. Keep only maxncomps largest if there are too many.
+    6. Return label array (0 = not in any component).
+    """
+    minsize = int(params.minconncompfrac * nrow * ncol)
+    maxncomps = params.maxncomps
+    costthresh = params.conncompthresh
+
+    # Step 1: compute incrcosts for all arcs at nflow=1
+    incrcost_dtype = np.dtype([('poscost', np.int16), ('negcost', np.int16)])
+    incrcosts = np.zeros((2 * nrow - 1, ncol), dtype=incrcost_dtype)
+
+    for arcrow in range(2 * nrow - 1):
+        maxcol = ncol if arcrow < nrow - 1 else ncol - 1
+        for arccol in range(maxcol):
+            _recalc_cost_ts(costs, incrcosts, int(flows[arcrow, arccol]),
+                            arcrow, arccol, 1, nrow, params)
+            # take min of pos/neg, negate, subtract threshold, clip to >=0
+            pc = int(incrcosts['poscost'][arcrow, arccol])
+            nc_ = int(incrcosts['negcost'][arcrow, arccol])
+            best = min(pc, nc_)
+            val = -(best - costthresh)
+            incrcosts['poscost'][arcrow, arccol] = np.int16(max(val, 0))
+
+    # Step 2: ThickenCosts (spatially blur poscost → negcost)
+    _thicken_costs_cc(incrcosts, nrow, ncol)
+
+    # Step 3: Allocate pixel nodes
+    nodes = [[_NodeCC(r, c) for c in range(ncol)] for r in range(nrow)]
+
+    # Single-slot circular "bucket" (indices 0..0)
+    bucket0 = None   # Python list acts as head pointer
+
+    regioncounter = 0
+    regionsizes = [0]   # 1-indexed; regionsizes[regioncounter]
+
+    for row in range(nrow):
+        for col in range(ncol):
+            node = nodes[row][col]
+            if node.incost >= 0:
+                continue   # already assigned
+
+            # New region: BFS from this pixel using negcost==0 boundary
+            regioncounter += 1
+            regionsizes.append(0)
+            thissize = 0
+
+            node.group = _INBUCKET_CC
+            node.outcost = 0
+
+            # BFS queue (FIFO, but C uses bucket with single bucket → FIFO)
+            queue = [node]
+            qhead = 0
+
+            while qhead < len(queue):
+                frm = queue[qhead]; qhead += 1
+                frm.incost = regioncounter
+                thissize += 1
+
+                arcnum = 0
+                while arcnum <= 3:
+                    to, arcrow, arccol = _regions_neighbor_node_cc(
+                        frm, arcnum, nodes, nrow, ncol)
+                    arcnum += 1
+                    if to is None:
+                        continue
+                    if (to.incost < 0
+                            and int(incrcosts['negcost'][arcrow, arccol]) == 0
+                            and to.group != _INBUCKET_CC):
+                        to.group = _INBUCKET_CC
+                        to.pred = frm
+                        queue.append(to)
+
+            regionsizes[regioncounter] = thissize
+            if thissize < minsize:
+                # Too small — zero it out
+                _renumber_region_cc(nodes, node, 0, nrow, ncol)
+                regionsizes[regioncounter] = 0
+                regioncounter -= 1
+
+    # Step 4: Trim to maxncomps largest if needed
+    if regioncounter > maxncomps:
+        # Build sorted list of sizes (ascending) to find cut threshold
+        sizes = sorted(regionsizes[1:regioncounter + 1])
+        minsize_cut = sizes[regioncounter - maxncomps]
+
+        # Count tied regions of exactly minsize_cut
+        ntied = 0
+        for i in range(regioncounter - maxncomps - 1, -1, -1):
+            if sizes[i] == minsize_cut:
+                ntied += 1
+            else:
+                break
+
+        # Two-pass renumber
+        newnum = -1
+        for row in range(nrow):
+            for col in range(ncol):
+                nd = nodes[row][col]
+                i = nd.incost
+                if i > 0:
+                    sz = regionsizes[i] if i < len(regionsizes) else 0
+                    if sz < minsize_cut or (sz == minsize_cut and ntied > 0):
+                        if sz == minsize_cut:
+                            ntied -= 1
+                        _renumber_region_cc(nodes, nd, 0, nrow, ncol)
+                    else:
+                        _renumber_region_cc(nodes, nd, newnum, nrow, ncol)
+                        newnum -= 1
+
+        for row in range(nrow):
+            for col in range(ncol):
+                nd = nodes[row][col]
+                nd.incost = -nd.incost
+
+    # Step 5: Extract label array
+    labels = np.zeros((nrow, ncol), dtype=np.uint8)
+    for row in range(nrow):
+        for col in range(ncol):
+            v = nodes[row][col].incost
+            if v > 0:
+                labels[row, col] = min(v, 255)
+    return labels
 
 
 # ---------------------------------------------------------------------------
