@@ -567,3 +567,16 @@ run on real RS2 data (settle statistical-vs-bit-identical for real). #72 still a
   stays C-default (S1_Ridgecrest high-relief convergence floor); snaphu = fully ported but impractical
   (cycling + 2800x slow), stays C. The two hardest (snaphu solver perf, surface S1_Ridgecrest) are
   genuine walls (compiler-FP determinism / tol-floor / non-vectorizable simplex), honestly characterized.
+
+## END OF CAMPAIGN — 2026-06-14 ~18:05
+Autopilot closed (15h overnight + 15h extended). Final state, all committed (git clean):
+- v2.2.0: Python compute-core milestone — 21/21 py-vs-csh clean, 0.88× wall-time vs csh (faster).
+- v2.1.37: phasefilt_py default ON (Goldstein/Baran, bit-faithful).
+- v2.1.38/39/40: snaphu_py CP1–CP9 fully ported (float32-exact on small real crops) but stays the
+  C binary by default — solver cycles ≥32×32 + ~2800× slow (non-vectorizable). Library-only.
+- v2.1.41: gmt_surface_py float32 GS-SOR (CSK 0.458m→0.066m). Opt-in (GMTSAR_SURFACE_INPROC=1);
+  stays C-default — INPROC=1 full sweep was 20/21 (S1_Ridgecrest high-relief tol-floor holdout). v2.3.0 NO-GO.
+Compute cores Python-by-default: xcorr, phasediff, conv, resamp, SAT_llt2rat/baseline, make_los,
+blockmedian, phasefilt. Still C: surface (opt-in Py), snaphu, GMT display/IO.
+OPEN USER DECISIONS: surface (stay C / opt-in-hybrid / tighter-tol); snaphu (stay C / cffi fast-path).
+See docs/AUTOPILOT_SUMMARY_2026-06-14.md. Loop stopped.
