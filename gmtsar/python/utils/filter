@@ -236,7 +236,14 @@ def filter():
     
     print(' ')
     print('FILTER: make the Werner/Goldstain filtered phase ... ...')
-    run('phasefilt -imag imagfilt.grd -real realfilt.grd -amp1 amp1.grd -amp2 amp2.grd -psize 32') 
+    # GMTSAR_PHASEFILT_PY=1 → in-process Goldstein/Baran port (bin_py/phasefilt_py),
+    # C-parity validated (complex-rms 8.6e-6 vs phasefilt C). Default OFF (=gmt subprocess)
+    # pending end-to-end full-sweep validation before flipping the default (v2.3.0-track).
+    _phasefilt_args = '-imag imagfilt.grd -real realfilt.grd -amp1 amp1.grd -amp2 amp2.grd -psize 32'
+    if os.environ.get('GMTSAR_PHASEFILT_PY', '0') == '1':
+        run('phasefilt_py ' + _phasefilt_args)
+    else:
+        run('phasefilt ' + _phasefilt_args)
     run('''gmt grdedit filtphase.grd `gmt grdinfo mask.grd -I- --FORMAT_FLOAT_OUT=%.12lg`''') 
     run('gmt grdmath filtphase.grd mask.grd MUL FLIPUD = phasefilt.grd')
     delete('filtphase.grd')
