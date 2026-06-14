@@ -1,0 +1,23 @@
+{
+  "case": "ALOS_haiti",
+  "tag": "v2.2.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS_haiti.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS",
+    "los_ll.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2009068_2010025/corr_ll.grd": "c72d2c262990b73869938601096982d1",
+    "intf/2009068_2010025/corr_ll.png": "2e62f060429af55dcd1d26530fddb02f",
+    "intf/2009068_2010025/display_amp_ll.png": "bd843d883c1f57fbaa6f0bcda0406dc2",
+    "intf/2009068_2010025/filtcorr.grd": "34de435ab5d2b92fcf9712953304ec06",
+    "intf/2009068_2010025/los_ll.grd": "987929e4390b61545530ccb0c5a9192c",
+    "intf/2009068_2010025/phasefilt.grd": "3d84ae80087d8fd4050ca27d5db4c563",
+    "intf/2009068_2010025/phasefilt_mask_ll.png": "2791bbd810a8fdda38f66ae3a2377d66"
+  }
+}

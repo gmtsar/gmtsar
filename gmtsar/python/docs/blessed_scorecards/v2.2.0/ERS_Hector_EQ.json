@@ -1,0 +1,21 @@
+{
+  "case": "ERS_Hector_EQ",
+  "tag": "v2.2.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ERS_Hector_EQ.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/1999258_1999293/corr_ll.grd": "e6fd127cdc8a56d18ceb1376b9421a35",
+    "intf/1999258_1999293/corr_ll.png": "20122af2372b856763d2077ea3a2014a",
+    "intf/1999258_1999293/display_amp_ll.png": "ed3d29898ed3416672607e20118d949c",
+    "intf/1999258_1999293/filtcorr.grd": "903903777ad8a9f30d80d7bae767f781",
+    "intf/1999258_1999293/phasefilt.grd": "822d3bc151ea972b244f6c43fc34ad29",
+    "intf/1999258_1999293/phasefilt_mask_ll.png": "d6daccc501846d5b8e7cc9207ddf201b"
+  }
+}
