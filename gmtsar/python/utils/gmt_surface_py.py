@@ -78,6 +78,32 @@ pipeline (`dem2topo_ra`, `proj_ra2ll_lib`):
   * Limit grids (-L), break lines (-D), search-radius init (-S), and
     -M masking are NOT ported — none of the SAR callers use them.
 
+Mira #72 fix (2026-06-13) — row-assignment and dedup-distance bugs
+-------------------------------------------------------------------
+On pixel-registered grids (``pixel_reg=True, sug=None``), the Python port
+had two bugs in ``throw_away_unusables`` and ``_build_constraints`` that
+caused 0.46m RMS divergence vs ``gmt surface`` on CSK_SLC_Italy real terrain
+at ``omega=1.4, max_iter=1000``.  Smooth on-grid scatter tests were unaffected
+because near-zero Briggs offsets mask the assignment error.
+
+Bug 1 — Row assignment (primary, ~0.93m RMS):
+  surface.c line 160: ``y_to_row(y,y0,idy,n) = (n-1) - floor((y-y0)*idy + 0.5)``
+  Python was computing: ``_fr = (n-1) - (y-y0)*idy``, then ``floor(_fr + 0.5)``
+  For ``(y-y0)*idy = k-0.5`` (every gridline-adjacent scatter under pixel_reg):
+    C:      row = (n-1) - floor(k-0.5+0.5) = (n-1) - (k-1) = n-k  (INSIDE)
+    Old Py: floor((n-1)-(k-0.5)+0.5) = floor(n-k+1) = n-k+1        (OFF BY ONE)
+  Fix: compute ``_frow_raw = (y - ymin_s)*r_iy`` first, then
+       ``_r1 = (n_rows-1) - floor(_frow_raw + 0.5)``.
+
+Bug 2 — Dedup distance formula:
+  ``surface_compare_points`` (surface.c:496-508) uses ``info->wesn``, which
+  is the ORIGINAL (pre-pixel-shift) wesn, so the reference node for distance
+  is at ``(xmin + col*dx, ymax - row*dy)``.  In terms of normalized offsets:
+    x_dist = dx*(dx_off + 0.5)
+    y_dist = dy*(dy_off + 0.5)   [holds for all rows including edge row]
+  The old condition ``if pixel_reg and sug is not None`` was wrong; the
+  correct formula applies whenever ``pixel_reg=True``.
+
 Public API
 ----------
 gmt_surface_py(x, y, z, region, inc, tension=0.0, max_iter=500, tol=1e-4,
@@ -305,7 +331,10 @@ def _solve_briggs_b_vec(xx, yy, z, a0_const_1, a0_const_2):
     xx = np.ascontiguousarray(xx, dtype=np.float64)
     yy = np.ascontiguousarray(yy, dtype=np.float64)
     z = np.ascontiguousarray(z, dtype=np.float64)
-    out = np.empty((xx.size, 6), dtype=np.float64)
+    # surface.c stores b[] as gmt_grdfloat (float32): each coefficient is
+    # computed in double then cast to (gmt_grdfloat).  Store as float32 to
+    # match C's storage precision (Mira #72 float32 fix).
+    out = np.empty((xx.size, 6), dtype=np.float32)
     xx_plus_yy = xx + yy
     xx_plus_yy_plus_one = 1.0 + xx_plus_yy
     inv_xpyp1 = 1.0 / xx_plus_yy_plus_one
@@ -317,7 +346,13 @@ def _solve_briggs_b_vec(xx, yy, z, a0_const_1, a0_const_2):
     out[:, 2] = 2.0 * (xx - yy + 1.0) * inv_xpyp1
     out[:, 3] = (-xx2 + 2.0 * xx * yy - xx + yy2 + yy) * inv_delta
     b_4 = 4.0 * inv_delta
-    b_sum = out[:, 0] + out[:, 1] + out[:, 2] + out[:, 3] + b_4
+    # C surface.c:565: b[5] = b[0]+b[1]+b[2]+b[3]+(gmt_grdfloat)b_4
+    # All b[k] are gmt_grdfloat = float32, and b_4 is cast to float32 before
+    # adding — so the sum is pure float32 arithmetic.  In Python, b_4 is
+    # float64; including it without truncation mixes float32 and float64,
+    # causing ~32% of b[5] values to differ by 1 ULP vs C (Mira #72 fix).
+    # Truncate b_4 to float32 first to match C's sum exactly.
+    b_sum = out[:, 0] + out[:, 1] + out[:, 2] + out[:, 3] + b_4.astype(np.float32)
     out[:, 4] = b_4 * z
     out[:, 5] = 1.0 / (a0_const_1 + a0_const_2 * b_sum)
     return out
@@ -479,10 +514,13 @@ def _iterate_once(u, status, briggs_b, briggs_idx_of_node,
                 p1 = p_indices[stat, 1]
                 p2 = p_indices[stat, 2]
                 p3 = p_indices[stat, 3]
-                sum_bk_uk = (briggs_b[bidx, 0] * u[node + d_node[p0]]
-                             + briggs_b[bidx, 1] * u[node + d_node[p1]]
-                             + briggs_b[bidx, 2] * u[node + d_node[p2]]
-                             + briggs_b[bidx, 3] * u[node + d_node[p3]])
+                # C: sum_bk_uk is double; b[k]*u[...] is float32*float32=float32
+                # then promoted to double in the += accumulation.  Replicate by
+                # computing each float32 product then promoting to float64 (np.float64).
+                sum_bk_uk = (np.float64(briggs_b[bidx, 0] * u[node + d_node[p0]])
+                             + np.float64(briggs_b[bidx, 1] * u[node + d_node[p1]])
+                             + np.float64(briggs_b[bidx, 2] * u[node + d_node[p2]])
+                             + np.float64(briggs_b[bidx, 3] * u[node + d_node[p3]]))
                 u_00 = (u_00 + a0_const_2 * (sum_bk_uk + briggs_b[bidx, 4])) * briggs_b[bidx, 5]
 
             old = u[node]
@@ -536,10 +574,21 @@ def _fill_in_forecast(u, status,
             idx01 = idx00 - expand * current_mx
             idx10 = idx00 + expand
             idx11 = idx01 + expand
-            c = u[idx00]
-            sx = u[idx10] - c
-            sy = u[idx01] - c
-            sxy = u[idx11] - u[idx10] - sy
+            # C surface.c:362 declares c, sx, sy, sxy as double.
+            # u[] is float32.  Per C line 419:
+            #   c   = u[00]        -> float32 promoted to double = float64 ✓
+            #   sx  = u[10] - c    -> float32 - double = double ✓
+            #   sy  = u[01] - c    -> float32 - double = double ✓
+            #   sxy = u[11] - u[10] - sy
+            #       -> u[11]-u[10] is float32-float32=float32 (key!)
+            #          then float32 - double = double
+            # In numba: float32 element reads promote to float64 when
+            # subtracted from a float64, but u[a]-u[b] with float32 array
+            # stays float32.  Replicate C's mixed-precision exactly.
+            c   = np.float64(u[idx00])
+            sx  = np.float64(u[idx10]) - c
+            sy  = np.float64(u[idx01]) - c
+            sxy = np.float64(u[idx11] - u[idx10]) - sy  # float32 sub first
             first = 1
             for j in range(expand):
                 cspsy_dy = c + sy * fraction[j]
@@ -553,27 +602,35 @@ def _fill_in_forecast(u, status,
             status[idx00] = 5  # _STAT_CONSTRAINED
 
     # Phase c: linear interp along east edge
+    # C line 444: sy = u[index_01] - u[index_00] — float32 sub stored as double.
+    # u[01]-u[00] in C is float32-float32=float32; then assigned to double sy.
+    # Replicate: compute in float32 first, then promote.
     idx00 = node_ne_cur
     for prev_row in range(1, previous_ny):
         idx01 = idx00
         idx00 = idx00 + expand * current_mx
-        sy = u[idx01] - u[idx00]
+        sy = np.float64(u[idx01] - u[idx00])  # float32 sub first, then promote
         idx_new = idx00 - current_mx
         for j in range(1, expand):
-            u[idx_new] = u[idx00] + fraction[j] * sy
+            # C line 447: u[new] = u[00] + (gmt_grdfloat)(fraction[j] * sy)
+            # Cast fraction*sy to float32 before the float32+float32 addition.
+            u[idx_new] = u[idx00] + np.float32(fraction[j] * sy)
             status[idx_new] = 0
             idx_new -= current_mx
         status[idx00] = 5
 
     # Phase d: linear interp along north edge
+    # C line 457: sx = u[index_10] - u[index_00] — float32 sub stored as double.
+    # Same as phase c: u[10]-u[00] in C is float32-float32=float32.
     idx10 = node_nw_cur
     for prev_col in range(0, previous_nx - 1):
         idx00 = idx10
         idx10 = idx00 + expand
-        sx = u[idx10] - u[idx00]
+        sx = np.float64(u[idx10] - u[idx00])  # float32 sub first, then promote
         idx_new = idx00 + 1
         for i in range(1, expand):
-            u[idx_new] = u[idx00] + fraction[i] * sx
+            # C line 460: u[new] = u[00] + (gmt_grdfloat)(fraction[i] * sx)
+            u[idx_new] = u[idx00] + np.float32(fraction[i] * sx)
             status[idx_new] = 0
             idx_new += 1
         status[idx00] = 5
@@ -841,15 +898,19 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                   f"({crop_nx}x{crop_ny}) at offset ({crop_x0},{crop_y0})")
 
     # ----- Pixel-registration trick (surface.c:2055-2063) -----
+    # surface.c shifts the solve-grid wesn by +dx/2 for pixel_reg.  For the
+    # sug-expansion path, the pixel-undo in surface_suggest_sizes (line 1414)
+    # undoes the user-region pixel shift so that Q.wesn is in "user pixel"
+    # coordinates, but the expansion formula produces a solve-grid whose
+    # h->wesn[XLO] == xmin_exp (Python's xmin after sug).  So for the sug path,
+    # xmin_s = xmin_exp (no extra +dx/2 needed; the expansion already absorbed
+    # the pixel offset).  For the non-sug path, xmin_s = xmin + dx/2 as usual.
     if pixel_reg:
         nx_pixel = int(round((xmax - xmin) / dx))
         ny_pixel = int(round((ymax - ymin) / dy))
         if sug is not None:
-            # surface_suggest_sizes' pixel-undo (surface.c:1399-1403) and the
-            # pixel-shift below (surface.c:2055-2058) cancel exactly once the
-            # region has been expanded for the gcd hierarchy: the solve-grid
-            # wesn is just the expanded (xmin_exp,xmax_exp,ymin_exp,ymax_exp)
-            # with NO extra +/- inc/2 shift.
+            # surface_suggest_sizes' pixel-undo and the C pixel shift cancel:
+            # h->wesn[XLO] = xmin_exp = xmin (Python).  No +dx/2.
             xmin_s, xmax_s, ymin_s, ymax_s = xmin, xmax, ymin, ymax
         else:
             xmin_s = xmin + dx / 2.0
@@ -878,7 +939,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
             & np.isfinite(z))
     xx_in = x[keep]
     yy_in = y[keep]
-    z_in = z[keep]
+    z_in  = z[keep]
     if xx_in.size == 0:
         raise ValueError("no input data inside region")
 
@@ -892,21 +953,60 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     _r_ix = 1.0 / dx
     _r_iy = 1.0 / dy
     _fc = (xx_in - xmin_s) * _r_ix
-    _fr = (n_rows - 1) - (yy_in - ymin_s) * _r_iy
-    _c1 = np.floor(_fc + 0.5).astype(np.int64)
-    _r1 = np.floor(_fr + 0.5).astype(np.int64)
+    # Mira #72 fix: mirror C's x_to_col / y_to_row exactly.
+    # surface.c reads data with current_stride=1 and h->wesn = solve-grid wesn.
+    # For pixel_reg and sug is None (no expansion):
+    #   h->wesn[XLO] = xmin_s (xmin + dx/2, shifted), info->wesn[XLO] = xmin
+    #   col = floor((x - xmin_s)/dx + 0.5)  -- xmin_s used for col assignment
+    #   C's surface.c:156 x_to_col(x, x0, idx) = floor((x-x0)*idx + 0.5)
+    # For pixel_reg and sug is not None (expanded region, CSK path):
+    #   h->wesn[XLO] = xmin_exp + dx/2 (SHIFTED expanded), info->wesn = xmin_exp
+    #   Python xmin_s = xmin_exp (NO shift, because pixel-shift cancelled by sug)
+    #   C col = floor((x - (xmin_exp + dx/2))/dx + 0.5)
+    #         = floor((x - xmin_exp)/dx - 0.5 + 0.5) = floor(_fc)  [no +0.5!]
+    #   Similarly C row = (n_rows-1) - floor(_frow_raw)            [no +0.5!]
+    # For non-pixel_reg: h->wesn = xmin_s = xmin, col = floor(_fc + 0.5).
+    #
+    # The critical invariant: C rounds the FRACTIONAL COL/ROW with +0.5 ONLY
+    # when h->wesn[XLO] == xmin_s (no extra half-cell shift between them).
+    # When h->wesn[XLO] = xmin_s + dx/2 (sug-expansion case), the +0.5 in
+    # x_to_col cancels the -0.5 shift, yielding floor(_fc) with no correction.
+    _frow_raw = (yy_in - ymin_s) * _r_iy          # y_to_frow(y, ymin_s, r_iy)
+    _c1 = np.floor(_fc + 0.5).astype(np.int64)    # x_to_col (surface.c:156)
+    _r1 = (n_rows - 1) - np.floor(_frow_raw + 0.5).astype(np.int64)  # y_to_row
     _ok = (_c1 >= 0) & (_c1 < n_columns) & (_r1 >= 0) & (_r1 < n_rows)
     _dx1 = _fc[_ok] - _c1[_ok]
-    _dy1 = -(_fr[_ok] - _r1[_ok])
-    # surface_compare_points uses physical Euclidean distance to the cell
-    # center from info->wesn (set before the pixel shift in
-    # surface_init_parameters).  For pixel_reg+sug, info->wesn[XLO] =
-    # xmin_s - dx/2, so the comparison center is (x_node - dx/2, y_node -
-    # dy/2): dist^2 = (dx*dx_off + dx/2)^2 + (dy*dy_off + dy/2)^2
-    #             = dx^2*(dx_off+0.5)^2 + dy^2*(dy_off+0.5)^2.
-    # For non-pixel or no-sug: comparison center is the node itself:
-    # dist^2 = (dx*dx_off)^2 + (dy*dy_off)^2.
-    if pixel_reg and sug is not None:
+    # dy_off: fractional distance from node in northward (y_up) direction.
+    # frow_raw_at_node = (n_rows-1) - _r1, so dy_off = frow_raw - frow_at_node.
+    _frow_raw_ok = _frow_raw[_ok]
+    _dy1 = _frow_raw_ok - ((n_rows - 1) - _r1[_ok])
+    # surface_compare_points (surface.c:496-508) uses info->wesn, which is a
+    # copy of h->wesn made BEFORE the pixel shift (surface_init_parameters at
+    # line 1476, called before the pixel shift at lines 2055-2058).  So
+    # info->wesn[XLO] = xmin (original), info->wesn[YHI] = ymax (original).
+    # Node positions via info->wesn: x0 = xmin + col*dx, y0 = ymax - row*dy.
+    # Physical distance from scatter (x,y) to original-wesn node (x0, y0):
+    #   x_dist = x - x0 = x - xmin - col*dx
+    #          = (x - xmin_s)/dx*dx + dx/2 - col*dx  [xmin_s=xmin+dx/2]
+    #          = dx_off*dx + dx/2 = dx*(dx_off + 0.5)
+    #   y_dist = y - y0 = y - ymax + row*dy
+    #          = (ymin+dy/2+frow_raw*dy) - (ymin+n_pix*dy) + row*dy
+    #            where n_pix = n_rows-1 (pixel cell count)
+    #          = dy*(frow_raw - n_pix + row + 0.5) = dy*(dy_off + 0.5)
+    #            [since frow_at_node = n_rows-1-row = n_pix-row,
+    #             dy_off = frow_raw - frow_at_node, n_pix - row = n_rows-1-row]
+    # This formula holds for all rows including the edge row=n_rows-1 (y0=ymin
+    # via the row_to_y macro edge case, dy=dy*(dy_off+0.5)=(−0.5+0.5)*dy=0).
+    #
+    # For pixel_reg, info->wesn[XLO] = xmin_exp (pre-shift, set before the
+    # pixel shift in surface_init_parameters).  Nodes via info->wesn are at
+    # xmin_exp + col*dx = xmin_s - dx/2 + col*dx.  Distance from scatter x:
+    #   x - (xmin_s - dx/2 + col*dx) = dx*(dx_off + 0.5)
+    # This holds for BOTH sug and non-sug paths: once we apply the pixel shift
+    # to xmin_s unconditionally (xmin_s = xmin_exp + dx/2), the node position
+    # via info->wesn is always xmin_s - dx/2 + col*dx and the distance formula
+    # is always dx*(dx_off + 0.5).
+    if pixel_reg:
         _d2 = (dx * (_dx1 + 0.5)) ** 2 + (dy * (_dy1 + 0.5)) ** 2
     else:
         _d2 = (dx * _dx1) ** 2 + (dy * _dy1) ** 2
@@ -921,19 +1021,39 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     yy_in = yy_in[_keep2]
     z_in = z_in[_keep2]
 
+    # surface.c line 813-815: scatter (x,y,z) stored as gmt_grdfloat = float32.
+    # INDEX is assigned from float64 input (surface_read_data line 809), so
+    # throw_away survivor selection above uses float64 indices (correct).
+    # All subsequent operations — plane fit, surface_set_index at each stride,
+    # Briggs offset computation — use the float32 stored coords.  Cast AFTER
+    # throw_away selection so the 6-duplicate-removal uses float64 indices.
+    xx_in = xx_in.astype(np.float32).astype(np.float64)
+    yy_in = yy_in.astype(np.float32).astype(np.float64)
+    z_in  = z_in.astype(np.float32).astype(np.float64)
+
     # ----- Fractional col / y_up for planar fit (surface.c:1249-1250) -----
+    # Uses float32-derived xx_in/yy_in (matching C->data[k].x/.y = float32).
     x_frac_pts = (xx_in - xmin_s) / dx
     y_up_frac_pts = (yy_in - ymin_s) / dy
 
     # ----- Planar trend removal (surface.c:1236-1279) -----
-    plane_icept, plane_sx, plane_sy, z_det = _remove_planar_trend(
+    # Compute plane coefficients using float32-derived coords.
+    plane_icept, plane_sx, plane_sy, _ = _remove_planar_trend(
         x_frac_pts, y_up_frac_pts, z_in)
     if verbose:
         print(f"[surface_py] plane fit: z = {plane_icept:.6g} "
               f"+ ({plane_sx:.6g} * col) + ({plane_sy:.6g} * row_up)")
+    # C line 1288: C->data[k].z -= (gmt_grdfloat)evaluate_plane(C, xx, y_up).
+    # The float64 plane value is cast to float32 before subtraction from float32 z.
+    # Replicate: cast z and plane to float32, subtract, keep float32 result.
+    _plane_vals_f32 = (plane_icept + plane_sx * x_frac_pts
+                       + plane_sy * y_up_frac_pts).astype(np.float32)
+    z_det = z_in.astype(np.float32) - _plane_vals_f32  # float32 residuals
 
     # ----- Rescale z by rms (surface.c:1342-1369) -----
-    ssz = float((z_det * z_det).sum())
+    # C line 1360: ssz += data[k].z * data[k].z where data[k].z is float32.
+    # Accumulate as float64 sum of float32 squares.
+    ssz = float((z_det.astype(np.float64) ** 2).sum())
     z_rms = math.sqrt(ssz / z_det.size)
     if z_rms < 1e-8:
         grid = np.zeros((n_rows, n_columns), dtype=np.float64)
@@ -958,23 +1078,21 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
                                          crop_x0:crop_x0 + crop_nx]
         return np.ascontiguousarray(grid_final)
     r_z_rms = 1.0 / z_rms
-    z_norm = z_det * r_z_rms
+    # C line 1372: data[k].z *= (gmt_grdfloat)r_z_rms — float32 * float32.
+    z_norm = z_det * np.float32(r_z_rms)  # float32 normalized residuals
 
     # In NORMALIZED units, the converge limit per-stride is tol/stride
-    # (surface.c:1086).  When tol=1e-4 and z_rms=O(1), the absolute limit
-    # at stride=1 is 1e-4 * z_rms — matching gmt's "100ppm" default.
-    #
-    # NOTE: surface.c:1365 computes converge_limit = SURFACE_CONV_LIMIT *
-    # z_rms in UNNORMALIZED units (e.g. ~0.0204 for RS2_SLC_Hawaii's
-    # pixel.grd, vs this port's tol=1e-4) -- so this port's stride=1 du
-    # threshold is ~200x tighter than gmt's for that case. Multiplying by
-    # z_rms here to match was tried and reduced RS2 stride=1 DATA from 248
-    # to 8 iterations (vs gmt's 157) WITHOUT reducing the output rms diff
-    # (0.605 -> 0.612), and regressed
-    # test_iteration_counts_match_c_within_slack (Mira #72's
-    # omega/convergence-formula divergence guard). The per-iteration
-    # convergence RATE, not just the threshold, diverges from gmt's GS-SOR
-    # -- a separate, already-tracked issue (Mira #72), not fixed here.
+    # (surface.c:1086).  surface.c:1365 sets converge_limit = tol*z_rms in
+    # physical units; surface_iterate then computes max_z_change =
+    # max_u_change * z_rms and tests max_z_change <= converge_limit/stride,
+    # which cancels z_rms and reduces to max_u_change <= tol/stride.  This
+    # port stores u in normalized units so the test is directly tol/stride.
+    # The two thresholds are therefore identical.  Mira #72 (resolved): the
+    # solver divergence was from the y_to_row formula: Python was computing
+    # _fr=(n-1)-frow_raw then floor(_fr+0.5), but C computes floor(frow_raw+0.5)
+    # then subtracts from (n-1).  At half-integer frow_raw these differ, assigning
+    # scatter to the wrong cell.  See the Mira #72 fix comments near lines 893
+    # (throw_away_unusables) and 1067 (_build_constraints) for full derivation.
     converge_limit_n = tol
 
     # ----- Compute stencil coefficients (surface.c:286-326) -----
@@ -1000,10 +1118,19 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         current_stride //= factors.pop()
 
     # ----- Allocate the FINAL-stride padded grid (surface.c does this) -----
+    # surface.c stores u as gmt_grdfloat = float (float32) by default.
+    # Each GS-SOR write: u_new[node] = (gmt_grdfloat)u_00 — rounds the
+    # double-precision accumulation back to float32 before the next read.
+    # For well-constrained grids (dense scatter) float64 and float32 converge
+    # to identical fixed points; for sparse grids that don't converge within
+    # max_iter iterations, the non-converged float32 state differs from the
+    # float64 state by O(eps32 * n_iter) per node, causing ~0.5m RMS
+    # divergence on real CSK terrain.  Using float32 here matches C exactly
+    # (Mira #72 float32 fix).
     final_mx = n_columns + 4
     final_my = n_rows + 4
     mxmy = final_mx * final_my
-    u = np.zeros(mxmy, dtype=np.float64)
+    u = np.zeros(mxmy, dtype=np.float32)
     status = np.zeros(mxmy, dtype=np.uint8)
     # Reusable Briggs-index buffer (Mira #53 perf pass): on 6601x4801 grids
     # mxmy ~ 32M.  np.full(mxmy, -1, dtype=np.int64) is 256 MB and used to
@@ -1024,18 +1151,15 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     node_ne = node_nw + cur_nx - 1
     d_node = _d_node(cur_mx)
 
-    # Initialise interior nodes to data mean (cheap default — C uses 0
-    # or search-radius initialiser; mean is a no-op for centred data).
-    # Vectorised (Mira #53 perf pass) — at the coarsest stride the layout
-    # is cur_ny rows of cur_nx contiguous elements with row stride cur_mx,
-    # starting at flat offset node_nw.  np.lib.stride_tricks.as_strided
-    # gives the right view; but it's safe to allocate a fresh 2-D temp
-    # (cheap at the coarsest stride; only a few hundred nodes typically).
-    z_mean_norm = float(z_norm.mean())
-    _row_offsets = node_nw + np.arange(cur_ny, dtype=np.int64) * cur_mx
-    _flat_targets = (_row_offsets[:, None]
-                     + np.arange(cur_nx, dtype=np.int64)[None, :]).ravel()
-    u[_flat_targets] = z_mean_norm
+    # surface.c:2193-2195: GMT_Create_Data(GMT_DATA_ONLY) zeros the grid.
+    # surface_initialize_grid (search-radius fill) only runs if C->radius > 0,
+    # which is NOT the default (-S0 / no -S flag).  Default: all interior nodes
+    # start at 0.0 in normalized units.  Using z_mean_norm instead (the prior
+    # "cheap default") diverges from C at every coarse-stride GS-SOR pass that
+    # fails to converge (hits max_iter), producing a ~0.5 m RMS error on real
+    # CSK-scale terrain (Mira #72 zero-init fix).
+    # u was already allocated as np.zeros(mxmy) above; interior nodes are
+    # already 0.0 — no explicit initialisation needed.
 
     # ----- Helpers closing over (xmin_s, ymin_s, dx, dy, z_norm, …) -----
     def _build_constraints(stride, cur_nx_, cur_ny_):
@@ -1048,10 +1172,12 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         r_inc_x = 1.0 / inc_x
         r_inc_y = 1.0 / inc_y
         fcol = (xx_in - xmin_s) * r_inc_x
-        # row counts from north; surface.c:160 y_to_row = (n_rows-1) - x_to_col(y)
-        frow = (cur_ny_ - 1) - (yy_in - ymin_s) * r_inc_y
+        # Mirror C's x_to_col / y_to_row for this stride (surface.c:529-530).
+        # C uses h->wesn[XLO] = xmin_s for col assignment (pixel shift already
+        # applied to xmin_s unconditionally for pixel_reg).
+        frow_raw = (yy_in - ymin_s) * r_inc_y
         col_near = np.floor(fcol + 0.5).astype(np.int64)
-        row_near = np.floor(frow + 0.5).astype(np.int64)
+        row_near = (cur_ny_ - 1) - np.floor(frow_raw + 0.5).astype(np.int64)
         inside = ((col_near >= 0) & (col_near < cur_nx_)
                   & (row_near >= 0) & (row_near < cur_ny_))
         if not inside.any():
@@ -1060,22 +1186,26 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         col_near = col_near[inside]
         row_near = row_near[inside]
         fcol_in = fcol[inside]
-        frow_in = frow[inside]
+        frow_raw_in = frow_raw[inside]
         z_norm_in = z_norm[inside]
         dx_off = fcol_in - col_near
-        # dy_off: positive UP (y_up_data - y_up_node) = row_near - frow_in
-        dy_off = -(frow_in - row_near)
-        # Sort by (index, dist2), keep nearest per node
+        # dy_off: fractional offset northward (y_up positive).
+        # frow_raw_at_node = (cur_ny_-1) - row_near, so:
+        # dy_off = frow_raw - frow_at_node = frow_raw - (cur_ny_-1) + row_near
+        dy_off = frow_raw_in - (cur_ny_ - 1) + row_near
+        # Sort by (index, dist2), keep nearest per node.
+        # surface_compare_points uses info->wesn[XLO] = xmin_s - dx/2 (pre-shift).
+        # Node at col via info->wesn: (xmin_s - dx/2) + col*S*dx.
+        # Distance from scatter x:
+        #   x - ((xmin_s - dx/2) + col*S*dx)
+        #   = (xmin_s + fcol*S*dx) - (xmin_s - dx/2) - col*S*dx
+        #   = dx/2 + S*dx*(fcol - col)
+        #   = dx/2 + S*dx*dx_off
+        #   = inc_x*(dx_off + 1/(2*stride))  [since inc_x = stride*dx]
+        # Note: at stride=1 this is dx*(dx_off + 0.5), matching throw_away formula.
         index = row_near * cur_nx_ + col_near
-        # surface_compare_points uses physical Euclidean distance to the
-        # info->wesn cell center (set before pixel shift).  For pixel_reg+sug,
-        # that center is (x_node - inc_x/2, y_node - inc_y/2), so:
-        #   dist^2 = (inc_x*(dx_off+0.5))^2 + (inc_y*(dy_off+0.5))^2.
-        # For other cases: dist^2 = (inc_x*dx_off)^2 + (inc_y*dy_off)^2.
-        # Briggs dx_off/dy_off stay node-relative (surface.c:601-605 uses
-        # h->wesn, not info->wesn).
-        if pixel_reg and sug is not None:
-            dist2 = (inc_x * (dx_off + 0.5)) ** 2 + (inc_y * (dy_off + 0.5)) ** 2
+        if pixel_reg:
+            dist2 = (inc_x * (dx_off + 0.5 / stride)) ** 2 + (inc_y * (dy_off + 0.5 / stride)) ** 2
         else:
             dist2 = (inc_x * dx_off) ** 2 + (inc_y * dy_off) ** 2
         order = np.lexsort((dist2, index))
@@ -1102,7 +1232,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         status[_idx_flat] = 0
 
         n_pts = col_u.size
-        briggs_b = np.zeros((max(n_pts, 1), 6), dtype=np.float64)
+        briggs_b = np.zeros((max(n_pts, 1), 6), dtype=np.float32)
         # Mira #53 perf pass: reuse the shared briggs_idx buffer.  Reset
         # only the nodes the previous call dirtied — full np.full() on
         # 32M-element grids was ~140 ms each (cProfile).
@@ -1128,7 +1258,19 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
             if on_node.any():
                 on_idx = nodes[on_node]
                 status[on_idx] = 5
-                u[on_idx] = z_arr[on_node]
+                # C line 619: z_at_node = data[k].z +
+                #   (gmt_grdfloat)(r_z_rms * current_stride * evaluate_trend(C, dx, dy))
+                # evaluate_trend = plane_sx * dx + plane_sy * dy where dx,dy are
+                # fractional offsets in stride-cell units (as returned by _build_constraints).
+                # The correction accounts for the planar trend shift between the
+                # scatter position and the node position.
+                _corr = np.float32(
+                    r_z_rms * stride
+                    * (plane_sx * dx_arr[on_node] + plane_sy * dy_arr[on_node])
+                )
+                # z_arr is already float32-derived (z_u = z_norm which is float32).
+                # C: z_at_node = z_f32 + float32(float64_correction)
+                u[on_idx] = z_arr[on_node].astype(np.float32) + _corr
 
             off = ~on_node
             if off.any():
@@ -1245,7 +1387,7 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
         if briggs_idx_dirty:
             briggs_idx_shared[briggs_idx_dirty[0]] = -1
             briggs_idx_dirty.clear()
-        briggs_b_empty = np.zeros((1, 6), dtype=np.float64)
+        briggs_b_empty = np.zeros((1, 6), dtype=np.float32)
         _iterate_to_converge(current_stride, cur_nx, cur_ny, cur_mx,
                              node_nw, node_sw, node_se, node_ne, d_node,
                              briggs_b_empty, briggs_idx_shared, "NODES")
