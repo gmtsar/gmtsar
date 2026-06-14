@@ -1,0 +1,21 @@
+{
+  "case": "TSX_SLC_Hawaii",
+  "tag": "v2.2.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/TSX_SLC_Hawaii.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2012166_2012342/corr_ll.grd": "a2dd0c8a5580f462943d4f4fb6326d67",
+    "intf/2012166_2012342/corr_ll.png": "e09f3c15ecfe93792209cc2a310b98f3",
+    "intf/2012166_2012342/display_amp_ll.png": "6ec0f482fc6f43f982eaf64913bc9609",
+    "intf/2012166_2012342/filtcorr.grd": "aec1147a3f81cc544010d4e98335809e",
+    "intf/2012166_2012342/phasefilt.grd": "cffab95d51d67b34ec186d467dcdf5bb",
+    "intf/2012166_2012342/phasefilt_mask_ll.png": "667af471cc9c5968a7ef8993c8253994"
+  }
+}
