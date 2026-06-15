@@ -444,3 +444,29 @@ wastes compute:
 - Applies to new dispatchers and is the target for auditing existing
   ones (m2s_py, grdfill, blockmedian, surface_inproc x2) opportunistically
   as they're touched — not a mandate to retrofit all of them in one pass.
+
+## 13. Don't trust past conclusions — only fresh-run outputs are evidence
+
+A prior session's (or prior agent's) *conclusion* is a hypothesis, not a fact.
+Re-derive it with critical thinking before acting on it; if it matters, confirm
+it with a FRESH run on real data. Stale conclusions are routinely wrong.
+
+**Concrete failure this rule exists for (2026-06-14):** the "#72 surface
+divergence is an inherent tol=1e-4 convergence floor, not fixable without tighter
+tol" conclusion was accepted across multiple sessions. A fresh measurement showed
+S1_Ridgecrest's topo_ra was **42 m** off C (vs cm on same-size siblings) — a gross,
+dimension-specific BUG, not a floor. The "wall" was an unverified inherited claim.
+Other examples this campaign: the v2.1.32 "RS2 byte-identical" surface flip (a
+measurement error masked by a try/except subprocess fallback); "snaphu solver can
+only reach statistical parity" (a 30×30 fresh run showed float32-EXACT).
+
+**The rule:**
+1. Treat any inherited conclusion ("X is impossible / fixed / bit-identical / the
+   bottleneck / a floor") as UNVERIFIED until a fresh run reproduces it.
+2. Prefer measuring over believing: when a claim gates a decision, re-run it on
+   real, full-scale data and read the actual numbers.
+3. Tests/conclusions that passed on small or synthetic inputs do NOT certify real
+   behavior (see Rule 10a). A fresh real-data run is the only trustworthy oracle.
+4. Be especially skeptical of "can't / impossible / inherent" conclusions — they
+   end investigation prematurely. Demand file:line + reproduced evidence.
+5. When you cite a past result, say whether it was freshly verified or inherited.
