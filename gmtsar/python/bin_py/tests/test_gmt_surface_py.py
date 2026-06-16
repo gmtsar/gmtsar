@@ -1310,7 +1310,7 @@ class TestGmtSurfacePyCSKRealScale(unittest.TestCase):
             use_multigrid=True,
             pixel_reg=True,
         )
-        t_py = _time.time() - t0
+        t_py = time.time() - t0
         print(f"[CSK parity] gmt_surface_py: {t_py:.1f}s  shape={grid_py.shape}")
 
         self.assertEqual(

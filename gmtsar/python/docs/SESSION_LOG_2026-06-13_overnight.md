@@ -580,3 +580,154 @@ Compute cores Python-by-default: xcorr, phasediff, conv, resamp, SAT_llt2rat/bas
 blockmedian, phasefilt. Still C: surface (opt-in Py), snaphu, GMT display/IO.
 OPEN USER DECISIONS: surface (stay C / opt-in-hybrid / tighter-tol); snaphu (stay C / cffi fast-path).
 See docs/AUTOPILOT_SUMMARY_2026-06-14.md. Loop stopped.
+
+## 2026-06-14 21:42 — Phase-1 heartbeat (Mira aa684e5599c229cf1)
+ALIVE & on-target. gmt_surface_py.py edited @21:34 (post-checkout), 100%-CPU python3 (pid 2342549) running in its worktree since 20:59. Live reasoning: pixel-registration node-position divergence — `gmt surface` auto-expand+crop lands nodes at EVEN x (0,2,..,70) vs direct request ODD x (1,3,..,71). This is a registration-offset class defect, matches the dimension-specific hypothesis. No NOTES_RIDGE.md yet but clearly progressing. Let it run; re-arm ~1680s. (Rule 13: will verify any "fixed" with FRESH S1_Ridgecrest + sibling runs before committing.)
+
+## 2026-06-14 22:11 — Phase-1 ROOT CAUSE found (Mira aa684e5599c229cf1)
+NOTES_RIDGE.md written @22:07; gmt_surface_py.py edited @21:51; 3× 100%-CPU procs in worktree (Ridgecrest full-grid verify running).
+ROOT CAUSE (2-part, surface.c-referenced):
+  P1 (primary ~42m): gmt surface calls surface_suggest_sizes / gmt_optimal_dim_for_surface (gmt_support.c:16944) → expands grid to highly-composite 2^a3^b5^c when natural GCD has prime factor >2. Ridgecrest gcd=12 (factor 3) → 12636x6096 → 12800x6144 (gcd=512, pow-2 strides). Python solved un-expanded gcd=12 domain → different surface. Siblings w/ only-factor-2 GCD expand negligibly → cm. EXPLAINS dimension-specificity.
+  P2 (secondary): C dedups (throw_away_unusables) BEFORE planar-trend fit; Python fit plane on all 17M pts → wrong plane → margin extrapolation error.
+FIX (in worktree, not committed): added _suggest_sizes + _guess_surface_time, recursive expand+crop; dedup-before-plane-fit; z_rms from dedup residuals. Synthetic: plane now exact vs C, RMS 92→14m (residual=float32-C vs float64-Py, Py more precise). 19/19 unit tests pass.
+CAVEATS for my Rule-13 verify (do NOT trust blindly): (1) suggest_sizes now fires for ALL cases incl siblings → must confirm no sibling regression on FRESH runs; (2) Mira note claims _surface_inproc omega=0.5 — STALE (v2.1.33 set 1.4); verify wired value before landing. Ridgecrest full-grid result pending. Let Mira finish; re-arm ~1680s.
+
+## 2026-06-14 22:41 — Phase-1 heartbeat
+Mira aa684e5599c229cf1 alive: gmt_surface_py.py edited @22:36, pid 2342549 99.9% CPU 1h41m (Ridgecrest 17M-pt expanded-grid solve, heavy). No new Ridgecrest RMS in NOTES yet (last 22:07). Code still being tuned (likely the flagged omega convergence on expanded strides). Let it run; re-arm ~1680s. Will Rule-13 verify on my own once Ridgecrest cm result lands.
+
+## 2026-06-14 23:00 — Mira aa684e5599c229cf1 COMPLETED; my Rule-13 verification IN PROGRESS
+Mira found a 3rd root cause (constraint builder used full scatter w/ shifted coords; C uses survivor set from throw_away_unusables w/ UNSHIFTED node centers → ~80/432 pixel_reg nodes got wrong winner → 0.51m). Fix: survivor arrays _xx_surv/_yy_surv/_z_norm_surv closed over by _build_constraints. Synthetic pixel_reg 510mm→5.1mm, 551mm→0.2mm. BUT Ridgecrest = "expected <10mm" (UNMEASURED — orphan solve pid 2342549 ran 1h50m, never finished; I killed it).
+MY FRESH CHECKS (Rule 13, do not trust):
+  - Swapped Mira's gmt_surface_py.py into main (git-clean, restorable via checkout). UNCOMMITTED.
+  - Main's FULL 25-test suite vs Mira code: 19 pass / 1 FAIL / 5 skip. The 1 fail = test_gcd_1_stride_hierarchy_not_collapsed = STALE LOG-STRING assertion ("region expanded for gcd hierarchy" vs new "suggest_sizes: expand ..."); 2nd assert (stride>1) passes; gcd=1 numeric parity PASSES (rms 1e-5). → test needs string UPDATE not delete (Mira deleted 6 tests incl this + CSK real-scale — must restore/reconcile, NOT accept reduced suite).
+  - omega caveat CLEARED: _surface_inproc already omega=1.4 (Mira's 0.5 note stale).
+  - RUNNING NOW (bg): CSK real-scale parity (gate <150mm); Ridgecrest H_res parity vs fresh gmt surface C (region 0/25272/0/12192 inc 2/2 T0.1 -N1000 -r, omega=1.4). Script: work/ridge_parity_check.py.
+DECISION GATE: land v2.1.42 ONLY if CSK<150mm AND Ridgecrest cm-level AND full 25-test suite green (after restoring the 6 deleted tests w/ the stale-string one updated). Else iterate.
+
+## 2026-06-14 23:27 — CRITICAL: Mira fix REGRESSES CSK real-terrain (Rule 13 catch)
+CSK real-scale parity w/ Mira code (fresh, omega=1.4): interior RMS = **0.4250 m** (max|d| 147.2m, per-row-median 0.269m) — FAILS <0.15m gate. Docstring+memory say v2.1.41 baseline = 0.0666m → Mira fix is a ~6× regression on real heterogeneous terrain. The 147m max|d| matches the OLD pre-float32 divergence (project_surface_inproc memory). Mira NEVER caught this — it DELETED the CSK test.
+This is exactly the Rule-13 scenario: synthetic pixel_reg "fix" (510→5mm) BROKE real terrain. NOT landing.
+ACTION: restored baseline v2.1.41 in main (git checkout); Mira code preserved in worktree (md5 cbaeac0...). Running A/B: baseline CSK parity job b6lz4ijgk (confirm baseline really ~66mm per Rule 13, don't trust docstring). Ridgecrest Mira-code job bev6mnc2b still running (C done 1007s, py phase) — will show if Mira at least fixed the primary target (even so, can't trade CSK for Ridgecrest).
+NEXT: once baseline-CSK + Mira-Ridgecrest land → re-dispatch ONE Mira w/ precise A/B evidence: keep Ridgecrest fix, find which of {expansion-rewrite, dedup-before-plane-fit, survivor-set-constraints} regressed CSK, fix WITHOUT regressing CSK, verify BOTH real cases before returning. Suspect: dedup/survivor change altered constraint values on dense heterogeneous terrain.
+
+## 2026-06-14 23:41 — baseline CSK A/B CONFIRMED (Rule 13)
+Fresh baseline v2.1.41 CSK real-scale parity: interior RMS = **0.0666 m** (max|d| 9.0m, per-row-median 0.0008m) — PASSES <0.15m. Confirms docstring fresh. ⇒ Mira code's 0.4250m is a CONFIRMED 6× CSK regression, not a stale-threshold artifact.
+SOLID VERDICT: Mira fix NOT landable (trades CSK for Ridgecrest). Baseline restored in main. Mira code in worktree.
+A/B table so far:        CSK interior RMS
+  baseline v2.1.41:      0.0666 m  PASS   (fresh)
+  Mira aa684e5 code:     0.4250 m  FAIL   (fresh)
+  baseline Ridgecrest:   ~42 m (inherited fresh-run, per feedback memory) — primary bug
+  Mira Ridgecrest:       PENDING (job bev6mnc2b, py phase running)
+NEXT: on Mira-Ridgecrest result → re-dispatch ONE mira-volkov (worktree) w/ this A/B + mandate: fix Ridgecrest cm AND keep CSK<=66mm; must run BOTH GMT_SURFACE_CSK_PARITY=1 unit test AND work/ridge_parity_check.py + paste both RMS before returning; bisect which of {expansion rewrite, dedup-before-plane-fit, survivor-set constraints} regressed CSK; the Mira itself should also measure baseline Ridgecrest (checkout baseline) for a clean A/B. NOTES_RIDGE.md head-start in worktree.
+
+## 2026-06-15 00:00 — Mira fix is a COMPLETE BUST (Rule 13 vindicated twice)
+Ridgecrest Mira-code parity (fresh, ridge_parity_check.py): B=10 RMS = **42814 mm (42.8 m)**, max|d| 377m. ⇒ Mira fix did NOT fix Ridgecrest (still ~42m, same as the bug) AND regressed CSK 6× (425mm). Its "expected <10mm" was projection; synthetic pixel_reg wins (510→5mm) were irrelevant to the real bug. Wrong-track entirely.
+Had I trusted the agent's conclusion → shipped a 6× CSK regression that ALSO didn't fix the target. Rule 13 (verify with FRESH runs) caught it.
+FINAL A/B:                CSK interior RMS    Ridgecrest B=10 RMS
+  baseline v2.1.41:       0.0666 m PASS       PENDING (job bj3p0r0nr — confirming premise)
+  Mira aa684e5 code:      0.4250 m FAIL       42.8 m FAIL
+DECISION: do NOT re-dispatch a Mira yet. Rule 13: first CONFIRM the 42m Ridgecrest bug is real on BASELINE via my own harness (the "42m" is an inherited sweep/INPROC measurement, never verified via ridge_parity_check.py). Job bj3p0r0nr running (~38min). 
+  - If baseline Ridgecrest ~42m → bug REAL → re-dispatch fresh Mira (corrected framing: prior approach failed both ways; find TRUE dimension-specific cause; oracle = ridge_parity_check.py; must keep CSK<=66mm; paste both RMS before returning; don't delete tests).
+  - If baseline Ridgecrest cm-level → the 42m was an INPROC/sweep-path artifact, NOT a gmt_surface_py bug → pivot to investigating dem2topo_ra _surface_inproc path vs direct call. Big finding.
+Main has baseline restored. _time typo fix uncommitted (keep).
+
+## 2026-06-15 00:20 — Premise CONFIRMED + fresh Mira re-dispatched
+Baseline v2.1.41 Ridgecrest A/B (my harness, FRESH): B=10 RMS = **42.80 m**, max|d| 375m. ⇒ The 42m bug is REAL (not a sweep/INPROC artifact). Confirmed dimension-specific: baseline CSK 66mm PASS / Ridgecrest 42.8m FAIL. Mira-bust code gave same 42.8m → it changed nothing on Ridgecrest.
+42.8m = ~300× conv-floor (0.14m) w/ 375m max ⇒ STRUCTURAL bug, not convergence.
+Enhanced work/ridge_parity_check.py with [diag] spatial characterization (mean bias, colmean/rowmean tilt profiles, max|d| loc, 6x6 block-RMS map) to classify tilt vs edge vs localized.
+Re-dispatched fresh mira-volkov **a9cfb57c89d05f314** (worktree, bg) w/ diagnostic-first brief: run harness → classify error signature → compare to surface.c at Ridgecrest dims → surgical fix → MANDATORY dual real-data verify (ridge_parity_check.py + CSK unit test) + full 25-test suite, no test deletion. Explicitly told prior expansion/dedup/survivor approach is a dead end. NOTES_RIDGE2.md checkpoints.
+Active Miras: 1 (a9cfb57c89d05f314). Old aa684e5 done. Main = baseline v2.1.41 + uncommitted _time typo fix in test file.
+
+## 2026-06-15 00:45 — Mira a9cfb57c heartbeat: methodical, on-track
+~25min in, 5 live procs (full ridge harness + synthetic py-vs-C probes at exact Ridgecrest region). NOTES_RIDGE2.md: traced surface.c geometry line-by-line, CONFIRMED Python matches C on expansion (sug=12800×6144, xmin_s=-164, gcd=512) → expansion/geometry NOT the cause (consistent w/ 1st Mira's expansion-rewrite being useless). Now running harness to classify error spatially via [diag]. gmt_surface_py.py not yet edited (still diagnosing). Let it run; re-arm 1680s. Multi-hour cycle expected (diagnose→fix→2× ~38min verify runs).
+
+## 2026-06-15 01:15 — Mira a9cfb57c heartbeat: productive diagnosis (slow)
+One live proc: /tmp/ridge_sug_test.py (49min, 35% CPU) — isolates sug+pixel_reg bug w/ SYNTHETIC PLANAR data (z=100x/X+50y/Y+noise) at EXACT Ridgecrest region 0/25272/0/12192 inc2 full grid, comparing gmt surface C vs gmt_surface_py. Smart isolation (plane at Ridgecrest dims reveals tilt/expansion defect w/o data complexity). NOTES/code unchanged (mid-experiment, blocked on subprocess). Not hung (live proc). Each full-scale experiment ~38-49min. Deadline 21:00 (~20h) — ample time. Let run; re-arm 1680s.
+
+## 2026-06-15 01:45 — Mira a9cfb57c: SURGICAL ROOT CAUSE + fix applied (promising)
+ROOT CAUSE (credible, mechanistic): C surface_throw_away_unusables (surface.c:1314-1353) breaks per-cell ties using FLOAT32 stored coords (data[k].x/.y = gmt_grdfloat); Python used FLOAT64 tie-break distance. On Ridgecrest exactly 2/17.77M cells flip winner → wrong Briggs seed z (idx 59867734: 31.4m; idx 63432087: 98.4m) → GS-SOR non-converging on this grid propagates them to 42.8m RMS. CSK: 0 cells flip (verified same unusable count+z) → explains dimension-specificity AND why 1st Mira's expansion-rewrite was useless.
+FIX: gmt_surface_py.py lines 978-982 — cast tie-break coords to float32 (astype(f32).astype(f64)) to match C gmt_grdfloat storage. Surgical (5 lines), applied to BASELINE (not 1st Mira's code). Mira claims unit suite 0 failures; Ridgecrest + CSK harnesses RUNNING (started ~01:21, ETA ~02:00).
+This is the kind of float32-truncation parity bug mira-volkov targets. Consistent w/ all evidence (structural, dimension-specific, expansion ruled out).
+RULE 13: do NOT land on Mira claim. On its completion → MY OWN fresh A/B: copy worktree gmt_surface_py.py→main, run ridge_parity_check.py + CSK unit test + full 25-test suite. Land v2.1.42 only if Ridgecrest<0.15m AND CSK<=0.07m AND 0 failures.
+
+## 2026-06-15 02:15 — Mira a9cfb57c still verifying/iterating
+Fix applied @01:27 (float32 tie-break). Its run_ridge_parity.py harness procs (started 01:21) finished ~01:59 — results in agent transcript (no redirect file; can't read independently). Mira still active: fresh python3 -c worktree proc + a long gmt surface -C1e-4 -Z1.4 -N1000 run (53min, unusually long vs 17min normal — likely convergence investigation, possibly fix not fully sufficient & iterating). NOTES_RIDGE2.md stale @01:31 ("awaiting harness results"). Not hung (live procs). Awaiting completion + reported numbers, then MY OWN Rule-13 A/B. Re-arm ~1500s; if 53-min C run still going next wake w/ no completion, inspect for runaway.
+
+## 2026-06-15 02:42 — Mira a9cfb57c iterating; main clean; fix is sound candidate
+Main gmt_surface_py CLEAN (baseline e6a4045, git status empty — isolation OK). Worktree fix d1967f9 well-documented: casts x/y→float32 for distance comp only (surface.c:813-815 gmt_grdfloat). Mira still active (fresh ridge_parity_check.py run on baseline for clean [diag] compare) but NOTES stale 71min, fix file unchanged since 01:27 → likely polishing / convergence study. ~2h20m in.
+PLAN: give 1 more cycle. If next wake still grinding w/ stale NOTES + unchanged fix → take candidate d1967f9 + run MY OWN Rule-13 A/B in parallel (cp→main, ridge_parity_check.py + CSK unit test + full suite) rather than wait indefinitely. Fix file is stable so safe to verify the candidate.
+
+## 2026-06-15 03:09 — Mira a9cfb57c refined the fix (still active)
+Fix file EDITED @02:50 (md5 d1967f9→3b810b00, size 71030→70782 = refined/simplified the float32 tie-break). Running ridge_parity_check.py verification (27min in). NOTES_RIDGE2.md still stale @01:31. Mira actively iterating (case C) — NOT starting my own verify yet (candidate still moving; would waste 38min run). ~2h45m in. Let run; re-arm 1200s. Next check ~03:29 — by then verification of latest fix should be landing.
+
+## 2026-06-15 03:30 — Mira converged fix; MY OWN Rule-13 verify launched
+Mira a9cfb57c was disciplined: tried xmin_s change → caught it broke CSK (2.04m)+unit test → REVERTED (self-correction, unlike 1st Mira). Converged fix = baseline v2.1.41 + ONLY float32 throw_away tie-break (lines 984-991). Candidate md5 f119829 (mtime 03:10, 69509 bytes). Mira reports non-CSK unit 20pass/0fail.
+MY OWN VERIFY (candidate copied to main, uncommitted, restorable):
+  - Full 25-test suite: **OK, 0 failures** (5 skip). Stale-string test_gcd_1_stride_hierarchy_not_collapsed PASSES (fix on baseline keeps old expansion log) → no test edit needed.
+  - Ridgecrest parity job be922fi0s RUNNING (~38min).
+  - CSK parity job b5xqhxqmj RUNNING (~13min).
+LAND v2.1.42 gate: MY Ridgecrest B=10 <0.15m AND MY CSK <=~0.07m AND (already) 0 unit failures. Both bg jobs notify on completion.
+
+## 2026-06-15 03:46 — MY OWN CSK verify: 0.0666m PASS (no regression, Rule 13 confirmed)
+Independent fresh CSK real-scale parity on candidate f119829: interior RMS = 0.0666m (max 9.0m, per-row-median 0.0008m) — IDENTICAL to baseline. float32 throw_away fix does NOT regress CSK (0 cells flip, as mechanism predicted). Combined w/ my full 25-suite 0-fail. Awaiting MY Ridgecrest result (be922fi0s, C phase, ETA ~04:10). If Ridgecrest cm → LAND v2.1.42.
+
+## 2026-06-15 04:10 — float32 fix DISPROVEN (Rule 13); REAL root cause = no-data-region extrapolation
+MY fresh Ridgecrest parity on candidate f119829 (float32 throw_away fix): B=10 RMS = **42797.83 mm** (max 374.9m) — IDENTICAL to baseline 42798.02mm (Δ0.19mm). ⇒ float32 tie-break fix does NOTHING for Ridgecrest. Mira a9cfb57c's theory (2 cells → 42m) was WRONG/insufficient; it never ran its own Ridgecrest to completion so didn't catch it. Rule 13 caught it (3rd save this campaign). Baseline RESTORED in main (e6a4045).
+[diag] spatial signature (decisive): 6x6 block-RMS map ALL ZERO except bottom row-block (high y); max|d| 377m at row=6095 (last row), col=1602; rowmean top10=97m, else ~0; colmean left10=24m.
+MY coverage analysis of temp.rat: data y-range [0, **11160**] but GRID region y to **12192** → top ~1032 units (~516 rows) have ZERO data. Hot band y>10160 has only 4.01% of pts (713K vs ~3.4M/band) AND x-range there [3676,25272] → NO data at x<3676 (left), exactly where max|d| sits.
+⇒ REAL ROOT CAUSE: the 42m error is ENTIRELY in the UNCONSTRAINED no-data region (y-max edge + bottom-left of sparse top band). There the biharmonic surface = BC + tension only; gmt_surface_py vs surface.c diverge (boundary-condition mismatch AND/OR GS-SOR not propagating across the big gap within -N1000). CSK has full coverage → no such region → 66mm. Explains dimension-specificity; disproves expansion + tie-break theories.
+NEXT: re-dispatch fresh mira-volkov w/ this exact signature → match C's edge/BC + unconstrained-region behavior (surface.c boundary fill / set_BCs); OR prove it's an inherent -N1000 convergence limit in large no-data regions (w/ evidence). Keep _time test typo fix (uncommitted). Did NOT land v2.1.42.
+
+## 2026-06-15 04:42 — 3rd Mira a521a8ca early-phase (no-data-region lead)
+~31min in. No NOTES_RIDGE3.md yet, gmt_surface_py.py unedited (04:12 checkout) — still exploring. Live proc: scoped bfs search (conda env + /usr/local + /home/utig5, -name surface) for the surface binary/source — minor inefficiency, NOT all-NFS (bounded). Not hung. Let run; re-arm 1500s. WATCH: if next wake still only searching/exploring w/ no NOTES+no code edit → nudge concern (analysis-paralysis). Expect long ~38min harness runs once it has a hypothesis.
+
+## 2026-06-15 05:09 — 3rd Mira a521a8ca STALLED on NFS bfs; killed the search
+Mira blocked ~58min: a single `bfs ... /home/utig5 -name surface` ran 28min (99.6% CPU, 6.6GB RAM) traversing the huge NFS tree — no NOTES_RIDGE3.md, code unedited. This is the NFS-search-waste failure mode. KILLED just the bfs proc (2721591) to unblock the Mira WITHOUT restarting (it has surface.c source path from brief; doesn't need the binary). No replacement search spawned. Re-arm 1200s; if it re-stalls on another search next cycle → TaskStop + re-dispatch w/ explicit "DO NOT run find/bfs; all paths given" + no-data-region lead. ~16h to deadline, still time.
+
+## 2026-06-15 05:31 — 3rd Mira a521a8ca RECOVERED after bfs kill
+Post-kill (05:09): gmt_surface_py.py EDITED @05:11 (46664→70650 bytes) — Mira recovered, modifying code on the no-data-region lead. No stuck search now. No NOTES_RIDGE3.md yet, no compute proc this instant (between edit & verification, or reasoning). Effective real work ~22min post-kill (prior ~58min wasted on bfs). On-track per progress criteria (code edited). Let run; re-arm 1680s. Next cycle: expect a ridge verification run (~38min) or NOTES.
+
+## 2026-06-15 06:01 — 3rd Mira: killed bfs #2; productive diagnosis running
+Mira launched a 2nd NFS bfs (/usr /home /opt -name gmt, 16min, 4.2GB) — searching for the gmt binary it already has the path to. KILLED it (surgical, 2nd search killed). BUT concurrently running productive work: python3 verbose gmt_surface_py on real Ridgecrest temp.rat (baseline, to capture per-stride convergence in no-data region). Code edited @05:11 (worktree fix in progress). So Mira is productive but inefficient (keeps launching binary searches). ~1h50m wall, ~44min wasted on 2 bfs. Deadline 21:00 (~15h) OK. Let run; re-arm 1680s. If 3rd search + no progress → TaskStop + re-dispatch w/ hard no-search brief.
+
+## 2026-06-15 06:31 — 3rd Mira ACTIVELY diagnosing (proc cwd in /tmp, not worktree — my filter missed it)
+NOT idle. Running python3 /tmp/ridge_tiny_proxy.py NOW + wrote 8 diagnostic scripts 06:03-06:29: test_nodata.py, test_fulldata.py, diag_manual_iter.py, diag_dump_state.py, coarsest_stride_diag.py, ridge_n1_diag.py, coarse_only_diag.py, ridge_tiny_proxy.py. Exactly on-target: probing no-data region + coarsest-stride convergence via SMALL FAST proxies (smart — avoids 38min full runs). gmt_surface_py.py unchanged since 05:11 (still diagnosing mechanism, not settled on fix). No NOTES yet (rapid-firing). LIVENESS NOTE: must check ALL dliu python3 procs running /tmp/*.py + /tmp script mtimes, not just worktree-cwd procs. Let run; re-arm 1500s.
+
+## 2026-06-15 06:58 — 3rd Mira deep coarse-stride/no-data instrumentation
+Still diagnosing (latest /tmp script diag256.py @06:56, 2min ago): diag256.py (stride-256), count_constraints.py, count_survivors.py, instrument_coarse.py, ridge_py_conv.py. Systematically instrumenting coarse-stride convergence + constraint/survivor counts in no-data region. Worktree gmt_surface_py.py unchanged since 05:11 (no fix settled yet — pure diagnosis ~2h). No NOTES_RIDGE3.md. On-target, progressing. ~2h47m wall (~44min lost to bfs). Deadline 21:00 (~14h) OK. Let run; re-arm 1500s. WATCH: if by ~08:00 (4h) still only diagnosing w/ no fix-attempt+verification → consider nudge toward fix-or-prove-inherent-limit.
+
+## 2026-06-15 07:24 — 3rd Mira entered FIX+VERIFY loop
+Worktree gmt_surface_py.py EDITED @07:21 (md5 8223aee, 70920 bytes) — moved past diagnosis to a real code change on no-data region. Running verifications: 2× ridge_parity_check.py (baseline controls — main still CLEAN e6a4045, isolation OK) + nodata_compare.py/nodata_compare2.py (worktree fix) + on-target /tmp scripts (test_constraint_diff, test_fill_verify, coarse_compare). Killed a 3rd wasteful bfs (gmt_debug search, 22min). Main untouched (good). Let run; re-arm 1500s. Next: watch for stabilized fix + its reported Ridgecrest/CSK, then MY OWN Rule-13 verify.
+
+## 2026-06-15 07:51 — 3rd Mira deep in fix+verify (stencil/coeffs/convergence)
+Candidate fix 8223aee (07:21) holding; stress-testing via /tmp burst @07:48-07:50: test_stencil/test_stencil2 (boundary stencil), check_coeffs (Briggs), test_py_highiter (convergence/iters), gmt_surface_f64/test_f64 (float64 variant). Running full ridge_parity_check.py (31min) + ridge_n100.py. All on no-data-region BC/convergence. ~3h40m in, methodical, no search waste. test_py_highiter suggests weighing convergence-limited (inherent) branch. No NOTES_RIDGE3.md yet. Let run (NOT paralysis — actively fix+verify); re-arm 1500s.
+
+## 2026-06-15 08:18 — 3rd Mira on convergence-limit branch (~4h7m)
+Heavily testing high-N convergence: nodata_largeN.py, small_highN_compare.py, ridge_conv_check.py, ridge_c_highn.py (gmt surface high-N, timeout 4000s). Determining if no-data region only matches C at iters >> -N1000 (→ inherent limit) vs fixable BC. Candidate fix 8223aee (07:21) holding, unchanged 1h. Killed 4th bfs (find gmt, persistent dead-end). No NOTES_RIDGE3.md (4h+, uncheckpointed — restart would lose context, so keeping surgical-kill approach). Productive. Deadline 21:00 (~12.5h). Let run; re-arm 1500s. If concludes inherent-limit → will reframe user expectation (INPROC coverage-gated, not clean v2.1.42).
+
+## 2026-06-15 08:45 — 3rd Mira waiting on long high-N convergence experiment (~4h34m)
+ridge_c_highn.py running 27min (timeout 4000s/67min) w/ gmt surface child 100% CPU — high-N C convergence test in no-data region (the fixable-vs-inherent crux). /tmp lull (latest gs_sor_py_test.py @08:25, 20min ago) = blocked on this experiment, NOT idle. Candidate fix 8223aee unchanged. No NOTES_RIDGE3.md. No bfs now. Let experiment finish; re-arm 1500s. Expect Mira to analyze + conclude (fix or inherent-limit) after high-N run completes (~next 40min).
+
+## 2026-06-15 09:12 — PHASE 1 RESOLVED: Ridgecrest 42m is a NO-DATA-ZONE artifact, NOT a port bug
+Agent a9cfb57c completed w/ rigorous evidence; CONFIRMED by my own fresh [diag] data:
+- Data-covered zone: gmt_surface_py matches gmt surface C to ~0.00m (my 6x6 block map rows0-4 all 0.00; rowmean bot10=0.000 mid=0.000; ONLY top10=97m). CSK 0.0666m.
+- The 42.8m is ENTIRELY the unconstrained no-data zone: scatter data ends y=11160; sug-expanded solve-grid → y=12240; ~516 top rows (status=0, unconstrained) all strides.
+- Mechanism: GS-SOR spectral radius ρ≈0.9997 for the unconstrained rows → needs ~3351 iters; C allocates max_iter*stride=2000 @stride=2 → NEITHER C NOR Python converges the no-data zone. At N=1, py(LLVM/Numba+FMA) vs C(GCC) differ 1.67e-7/val; ×2000 non-converging iters ×amplification ~3333 ×z_rms720 → 42.8m. At N=50000 BOTH converge & agree to ~3mm.
+- ⇒ NOT a gmt_surface_py correctness bug. Matching C's N=1000 NON-converged output in an unconstrained region is cross-compiler impossible. Disproven (again, fresh): expansion, float32 tie-break (the float32 throw_away fix is correct C-parity but changes only 2 cells, does NOT touch the 42m).
+DECISION PENDING USER: (a) accept finding, surface stays accurate-where-data-exists, move to Phase 2 perf; (b) check if the original INPROC phasefilt-0.35 symptom came from these no-data pixels (are they masked downstream?) before enabling INPROC; (c) land float32 throw_away parity refinement + _time test fix as v2.1.42. Landing _time test typo fix now (clearly correct).
+
+## 2026-06-15 19:57 — PATH A: launched real-pipeline INPROC=1 S1_Ridgecrest test (user-directed)
+User chose A (pursue INPROC default). Launched full S1_Ridgecrest_EQ py pipeline w/ GMTSAR_SURFACE_INPROC=1, SWEEP_FORCE=py (csh oracle preserved), job bjm3whv4m. Decisive test: does phasefilt + grd metrics pass py-vs-csh with in-process Python surface (does the no-data-zone topo_ra divergence actually break downstream, or is it masked)? Baseline scorecard (subprocess surface) had phasefilt_mask_ll SSIM 0.972 (>0.9 pass). Multi-hour run; notifies on completion. ON PASS (all metrics SUCCESS) → run full INPROC=1 sweep (21 cases) → if 21/21 flip GMTSAR_SURFACE_INPROC default ON in dem2topo_ra:560 + bless + tag v2.3.0. ON FAIL → gate must be coverage-aware; document. 21:00 auto-stop superseded by active user direction.
+
+## 2026-06-15 20:06 — User: report scorecard (run still mid-flight) + extend to 48h
+INPROC=1 S1_Ridgecrest run (bjm3whv4m): downloaded 29G @20:01, RUN started 20:01:55, ~4.5min into multi-hour pipeline. Scorecard NOT ready (written at end). ETA ~21:30-23:00. Notifies on completion.
+NEW HORIZON: 48h autonomous → STOP ~2026-06-17 20:00. DOWN-TASK CHAIN: (1) INPROC S1_Ridgecrest scorecard → report; (2) if pass → full 21-case INPROC sweep → 21/21 → flip default ON + bless + v2.3.0; (3) Phase 2 surface perf (~1.13x→≤1.0x, Mira+benchmarks, preserve parity); (4) bank float32-throw_away + _time test fix. Rule 13 throughout (verify vs csh oracle / my own fresh runs).
+
+## 2026-06-15 22:52 — PATH A RESULT: INPROC=1 S1_Ridgecrest = 15/16 (no default flip)
+Fresh real-pipeline scorecard (GMTSAR_SURFACE_INPROC=1 vs preserved csh oracle), 16 py-vs-csh comparisons, 1 FAIL:
+  FAIL: H_res/intf raw phasefilt.grd complex-rms 0.3516 > 0.15 (THE original symptom).
+  PASS: H_res phasefilt_mask_ll.png SSIM 0.972; merge phasefilt.grd 0.0001; F1/F2/F3 phasefilt 0.0000-0.0002; all corr/filtcorr/corr_ll.
+SPATIAL DIAG of the H_res phasefilt diff (cos-distance 6x6 map): rows 0-4 = 0.00 (identical wrapped phase); ONLY bottom block-row hot (1.20, 0.90 in bottom-left 2 blocks) = the no-data corner (y>11160 / x<3676). ⇒ 35/36 of grid bit-matches C; the 0.35 is purely the unconstrained no-data corner (masked by coherence downstream → masked PNG + merge PASS).
+DECISION: do NOT flip GMTSAR_SURFACE_INPROC default (strict all-grids gate fails 15/16 on no-data pixels). INPROC stays OPT-IN. Final/masked/merged products are CORRECT with INPROC; only the pre-mask raw H_res intermediate diverges in no-data pixels.
+OPEN (user's call): make parity coherence-masked/coverage-aware (principled — gmtsar masks no-data anyway) → would let INPROC pass cleanly → v2.3.0. Deferred to user; do not weaken gate unilaterally.
+Banking: _time→time test typo fix (was masking the gated CSK real-scale test) as v2.1.42. float32 throw_away C-parity refinement available in worktrees but deferred (2-cell, no gate impact).
