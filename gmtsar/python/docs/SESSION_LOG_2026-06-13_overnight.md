@@ -778,3 +778,42 @@ ACTIVE MIRAS (≤2): ac1b0f (snaphu numba-SoA), afbb31f3 (grdmath→numpy). Hori
 ## 2026-06-16 22:08 — grdmath Mira afbb31f3: helper LANDED (v2.3.2), wire-ins DEFERRED (stale base)
 gmt_grdmath_py.py: 16 ops (FLIPUD/MUL/ADD/SUB/DIV/ABS/SQR/SQRT/POW/HYPOT/ATAN2/GE/LE/NAN/XOR/MIN), float64-internal→float32-write matching GMT (key parity finding), 39-test C-parity suite. MY verify on main: 39/39 pass.
 STALE-BASE CATCH (Rule 13): worktree's filter/stack were from a stale commit — worktree filter REVERTS main's phasefilt_py wiring (v2.1.37: GMTSAR_PHASEFILT_PY default-ON → worktree has old plain `run('phasefilt ...')`). gmt_grd_io was in sync (md5 match) but filter/stack NOT. So did NOT copy worktree filter/stack. LANDED only the NEW standalone files (gmt_grdmath_py.py + test) — opt-in, default OFF, UNWIRED (changes no behavior). Wire-ins (filter 8 sites, stack 8 sites) DEFERRED: must re-apply grdmath dispatch hunks onto MAIN's current filter/stack (preserving phasefilt_py), not copy stale worktree files.
+
+## 2026-06-16 22:22 — snaphu Mira ac1b0f: numba-compilation friction (watch)
+Mira alive (transcript 22:20) but ~2.5h, NO NOTES_SNAPHU.md yet. Created snaphu_solver_numba.py (SoA @njit — right approach). BUT hit a NUMBA COMPILATION HANG: a `python -c` import-test of snaphu_solver_numba._find_apex stuck 2h13m @98% CPU compiling — numba struggling w/ the solver's index-chasing control flow. Killed the hung orphan (599149) + a stray bfs (search-waste pattern). OBSTACLE: numba may not compile the network-simplex helpers cleanly; if unresolved, fallback = cffi binding to C solver (keeps C numerics+speed, Python-callable). Agent working through it. WATCH: if next cycle still stuck (no NOTES, another hang) → TaskStop + reassess approach (cffi vs continue numba). Re-arm 1500s.
+
+## 2026-06-16 23:11 — snaphu numba-SoA: BUILT + COMPILES, blocked on TreeSolve cycling bug (stopped, salvaged)
+Stopped ac1b0f (reasoning-spin: transcript fresh but no code edit 68min, no NOTES 3.3h, no compute). SALVAGED state from worktree snaphu_solver_numba.py (2142 lines) + transcript tail:
+  ACHIEVED: full struct-of-arrays numba port — @njit cost fns (_calc_cost_smooth/defo_incr, _recalc_cost, _get_cost), flat node/arc/bucket arrays, _bkt_insert/remove, _min_out_cost_node, _add_new_node, _find_apex, _check_arc_reduced_cost, _tree_solve_kernel (45 args), all @njit(cache=True). NUMBA COMPILATION WALL OVERCOME (import 0.21s = JIT cache loads). ⇒ object-overhead→SoA+numba thesis validated; it compiles.
+  BLOCKER: CORRECTNESS bug in TreeSolve REMOUNT thread-loop — `-6666` anti-cycling guard fires at nconnected*4=3368 iters on a 30x30 patch (r0=800,c0=500, 14 residues). Same network-simplex strongly-feasible-tree cycling invariant that shelved the ORIGINAL port — now in the fast numba version. Thread-loop level-check (while nd1->next->level > startlevel) vs C not yet right. NOT a perf/compile issue.
+  ⇒ The hard part of snaphu is the combinatorial solver correctness (cycling), not Python overhead. numba-SoA is ~90% there structurally; needs the tree-remount/anti-cycling logic debugged vs C.
+DECISION → USER: (a) cffi/ctypes → C snaphu solver (sidesteps cycling debug; C's proven solver; Python-callable; C speed+numerics) — pragmatic; (b) keep snaphu on C binary (status quo); (c) one more focused debug pass on the numba-SoA TreeSolve remount cycling (infra exists, but cycling is the known-hard part). Worktree preserved: agent-ac1b0f897920918f4.
+
+## 2026-06-17 00:06 — wei-lin agent enhanced + refactored (portable workflow guardian) + v2.3.3
+v2.3.3 landed (fc2ca79): grdmath wired into filter+stack behind GMTSAR_GRDMATH_PY (default OFF), phasefilt_py preserved, parity max|diff|=0, 39/39 tests.
+USER meta-request: enhance wei-lin (the consilium workflow-conductor agent, /home/utig5/dliu/consilium/agents/wei-lin.md, symlinked across all projects under $HOME) to carry this campaign's hard-won discipline + be truly portable. DONE: added merge-gate axes (re-verify-yourself-vs-oracle on real data; confirm-built-on-current-HEAD/stale-worktree-base diff; gate-exercises-new-path), babysitting (transcript-mtime liveness, kill search-waste/hung-compiles, require checkpoints), elevated project_rules.md (universal rules carried IN wei-lin → portable w/ zero setup; project_rules.md = local specifics + bootstrap/enforce/compound), refactored (deduped Lessons vs Cardinal, consolidated discipline). 292 lines, frontmatter/tools/model intact. This codifies the campaign methodology for reuse on other projects.
+ACTIVE: snaphu cycling-fix Mira a71831b5 alive (transcript 00:01, snaphu_solver_numba.py edited 23:51 — working remount thread-loop fix). QUEUED: snaphu verify→land; 5 gmt surface→gmt_surface_py; grdmath default-flip after sweep; grid-helpers.
+
+## 2026-06-17 (new session) — Phase 0 audit + snaphu worktree gate verdict
+
+**Phase-0 audit:** HEAD=fc2ca79, v2.3.3 latest port tag. Session log staged (not committed). Worktree agent-a71831b5924d784c3 still present; snaphu_solver_numba.py = 2142 lines, mtime 23:51 Jun 16, no NOTES_SNAPHU2.md (agent not active).
+
+**Snaphu gate (my run, Rule 13):** Ran network_flow_optimize_numba() from worktree on real S1A_SLC_TOPS_Greece phasefilt.grd 30x30 crop (r0=800,c0=500) vs C snaphu binary. C exit 0, produced unwrapped output. Py: RuntimeError sentinel -6666 (thread-loop-1 cycling, nconnected=842). Also tested synthetic 64x64 → -4444 (remounted subtree scan), 256x256 → -4444. Import 0.28s (numba cache warm). VERDICT: FAIL on all three parts. The worktree fix converts hang→hard error but does NOT fix root cause: _thr1_guard at `while node_level[node_next[nd1]] <= startlevel` never breaks — subtree endpoint detection incorrect vs C. node_level/node_next state corrupted after first pivot.
+
+**Decision:** Worktree agent-a71831b5924d784c3 NOT LANDED. Cycling remains structurally unsolved. Three options per prior session (user decision point): (a) cffi→C solver, (b) status quo C binary, (c) another focused debug pass on remount logic. Proceeding to roadmap item 2 (grdmath default-flip) while awaiting user direction on snaphu.
+
+## 2026-06-17 — Roadmap item 2: grdmath default-flip — BLOCKED, regression found
+
+**Smoke run** (RS2_SLC_Hawaii, GMTSAR_GRDMATH_PY=1, SWEEP_FORCE=py, 93s): FAIL — 4 missing output files (corr_ll.grd + 3 geocoded PNGs).
+
+**Root cause (my diagnosis):** `grdmath_corr_chain` in filter (line 237) writes `tmp2.grd=bf`. The `conv` call at line 242 then fails with "gmtlib_read_grd_info: Use grdedit -A on your grid file to make region and increments compatible [tmp2.grd=bf]" + "could not allocate output grid". The grdmath_corr_chain writes a NetCDF .grd with region/increment metadata that doesn't match what `conv` expects from a pure binary float file (=bf suffix). The GMT grdmath version writes =bf directly and conv reads it correctly; the Python grdmath_corr_chain writes .grd format to a filename with =bf extension, but conv interprets the =bf extension as native binary — the bytes don't match. This is a file-format/metadata bug in grdmath_corr_chain's output path, not a numerical parity issue.
+
+**Decision:** grdmath default-flip BLOCKED until grdmath_corr_chain is fixed to write genuine binary float (=bf) output, not NetCDF with a =bf filename. Gate was correctly red; no landing. Moving to roadmap item 3 (remaining `gmt surface` calls).
+
+## 2026-06-17 — Roadmap item 3: remaining gmt surface calls LANDED (v2.3.4)
+
+Dispatched Mira (worktree agent-a721259fd298372ef): wire 5 `gmt surface` calls in proj_ll2ra (2), tide_correction (1), align_tops (2) through GMTSAR_SURFACE_INPROC gate (default ON). Step-0 md5 matches confirmed on all 3 files.
+
+**My gate (Rule 13):** Syntax OK (3 files). Unit tests OK (skipped=4). Stale-worktree diff: only 3 target files changed vs HEAD — clean. Import checks: each script runs and shows usage error (not import error) confirming _HAVE_GMT_GRD_IO resolves True at runtime. Upstream invariant: 0 lines.
+
+**LANDED:** commit b35f6b2, tag v2.3.4. 5 surface calls routed: proj_ll2ra (float32 binary), tide_correction (ASCII, pixel-reg), align_tops (float64 binary, pixel-reg, parallel Popen→sequential inproc). GMTSAR_SURFACE_INPROC=0 preserves fallback.
