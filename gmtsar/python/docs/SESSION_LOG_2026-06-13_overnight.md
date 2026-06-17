@@ -763,3 +763,18 @@ Re-dispatch SUCCESS (correct base): Step0 synced main float32 (e6a4045 over stal
 
 ## 2026-06-16 21:09 — CSK parity (Cython) PASS → landing v2.3.1
 MY CSK gated (Cython active): interior RMS 0.0666m (=Numba, bit-identical, NO regression). Wall-time py 422.3s vs C 414.0s = 1.02x C this run (mid-grids faster; CSK ~parity). All gates: 25-test OK (Cython+fallback), _HAVE_CYTHON=True, bit-identical max|diff|=0.0. LANDING v2.3.1 (optional Cython kernel, graceful Numba fallback, no hard dep).
+
+## 2026-06-16 21:23 — CAMPAIGN-3 (48h) "keep going" + roadmap survey
+Shipped: v2.3.0 (surface default ON), v2.3.1 (Cython kernel). Surveyed remaining non-Python steps (evidence-based):
+ROADMAP (compute-meaningful, by value):
+  1. snaphu — IN FLIGHT (ac1b0f numba-SoA solver).
+  2. grdmath→numpy — 52 calls, ops all trivial (MUL/SUB/ADD/FLIPUD/DIV/NAN/GE/SQRT/POW/ATAN2/ABS); biggest gmt footprint; clean via gmt_grd_io. DISPATCHED (afbb31f3, opt-in GMTSAR_GRDMATH_PY default OFF, C-parity tests).
+  3. 5 remaining `gmt surface` calls (proj_ll2ra, align_tops, tide_correction) → route through gmt_surface_py (now default).
+  4. grid interp/filter helpers: grdsample, grdfilter, triangulate, blockmean, nearest_grid, grdlandmask.
+  5. proj_ra2ll/ll2ra projection binaries.
+OUT OF SCOPE (low value, leave on GMT/C): plotting (psconvert/grdimage/grd2kml/makecpt/psscale/grdgradient/psxy), sensor preproc (make_slc_*/calc_dop_orb/extend_orbit) — visualization + sensor I/O, not numerical cores.
+ACTIVE MIRAS (≤2): ac1b0f (snaphu numba-SoA), afbb31f3 (grdmath→numpy). Horizon → STOP ~2026-06-18 21:00.
+
+## 2026-06-16 22:08 — grdmath Mira afbb31f3: helper LANDED (v2.3.2), wire-ins DEFERRED (stale base)
+gmt_grdmath_py.py: 16 ops (FLIPUD/MUL/ADD/SUB/DIV/ABS/SQR/SQRT/POW/HYPOT/ATAN2/GE/LE/NAN/XOR/MIN), float64-internal→float32-write matching GMT (key parity finding), 39-test C-parity suite. MY verify on main: 39/39 pass.
+STALE-BASE CATCH (Rule 13): worktree's filter/stack were from a stale commit — worktree filter REVERTS main's phasefilt_py wiring (v2.1.37: GMTSAR_PHASEFILT_PY default-ON → worktree has old plain `run('phasefilt ...')`). gmt_grd_io was in sync (md5 match) but filter/stack NOT. So did NOT copy worktree filter/stack. LANDED only the NEW standalone files (gmt_grdmath_py.py + test) — opt-in, default OFF, UNWIRED (changes no behavior). Wire-ins (filter 8 sites, stack 8 sites) DEFERRED: must re-apply grdmath dispatch hunks onto MAIN's current filter/stack (preserving phasefilt_py), not copy stale worktree files.
