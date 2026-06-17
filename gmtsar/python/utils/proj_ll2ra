@@ -13,8 +13,69 @@ Output:
   phase_ra.grd     — same data in radar (range/azimuth) coordinates
 """
 import os
+import subprocess
 import sys
+
+import numpy as _np
+
 from gmtsar_lib import run
+
+# In-process gmt surface replacement (gmt_surface_py + gmt_grd_io).
+# Gated by GMTSAR_SURFACE_INPROC=1 (default ON since v2.3.0).
+# Set GMTSAR_SURFACE_INPROC=0 to fall back to the gmt subprocess.
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_surface_py import gmt_surface_py as _surface_inproc
+    import gmt_grd_io as _grd_io
+    _HAVE_GMT_GRD_IO = True
+except Exception as _e:
+    _HAVE_GMT_GRD_IO = False
+
+
+def _surface_inproc_f32(xyz_path: str, region_str: str, inc_str: str,
+                         tension: float, out_path: str) -> None:
+    """In-process replacement for:
+        gmt surface <xyz_path> -bi3f -R<region> -I<inc> -T<tension> -G<out>
+
+    Reads xyz_path (binary 3-float32 rows: x, y, z), invokes gmt_surface_py
+    with gridline registration (no -r) and writes the result via
+    gmt_grd_io.write_gmt_grd.
+
+    Raises on failure — no silent fallback (Rule 12).
+    """
+    parts = region_str.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"proj_ll2ra: bad region '{region_str}'")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    inc_parts = inc_str.split("/")
+    if len(inc_parts) == 1:
+        dx = dy = float(inc_parts[0])
+    else:
+        dx, dy = float(inc_parts[0]), float(inc_parts[1])
+
+    data = _np.fromfile(xyz_path, dtype=_np.float32)
+    if data.size % 3 != 0:
+        raise ValueError(f"proj_ll2ra: {xyz_path} size {data.size} not divisible by 3 float32s")
+    data = data.reshape(-1, 3)
+    x = data[:, 0].astype(_np.float64)
+    y = data[:, 1].astype(_np.float64)
+    z = data[:, 2].astype(_np.float64)
+
+    grid = _surface_inproc(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(dx, dy),
+        tension=tension,
+        max_iter=500,
+        pixel_reg=False,
+    )
+    ny, nx = grid.shape
+    x_coord = x0 + _np.arange(nx) * dx
+    y_coord = y0 + _np.arange(ny) * dy
+    history = f"gmt_surface_py (-T{tension}) -I{inc_str}"
+    _grd_io.write_gmt_grd(out_path, grid, x_coord, y_coord,
+                          node_offset=0, history=history)
 
 
 def proj_ll2ra():
@@ -30,16 +91,33 @@ def proj_ll2ra():
     II = sys.argv[4] if len(sys.argv) >= 5 else "-I32/64"
     V = "" if os.path.isfile(os.path.expanduser("~/.quiet")) else "-V"
 
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+              and _HAVE_GMT_GRD_IO)
+
     run("gmt set FORMAT_GEO_OUT D")
     run(f"gmt grd2xyz {phase_ll} -s -bo3f -fg > llp")
     # Build (lon,lat,range) and (lon,lat,azimuth) tables from trans.dat
     run(f"gmt gmtconvert {trans} -o3,4,0 -bi5d -bo3f > llr")
     run(f"gmt gmtconvert {trans} -o3,4,1 -bi5d -bo3f > lla")
     # Interpolate to a regular grid; -I0.083... = 5 arc-min, -I0.000833... = 3 arc-sec
-    run(f"gmt surface llr `gmt gmtinfo llp -I0.08333333333 -bi3f` "
-        f"-bi3f -I.00083333333333 -T.50 -Gllr.grd {V}")
-    run(f"gmt surface lla `gmt gmtinfo llp -I0.08333333333 -bi3f` "
-        f"-bi3f -I.00083333333333 -T.50 -Glla.grd {V}")
+    # Region is dynamic: gmt gmtinfo llp -I0.08333333333 -bi3f expands the
+    # bounding box of llp to the nearest 5-arc-min multiple and emits "-Rx0/x1/y0/y1".
+    _gmtinfo_region = subprocess.run(
+        "gmt gmtinfo llp -I0.08333333333 -bi3f",
+        shell=True, stdout=subprocess.PIPE, check=True,
+    ).stdout.decode().strip()
+    # gmtinfo emits e.g. "-R-120/120/-35/35"; strip the leading "-R" prefix.
+    if not _gmtinfo_region.startswith("-R"):
+        raise ValueError(f"proj_ll2ra: unexpected gmtinfo output: {_gmtinfo_region!r}")
+    _region_str = _gmtinfo_region[2:]
+    if inproc:
+        _surface_inproc_f32("llr", _region_str, ".00083333333333", 0.50, "llr.grd")
+        _surface_inproc_f32("lla", _region_str, ".00083333333333", 0.50, "lla.grd")
+    else:
+        run(f"gmt surface llr {_gmtinfo_region} "
+            f"-bi3f -I.00083333333333 -T.50 -Gllr.grd {V}")
+        run(f"gmt surface lla {_gmtinfo_region} "
+            f"-bi3f -I.00083333333333 -T.50 -Glla.grd {V}")
     # Sample range/azimuth at each input lon/lat point
     run("gmt grdtrack llp -nl -Gllr.grd -bi3f -bo4f > llpr")
     run("gmt grdtrack llpr -nl -Glla.grd -bi4f -bo5f > llpra")
