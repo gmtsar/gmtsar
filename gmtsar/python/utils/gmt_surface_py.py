@@ -118,6 +118,28 @@ from typing import Optional, Tuple
 import numpy as np
 
 # ---------------------------------------------------------------------------
+# Cython kernel availability (priority: Cython > Numba > pure-Python)
+# ---------------------------------------------------------------------------
+# _surface_kernel.pyx must be compiled with build_surface_kernel.py first.
+# The kernel is float32-identical to main's Numba _iterate_once (Mira #72).
+# Set GMT_SURFACE_PY_CYTHON=0 to force Numba path (e.g. for regression tests
+# that need to confirm Numba and Cython produce identical output).
+_USE_CYTHON = os.environ.get("GMT_SURFACE_PY_CYTHON", "1") != "0"
+
+_HAVE_CYTHON = False
+_cython_iterate_once = None
+_cython_set_bcs = None
+
+if _USE_CYTHON:
+    try:
+        from _surface_kernel import iterate_once_cy, set_bcs_cy  # type: ignore
+        _HAVE_CYTHON = True
+        _cython_iterate_once = iterate_once_cy
+        _cython_set_bcs = set_bcs_cy
+    except ImportError:
+        pass  # fall through to Numba
+
+# ---------------------------------------------------------------------------
 # Numba availability + soft fallback
 # ---------------------------------------------------------------------------
 # Per project rule "strict single-thread for in-sweep numba kernels" we
@@ -1314,24 +1336,45 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     def _iterate_to_converge(stride, cur_nx_, cur_ny_, cur_mx_,
                               node_nw_, node_sw_, node_se_, node_ne_,
                               d_node_, briggs_b, briggs_idx, mode_label):
-        """Call _iterate_once until convergence or max iter."""
+        """Call _iterate_once until convergence or max iter.
+
+        Dispatch priority: Cython (_HAVE_CYTHON) > Numba (_HAVE_NUMBA) >
+        pure-Python.  GMT_SURFACE_PY_CYTHON=0 forces Numba (or pure-Python
+        if Numba is also unavailable).
+        """
         current_max_iter = max_iter * stride
         current_limit = converge_limit_n / stride
         max_change = float("inf")
         for it in range(1, current_max_iter + 1):
-            _set_bcs(u, cur_nx_, cur_ny_, cur_mx_,
-                     node_sw_, node_nw_, node_se_, node_ne_,
-                     d_node_[_N2], d_node_[_NW], d_node_[_N1], d_node_[_NE],
-                     d_node_[_W2], d_node_[_W1],
-                     d_node_[_E1], d_node_[_E2],
-                     d_node_[_SW], d_node_[_S1], d_node_[_SE], d_node_[_S2],
-                     x0c, x1c, y0c, y1c, eps_p2, eps_m2,
-                     two_plus_ep2, two_plus_em2)
-            max_change = _iterate_once(
-                u, status, briggs_b, briggs_idx,
-                coeff_unc, coeff_con, d_node_, _P_INDICES,
-                a0_const_2, 1.0 - omega, omega,
-                node_nw_, cur_nx_, cur_ny_, cur_mx_)
+            if _HAVE_CYTHON:
+                _cython_set_bcs(
+                    u, cur_nx_, cur_ny_, cur_mx_,
+                    node_sw_, node_nw_, node_se_, node_ne_,
+                    d_node_[_N2], d_node_[_NW], d_node_[_N1], d_node_[_NE],
+                    d_node_[_W2], d_node_[_W1],
+                    d_node_[_E1], d_node_[_E2],
+                    d_node_[_SW], d_node_[_S1], d_node_[_SE], d_node_[_S2],
+                    x0c, x1c, y0c, y1c, eps_p2, eps_m2,
+                    two_plus_ep2, two_plus_em2)
+                max_change = _cython_iterate_once(
+                    u, status, briggs_b, briggs_idx,
+                    coeff_unc, coeff_con, d_node_, _P_INDICES,
+                    a0_const_2, 1.0 - omega, omega,
+                    node_nw_, cur_nx_, cur_ny_, cur_mx_)
+            else:
+                _set_bcs(u, cur_nx_, cur_ny_, cur_mx_,
+                         node_sw_, node_nw_, node_se_, node_ne_,
+                         d_node_[_N2], d_node_[_NW], d_node_[_N1], d_node_[_NE],
+                         d_node_[_W2], d_node_[_W1],
+                         d_node_[_E1], d_node_[_E2],
+                         d_node_[_SW], d_node_[_S1], d_node_[_SE], d_node_[_S2],
+                         x0c, x1c, y0c, y1c, eps_p2, eps_m2,
+                         two_plus_ep2, two_plus_em2)
+                max_change = _iterate_once(
+                    u, status, briggs_b, briggs_idx,
+                    coeff_unc, coeff_con, d_node_, _P_INDICES,
+                    a0_const_2, 1.0 - omega, omega,
+                    node_nw_, cur_nx_, cur_ny_, cur_mx_)
             if max_change <= current_limit:
                 if verbose:
                     print(f"[surface_py] stride={stride} {mode_label} "
@@ -1473,9 +1516,13 @@ def gmt_surface_py(x: np.ndarray, y: np.ndarray, z: np.ndarray,
 # ---------------------------------------------------------------------------
 def _diag_info() -> dict:
     return {
+        "have_cython": _HAVE_CYTHON,
+        "cython_env_disabled": os.environ.get("GMT_SURFACE_PY_CYTHON", "1") == "0",
         "have_numba": _HAVE_NUMBA,
         "num_threads": int(os.environ.get("NUMBA_NUM_THREADS", "0")) or None,
         "env_disabled": os.environ.get("GMT_SURFACE_PY_NUMBA", "1") == "0",
+        "active_backend": ("cython" if _HAVE_CYTHON else
+                           "numba" if _HAVE_NUMBA else "pure-python"),
     }
 
 

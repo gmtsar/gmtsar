@@ -21,3 +21,6 @@ bin_py/tests/data/
 # Scratch dir for one-off audit/review/perf-snapshot artifacts that
 # aren't part of the tracked rule-7 milestone set. Not shipped via git.
 .scratch/
+utils/_surface_kernel*.so
+utils/_surface_kernel.c
+utils/build/
