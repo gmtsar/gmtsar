@@ -861,3 +861,17 @@ PARTITION (avoid file overlap): wei-lin (a72f09080b6c03050) owns snaphu (pinpoin
 - **PERF WALL remains:** 256x256 does NOT complete in reasonable time (>26 min mira / >400s my run) — pure-Python/numba network-simplex too slow for full-scale grids. Gated test_parity_256x256 behind SNAPHU_SLOW_TEST=1 so the suite stays fast.
 - **Landed UNWIRED** (production utils/snaphu.py uses the C binary; bin_py/snaphu_py not imported by it). Files: bin_py/snaphu_py/snaphu_solver_numba.py (new, 2150 lines), snaphu_py.py (WrapPhase seed), bin_py/tests/test_snaphu_py.py (oracle tests + slow-gate). Disjoint from the running grdmath=1 full sweep.
 - **VERDICT for user:** pure-Python snaphu is now CORRECT (C-parity proven on real-data patches), but NOT fast enough for production. This reframes cffi-vs-park: algorithm solved, throughput is the only remaining gap. Options: (a) cffi/Cython the SoA kernel for speed (correctness now done → lower risk); (b) keep C binary in production + this as the audit/reference port.
+
+## 2026-06-17 (wei-lin session re-entry) — Phase-0 audit + DECISION 1 + DECISION 2
+
+Phase-0 git audit: initial `gitStatus` snapshot showed HEAD at fe3a418 (v2.3.4) — stale snapshot from session start; actual HEAD was already c45ae88 (v2.3.7) with v2.3.5/6/7 all landed by the prior autonomous pass.
+
+**DECISION 1 (grdmath =bf):** Already executed by prior pass (v2.3.5 initial binary-float write, v2.3.6 header correction). This session additionally landed 8f428d9 (v2.3.5) — an independent fix pass that was superseded by v2.3.6's header correction. Net: no rework needed; v2.3.6 is the correct final fix.
+
+**DECISION 2 (snaphu cycling):** Already executed by prior pass (v2.3.7). This session dispatched a fresh Mira (worktree agent-aeb5dab8249cf2ccd) targeting the same two bugs. Mira's Rule-13 pre-check confirmed the scalar oracle (`network_flow_optimize` in snaphu_py.py) still hangs at 8x10+ synthetic patches — this is a PRE-EXISTING scalar oracle issue, NOT the production path. v2.3.7 fixed the NUMBA solver (the real port) and verified it float32-exact vs C on 30x30 + 64x64 real data. The scalar is a slow reference port acknowledged as non-production; its hanging behavior on >8x10 is expected (pre-existing, confirmed independent). This session's Mira did NOT land (superseded by v2.3.7).
+
+**Current HEAD:** c45ae88 = v2.3.7. Both DECISION 1 and DECISION 2 fully resolved.
+
+**Pending USER decisions:**
+- grdmath default-flip: EVIDENCE-READY per v2.3.6 session log (RS2 smoke GMTSAR_GRDMATH_PY=1 clean); default still OFF. Flip = default change → requires user approval.
+- snaphu throughput: numba correct, too slow for 256x256+. cffi/Cython vs keep C-binary = user decision.
