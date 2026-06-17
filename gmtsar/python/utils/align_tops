@@ -32,7 +32,70 @@ import re
 import subprocess
 import sys
 
+import numpy as _np
+
 from gmtsar_lib import run, check_file_report, replace_strings
+
+# In-process gmt surface replacement (gmt_surface_py + gmt_grd_io).
+# Gated by GMTSAR_SURFACE_INPROC=1 (default ON since v2.3.0).
+# Set GMTSAR_SURFACE_INPROC=0 to fall back to the gmt subprocess.
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_surface_py import gmt_surface_py as _surface_inproc
+    import gmt_grd_io as _grd_io
+    _HAVE_GMT_GRD_IO = True
+except Exception as _e:
+    _HAVE_GMT_GRD_IO = False
+
+
+def _surface_inproc_f64(xyz_path: str, region_str: str, inc_str: str,
+                         tension: float, max_iter: int, out_path: str,
+                         pixel_reg: bool = False) -> None:
+    """In-process replacement for:
+        gmt surface <xyz_path> -bi3d -R<region> -I<inc> -T<tension> -N<max_iter> [-r] -G<out>
+
+    Reads xyz_path (binary 3-float64 rows: x, y, z), invokes gmt_surface_py,
+    and writes the result via gmt_grd_io.write_gmt_grd.
+
+    Raises on failure — no silent fallback (Rule 12).
+    """
+    parts = region_str.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"align_tops: bad region '{region_str}'")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    inc_parts = inc_str.split("/")
+    if len(inc_parts) == 1:
+        dx = dy = float(inc_parts[0])
+    else:
+        dx, dy = float(inc_parts[0]), float(inc_parts[1])
+
+    data = _np.fromfile(xyz_path, dtype=_np.float64)
+    if data.size % 3 != 0:
+        raise ValueError(f"align_tops: {xyz_path} size {data.size} not divisible by 3 float64s")
+    data = data.reshape(-1, 3)
+    x, y, z = data[:, 0], data[:, 1], data[:, 2]
+
+    grid = _surface_inproc(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(dx, dy),
+        tension=tension,
+        max_iter=max_iter,
+        pixel_reg=pixel_reg,
+    )
+    ny, nx = grid.shape
+    if pixel_reg:
+        x_coord = x0 + dx / 2.0 + _np.arange(nx) * dx
+        y_coord = y0 + dy / 2.0 + _np.arange(ny) * dy
+        node_offset = 1
+    else:
+        x_coord = x0 + _np.arange(nx) * dx
+        y_coord = y0 + _np.arange(ny) * dy
+        node_offset = 0
+    history = f"gmt_surface_py (-T{tension}) -I{inc_str} -N{max_iter}"
+    _grd_io.write_gmt_grd(out_path, grid, x_coord, y_coord,
+                          node_offset=node_offset, history=history)
 
 
 def _maybe_exec_csh_fallback() -> None:
@@ -74,6 +137,9 @@ def _frame_prefix(input_name):
 
 
 def align_tops():
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+              and _HAVE_GMT_GRD_IO)
+
     _maybe_exec_csh_fallback()  # GMTSAR_ALIGN_TOPS_PY=0 → exec csh, never return
     if len(sys.argv) not in (6, 7):
         sys.exit(
@@ -201,13 +267,19 @@ def align_tops():
         run("awk '{ printf(\"%.6f %.6f %.6f \\n\", $1,$3,$4) }' < offset.dat > a.xyz")
         run(f"gmt blockmedian r.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > rtmp.xyz")
         run(f"gmt blockmedian a.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > atmp.xyz")
-        p1 = subprocess.Popen(
-            f"gmt surface rtmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Grtmp.grd -N1000 -r",
-            shell=True)
-        p2 = subprocess.Popen(
-            f"gmt surface atmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Gatmp.grd -N1000 -r",
-            shell=True)
-        p1.wait(); p2.wait()
+        if inproc:
+            _surface_inproc_f64("rtmp.xyz", f"0/{rmax}/0/{amax}", "16/8",
+                                0.3, 1000, "rtmp.grd", pixel_reg=True)
+            _surface_inproc_f64("atmp.xyz", f"0/{rmax}/0/{amax}", "16/8",
+                                0.3, 1000, "atmp.grd", pixel_reg=True)
+        else:
+            p1 = subprocess.Popen(
+                f"gmt surface rtmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Grtmp.grd -N1000 -r",
+                shell=True)
+            p2 = subprocess.Popen(
+                f"gmt surface atmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Gatmp.grd -N1000 -r",
+                shell=True)
+            p1.wait(); p2.wait()
         run("gmt grdmath rtmp.grd FLIPUD = r.grd")
         run("gmt grdmath atmp.grd FLIPUD = a.grd")
 
