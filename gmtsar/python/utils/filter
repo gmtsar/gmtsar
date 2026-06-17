@@ -16,9 +16,11 @@ import subprocess, glob, shutil
 from gmtsar_lib import *
 
 # Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
-# Default OFF (GMTSAR_GRDMATH_PY=0); set =1 to activate.
+# Default ON (GMTSAR_GRDMATH_PY=1 since v2.3.8); set =0 to force the gmt
+# grdmath subprocess. Full 21-case sweep under =1 is 20/21 py-vs-csh clean
+# (only diff = the documented S1_Ridgecrest no-DEM-corner surface artifact).
 # All operators bit/float64-parity verified vs C binary in
-# bin_py/tests/test_gmt_grdmath_py.py (39 tests, 0 failures).
+# bin_py/tests/test_gmt_grdmath_py.py (42 tests, incl. corr_chain=bf).
 try:
     import gmt_grdmath_py as _gm  # type: ignore
     _HAVE_GRDMATH_PY = True
@@ -27,7 +29,7 @@ except ImportError:
 
 
 def _grdmath_py_on() -> bool:
-    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "0") == "1"
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 def filter():
     run("alias rm 'rm -f'")
