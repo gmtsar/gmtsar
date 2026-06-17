@@ -875,3 +875,20 @@ Phase-0 git audit: initial `gitStatus` snapshot showed HEAD at fe3a418 (v2.3.4) 
 **Pending USER decisions:**
 - grdmath default-flip: EVIDENCE-READY per v2.3.6 session log (RS2 smoke GMTSAR_GRDMATH_PY=1 clean); default still OFF. Flip = default change → requires user approval.
 - snaphu throughput: numba correct, too slow for 256x256+. cffi/Cython vs keep C-binary = user decision.
+
+## 2026-06-17 04:00 — a71831b5 (old snaphu agent) completed: independent corroboration of v2.3.7 + tiling claim DISPROVEN
+- a71831b5 INDEPENDENTLY found the SAME root cause + fix as a6b06c77 (the `prv_root==mntpt` thread-rewire read-after-write aliasing) → strong corroboration of the v2.3.7 anti-cycling fix. Its worktree solver = same fix already landed; nothing new to land.
+- Its extra cases: r800c500 30x30 (resid 2.38e-7, wrap_diffs 0) + 64x64 (2.86e-6, wrap_diffs 0) INTEGER-EXACT — matches my v2.3.7 verification. NOTE: r1500c1000 30x30 showed wrap_diffs 897/900 (resid 1.26e-6) — a different patch location where the solver finds an integer-shifted (possibly alternate-valid) solution; NOT in the landed verification set, port is unwired, so does not affect v2.3.7. Flag for any future wiring.
+- Confirms 256x256 hang = PERF (no -6666 sentinel; candidate loop O(65k×256) infeasible in pure Python), NOT cycling — matches my verdict.
+- **Rule 13 — DISPROVEN claim:** a71831b5 stated "GMTSAR tiles at <=64x64 by default, works correctly." FALSE. utils/snaphu.py:68 = "Single-tile snaphu unwrap"; snaphu.conf.brief NTILEROW/NTILECOL commented out (default 1 tile). GMTSAR runs snaphu SINGLE-TILE on the full grid (e.g. ALOS_haiti 2826x3456 ~9.7M nodes). So the pure-Python solver (walls at 256x256) is NOT production-viable as-is — wiring would require cffi/Cython speed OR enabling snaphu tiling (which changes results, not GMTSAR default). The (a) cffi vs (b) park decision is unchanged but now better-grounded: cffi is REQUIRED for any production wiring.
+
+## 2026-06-17 04:50 — FULL 21-case GMTSAR_GRDMATH_PY=1 sweep DONE: 20/21 py-vs-csh CLEAN → grdmath flip EVIDENCE-READY
+- **py-vs-csh parity (the real flip criterion): 20/21 CLEAN.** All ALOS/ALOS2/ALOS4/ENVI/ERS/CSK/NISAR/RS2/TSX/S1-TOPS/S1_Larsen PASS under grdmath=1.
+- ONLY failure: S1_Ridgecrest_EQ phasefilt.grd complex-rms 0.3516 (thr 0.15) = the KNOWN documented surface no-DEM-corner artifact (same 0.3516 value as surface-INPROC; present regardless of grdmath; surface is default-ON so it appears here too). NOT a grdmath regression.
+- Blessed-hash diff = 20 FAIL / 1 PASS, but that's md5 over-sensitivity: grdmath=1's float64-internal ops produce bit-different-but-rms-clean files vs the v2.3.0 grdmath=0 blessed snapshot. The rms-threshold scorecard (py-vs-csh) is the parity truth → 20/21 clean.
+- **VERDICT: grdmath default-flip (GMTSAR_GRDMATH_PY default OFF→ON) is FULLY evidence-ready.** Meets the same bar as the surface flip (v2.3.0). ESCALATED to user for approval (default change). Not flipped without approval.
+
+## 2026-06-17 08:00 — v2.3.8 LANDED: grdmath default flipped OFF→ON (user-approved)
+- USER approved the flip. Changed utils/filter:30 + utils/stack:26 default "0"→"1" (+ comments). 
+- Evidence: full 21-case GMTSAR_GRDMATH_PY=1 sweep 20/21 py-vs-csh clean (only the documented S1_Ridgecrest no-DEM surface corner); plus a fresh default-env (no override) RS2 smoke = 6/6 py-vs-csh SUCCESS (exercises grdmath_corr_chain=bf corr_ll path by default). Set GMTSAR_GRDMATH_PY=0 to force the gmt subprocess.
+- grdmath now joins surface as a Python-by-default compute core. snaphu cffi/Cython (user-approved) in flight (mira a1f99c00) for the final perf frontier.
