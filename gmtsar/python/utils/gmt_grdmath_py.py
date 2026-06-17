@@ -68,6 +68,7 @@ PARITY GATE
 from __future__ import annotations
 
 import os
+import struct
 import sys
 from typing import Tuple, Optional
 
@@ -459,15 +460,114 @@ def grdmath_atan2_mul_flipud(y_grd: str, x_grd: str,
                 f"= {dst} [gmt_grdmath_py {ctx}]"))
 
 
+def _write_gmt_binary_float(path: str, data: np.ndarray,
+                             x: np.ndarray, y: np.ndarray,
+                             info: dict, hist: str) -> None:
+    """Write a genuine GMT binary-float (=bf) file at `path`.
+
+    Format: 892-byte little-endian header followed by ny*nx float32 values
+    in row-major order (top row first, i.e. y[-1] first).
+
+    This matches what `conv` expects when it opens the file via fopen() after
+    GMT_Read_Data with the =bf suffix: it seeks to byte 892 and reads raw
+    float32 data directly.
+
+    Header layout (all little-endian):
+        bytes 0-3:   nx (int32)
+        bytes 4-7:   ny (int32)
+        bytes 8-11:  0 (int32 padding)
+        bytes 12-19: xmin (float64)  — x[0]
+        bytes 20-27: xmax (float64)  — x[-1]
+        bytes 28-35: ymin (float64)  — y[0]
+        bytes 36-43: ymax (float64)  — y[-1]
+        bytes 44-51: zmin (float64)  — nanmin of data
+        bytes 52-59: zmax (float64)  — nanmax of data
+        bytes 60-67: xy_off (float64) — 1.0 (GMT always writes 1.0 for gridline-reg)
+        bytes 68-75: xinc (float64)
+        bytes 76-83: yinc (float64)
+        bytes 84-91: nan_value (float64) — 0.0 (NaN in data is float32 NaN)
+        bytes 92-171: x_units (80 bytes, null-padded) — b'x'
+        bytes 172-251: y_units (80 bytes, null-padded) — b'y'
+        bytes 252-331: z_units (80 bytes, null-padded) — b'z'
+        bytes 332-411: title (80 bytes, null-padded)
+        bytes 412-731: command (320 bytes, null-padded)
+        bytes 732-891: remark (160 bytes, null-padded)
+    Total header: 892 bytes.
+
+    Data: ny*nx float32 LE values, top row (y[-1]) first.
+    NaN cells are written as float32 NaN (0x7fc00000).
+    """
+    data = np.asarray(data, dtype=np.float32)
+    ny, nx = data.shape
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+
+    xmin = float(x[0])
+    xmax = float(x[-1])
+    ymin = float(y[0])
+    ymax = float(y[-1])
+    xinc = float(info.get("x_inc", (x[-1] - x[0]) / (nx - 1) if nx > 1 else 1.0))
+    yinc = float(info.get("y_inc", (y[-1] - y[0]) / (ny - 1) if ny > 1 else 1.0))
+
+    valid = data[~np.isnan(data)]
+    if valid.size == 0:
+        zmin = zmax = 0.0
+    else:
+        zmin = float(np.min(valid))
+        zmax = float(np.max(valid))
+
+    # Build header in exactly 892 bytes
+    hdr = bytearray(892)
+
+    # Fixed-layout fields
+    struct.pack_into("<i", hdr, 0, nx)
+    struct.pack_into("<i", hdr, 4, ny)
+    struct.pack_into("<i", hdr, 8, 0)
+    struct.pack_into("<d", hdr, 12, xmin)
+    struct.pack_into("<d", hdr, 20, xmax)
+    struct.pack_into("<d", hdr, 28, ymin)
+    struct.pack_into("<d", hdr, 36, ymax)
+    struct.pack_into("<d", hdr, 44, zmin)
+    struct.pack_into("<d", hdr, 52, zmax)
+    struct.pack_into("<d", hdr, 60, 1.0)   # xy_off — GMT gridline-reg always writes 1.0
+    struct.pack_into("<d", hdr, 68, xinc)
+    struct.pack_into("<d", hdr, 76, yinc)
+    struct.pack_into("<d", hdr, 84, 0.0)   # nan_value
+
+    # String fields (null-padded to fixed widths)
+    def _pack_str(buf, offset, s, width):
+        b = s.encode("ascii", errors="replace")[:width]
+        buf[offset:offset + len(b)] = b
+        # remainder stays 0x00 (bytearray is zero-initialised)
+
+    _pack_str(hdr, 92, "x", 80)
+    _pack_str(hdr, 172, "y", 80)
+    _pack_str(hdr, 252, "z", 80)
+    _pack_str(hdr, 332, "", 80)                  # title
+    _pack_str(hdr, 412, hist[:319], 320)          # command
+    # remark at 732: leave zeros
+
+    # Data is written as-is (row 0 of `data` = row 0 in the file).
+    # Callers must pass data in the row order that GMT would have written
+    # to a =bf file.  For grdmath_corr_chain, the FLIPUD operator has
+    # already been applied to `result` before calling this function, so
+    # result[0, :] is the northernmost (top) row — matching GMT's =bf
+    # layout where row 0 = first y value after FLIPUD has been applied.
+    with open(path, "wb") as fh:
+        fh.write(bytes(hdr))
+        fh.write(np.asarray(data, dtype="<f4").tobytes())
+
+
 def grdmath_corr_chain(amp_grd: str, tmp_grd: str, mask_grd: str,
                         dst: str, ctx: str = "") -> None:
-    """In-process `gmt grdmath <amp> <tmp> SQRT DIV <mask> MUL FLIPUD = <dst>=bf`.
+    """In-process `gmt grdmath <amp> <tmp> SQRT DIV <mask> MUL FLIPUD = <dst>`.
 
     Corresponds to filter:218:
         gmt grdmath amp.grd tmp.grd SQRT DIV mask.grd MUL FLIPUD = tmp2.grd=bf
 
-    Note: the `=bf` suffix is the GMT binary-float storage hint for the
-    file; the Python path writes float32 netCDF (equally accepted by `conv`).
+    When `dst` ends with `=bf`, writes a genuine GMT binary-float file so that
+    the downstream `conv` C binary can open it via fopen() + raw float32 read.
+    When `dst` has no `=bf` suffix, writes a netCDF4 file (existing behaviour).
     """
     if not _HAVE_IO:
         raise RuntimeError(f"grdmath_corr_chain requires gmt_grd_io: {_io_err_msg}")
@@ -482,11 +582,15 @@ def grdmath_corr_chain(amp_grd: str, tmp_grd: str, mask_grd: str,
     sqrt_tmp = _op_sqrt(tmp_d)
     divided = _op_div(amp, sqrt_tmp)
     result = np.flipud(_op_mul(divided, mask))
-    # dst may have "=bf" suffix — strip it for the file path
-    dst_path = dst.split("=")[0] if "=" in dst else dst
-    _save(dst_path, result, x, y, info,
-          hist=(f"gmt grdmath {amp_grd} {tmp_grd} SQRT DIV "
-                f"{mask_grd} MUL FLIPUD = {dst} [gmt_grdmath_py {ctx}]"))
+    hist = (f"gmt grdmath {amp_grd} {tmp_grd} SQRT DIV "
+            f"{mask_grd} MUL FLIPUD = {dst} [gmt_grdmath_py {ctx}]")
+    if "=bf" in dst:
+        # Strip the =bf suffix to get the actual file path, then write
+        # a genuine GMT binary-float file that conv can fopen() directly.
+        dst_path = dst.split("=")[0]
+        _write_gmt_binary_float(dst_path, result, x, y, info, hist=hist)
+    else:
+        _save(dst, result, x, y, info, hist=hist)
 
 
 def grdmath_ge_nan_mul(a: str, thresh, mask_grd: str, dst: str,
