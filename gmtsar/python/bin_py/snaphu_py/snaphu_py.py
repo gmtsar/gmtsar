@@ -3252,7 +3252,13 @@ def integrate_phase(phase: np.ndarray, flows: np.ndarray) -> np.ndarray:
     Positive rowflow means subtract 2π going down; positive colflow means add 2π going right.
     """
     nrow, ncol = phase.shape
-    phase64 = phase.astype(np.float64)
+    # C calls WrapPhase() in ReadInputFile before IntegratePhase.
+    # WrapPhase maps phase to [0, 2π) via: phase -= TWOPI * floor(phase / TWOPI).
+    # We must apply the same transform so the seed pixel matches C exactly.
+    # Without this, phase[0,0] in [-π,π] gives a seed ~2π below C's [0,2π) value,
+    # shifting the entire unwrapped output by -2π (Bug 1, verdict3).
+    phase64 = (phase.astype(np.float64)
+               - TWOPI * np.floor(phase.astype(np.float64) / TWOPI))
     unwrap = np.zeros((nrow, ncol), dtype=np.float64)
 
     # row-direction arc flows: rows 0..nrow-2, shape (nrow-1, ncol)
@@ -3261,7 +3267,7 @@ def integrate_phase(phase: np.ndarray, flows: np.ndarray) -> np.ndarray:
     # Note: C stores (nrow) rows of (ncol-1) elements in rows nrow-1..2*nrow-2
     colflow = flows[nrow - 1:, :ncol - 1].astype(np.float64)  # (nrow, ncol-1)
 
-    # Reference pixel
+    # Reference pixel (now in [0, 2π) after WrapPhase above)
     unwrap[0, 0] = phase64[0, 0]
 
     # Top row: integrate left to right using col flows
