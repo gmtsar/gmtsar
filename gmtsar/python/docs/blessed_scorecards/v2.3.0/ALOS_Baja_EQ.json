@@ -1,0 +1,21 @@
+{
+  "case": "ALOS_Baja_EQ",
+  "tag": "v2.3.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS_Baja_EQ.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2009351_2010124/corr_ll.grd": "3e41aec9ee2f3f5cc719ab6f95095cf0",
+    "intf/2009351_2010124/corr_ll.png": "8db57fcb44d4d244bb90133265d99b61",
+    "intf/2009351_2010124/display_amp_ll.png": "2f033097e9512bd08f8cdd2e04b3d234",
+    "intf/2009351_2010124/filtcorr.grd": "4f121941bd454281325a9229a038937e",
+    "intf/2009351_2010124/phasefilt.grd": "e34cad9be0229d029f9bffdab1e64774",
+    "intf/2009351_2010124/phasefilt_mask_ll.png": "dbdbef1e1f71c4872fffdfc1d0f21927"
+  }
+}

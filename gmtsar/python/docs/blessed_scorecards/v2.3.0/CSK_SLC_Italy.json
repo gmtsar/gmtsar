@@ -1,0 +1,21 @@
+{
+  "case": "CSK_SLC_Italy",
+  "tag": "v2.3.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/CSK_SLC_Italy.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2009101_2009133/corr_ll.grd": "f7548a4c5c413a4d247454cf199bb23d",
+    "intf/2009101_2009133/corr_ll.png": "b8ac868ed8e1ebd29a594c59b5c7acd3",
+    "intf/2009101_2009133/display_amp_ll.png": "e76849295c61b5232288169fd64a27d5",
+    "intf/2009101_2009133/filtcorr.grd": "48f935a5ce79aa638541839ccb5712de",
+    "intf/2009101_2009133/phasefilt.grd": "ca13b56a80707a7f8237a5ed613cf5d2",
+    "intf/2009101_2009133/phasefilt_mask_ll.png": "ff20cb67a29e3c1544770c12aa37af0a"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "case": "ALOS2_Brazil",
+  "tag": "v2.3.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS2_Brazil.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2014225_2014239/corr_ll.grd": "5b14000115b45b9e09f5ed7e799805ea",
+    "intf/2014225_2014239/corr_ll.png": "e03d4e96bdc3c8dbc4a756c19bc0da00",
+    "intf/2014225_2014239/display_amp_ll.png": "d124e2c6d1551fd4e69da4d0e210d580",
+    "intf/2014225_2014239/filtcorr.grd": "b5ee59ebc3d370b6ba8c7ae9a1290f48",
+    "intf/2014225_2014239/phasefilt.grd": "40baef2ef42119b60e9ced5242909019",
+    "intf/2014225_2014239/phasefilt_mask_ll.png": "30187bc74375a460f95dc28beaa4d088"
+  }
+}

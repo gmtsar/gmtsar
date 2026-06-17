@@ -731,3 +731,15 @@ SPATIAL DIAG of the H_res phasefilt diff (cos-distance 6x6 map): rows 0-4 = 0.00
 DECISION: do NOT flip GMTSAR_SURFACE_INPROC default (strict all-grids gate fails 15/16 on no-data pixels). INPROC stays OPT-IN. Final/masked/merged products are CORRECT with INPROC; only the pre-mask raw H_res intermediate diverges in no-data pixels.
 OPEN (user's call): make parity coherence-masked/coverage-aware (principled — gmtsar masks no-data anyway) → would let INPROC pass cleanly → v2.3.0. Deferred to user; do not weaken gate unilaterally.
 Banking: _time→time test typo fix (was masking the gated CSK real-scale test) as v2.1.42. float32 throw_away C-parity refinement available in worktrees but deferred (2-cell, no gate impact).
+
+## 2026-06-16 00:46 — Phase-2 perf WALL + INPROC coherence-gate DISPROVEN
+PERF (Mira ac43f8f7, completed): pure-Python/Numba gmt_surface_py = ~1.14x C (435.8s py / 383.2s C). Micro-opts saved ~0.18s (below noise) — NOT landing (no benefit). Iteration counts match C within 1-2%; residual is Numba-LLVM vs gcc per-node throughput (~3.7%), NOT FMA. To reach ≤1.0x needs a COMPILED EXTENSION (Cython kernel for _iterate_once, or cffi→libgmt surface_iterate) = new build dependency → USER DECISION (Mira correctly stopped). Parity intact (20/20 non-CSK tests, CSK ≤0.0666m). main NOT modified (worktree only).
+INPROC coherence-gate (my measurement, Rule 13): coherence masking does NOT fix the H_res phasefilt 0.35 — corr>0.15 still 0.3517 (96.6% px kept). The divergent pixels are HIGH-COHERENCE no-DEM-zone (top rows; per-row scan: only top band hot=1.05, all else 0.0). topo correction undefined there for BOTH C and py. Coherence-aware gate WON'T unblock; only a DEM-coverage mask / topo_ra clip would (methodology change) → USER DECISION. Excluding no-DEM top rows drops metric 0.35→0.18 (band starts ~row 11000 of 12192).
+NEXT (autonomous, safe): full 21-case INPROC=1 sweep to characterize which cases pass/fail w/ Python surface (is S1_Ridgecrest H_res the ONLY no-DEM failure?). Informs INPROC-default decision (maybe coverage-gated/per-case default).
+
+## 2026-06-16 03:49 — FULL 21-CASE INPROC=1 SWEEP COMPLETE: 20/21 clean
+Fresh full sweep (GMTSAR_SURFACE_INPROC=1, SWEEP_FORCE=py, vs preserved csh oracles), job bi7dmygpl:
+  PASS 20/21 — ALL cases clean incl all 4 S1 TOPS (Greece/LA/COVE), CSK_SLC_Italy, S1_Larsen_C, all ALOS/ALOS2/ENVI/ERS/TSX/NISAR/RS2/CSK_RAW.
+  FAIL 1/21 — S1_Ridgecrest_EQ ONLY: H_res/intf raw phasefilt.grd complex-rms 0.352 (thr 0.15) = the no-DEM corner (data y≤11160, grid y→12192; high-coherence but undefined topo correction; final/masked/merge products PASS).
+⇒ The in-process Python surface (gmt_surface_py) is PRODUCTION-FAITHFUL across the entire test matrix; the lone holdout is scientifically-meaningless no-DEM pixels in one case's high-res config. S1 TOPS pipeline itself is fine (Greece/LA/COVE all pass) — Ridgecrest unique only b/c its DEM doesn't cover the full H_res grid.
+DECISION (presented to user): coverage-gated INPROC default ON (full-Python surface) → v2.3.0, with S1_Ridgecrest H_res known-diff documented; OR keep opt-in. + perf Cython/cffi (1.14x→≤1.0x) decision.
