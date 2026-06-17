@@ -472,27 +472,43 @@ def _write_gmt_binary_float(path: str, data: np.ndarray,
     GMT_Read_Data with the =bf suffix: it seeks to byte 892 and reads raw
     float32 data directly.
 
-    Header layout (all little-endian):
-        bytes 0-3:   nx (int32)
-        bytes 4-7:   ny (int32)
-        bytes 8-11:  0 (int32 padding)
-        bytes 12-19: xmin (float64)  — x[0]
-        bytes 20-27: xmax (float64)  — x[-1]
-        bytes 28-35: ymin (float64)  — y[0]
-        bytes 36-43: ymax (float64)  — y[-1]
-        bytes 44-51: zmin (float64)  — nanmin of data
-        bytes 52-59: zmax (float64)  — nanmax of data
-        bytes 60-67: xy_off (float64) — 1.0 (GMT always writes 1.0 for gridline-reg)
-        bytes 68-75: xinc (float64)
-        bytes 76-83: yinc (float64)
-        bytes 84-91: nan_value (float64) — 0.0 (NaN in data is float32 NaN)
-        bytes 92-171: x_units (80 bytes, null-padded) — b'x'
+    GMT native binary (=bf) header layout — verified byte-for-byte against
+    `gmt grdmath ... = <file>=bf` on RS2 Hawaii real-data (v2.3.6 fix):
+
+        bytes 0-3:   nx (int32) = n_columns
+        bytes 4-7:   ny (int32) = n_rows
+        bytes 8-11:  registration (int32): 0=gridline, 1=pixel
+        bytes 12-19: xmin (float64) — wesn[XLO]: pixel-reg = x[0] - xinc/2
+        bytes 20-27: xmax (float64) — wesn[XHI]: pixel-reg = x[-1] + xinc/2
+        bytes 28-35: ymin (float64) — wesn[YLO]: pixel-reg = y[0] - yinc/2
+        bytes 36-43: ymax (float64) — wesn[YHI]: pixel-reg = y[-1] + yinc/2
+        bytes 44-51: zmin (float64) — nanmin of data
+        bytes 52-59: zmax (float64) — nanmax of data
+        bytes 60-67: xinc (float64)           <── NO xy_off field between zmax and xinc
+        bytes 68-75: yinc (float64)
+        bytes 76-83: nan_value (float64) — 1.0 (GMT 6.4 convention for this version)
+        bytes 84-91: zeros (pad to 92-byte numeric block)
+        bytes 92-171:  x_units (80 bytes, null-padded) — b'x'
         bytes 172-251: y_units (80 bytes, null-padded) — b'y'
         bytes 252-331: z_units (80 bytes, null-padded) — b'z'
         bytes 332-411: title (80 bytes, null-padded)
         bytes 412-731: command (320 bytes, null-padded)
         bytes 732-891: remark (160 bytes, null-padded)
     Total header: 892 bytes.
+
+    PREVIOUS BUG (fixed in v2.3.6): the old code wrote:
+        bytes 8-11:  0 (always — wrong; pixel-reg grids need 1)
+        bytes 12-19: x[0] (node center — wrong for pixel-reg; should be x[0]-xinc/2)
+        bytes 20-27: x[-1] (node center — wrong; should be x[-1]+xinc/2)
+        bytes 28-35: y[0] (wrong)
+        bytes 36-43: y[-1] (wrong)
+        bytes 60-67: 1.0 (fictional "xy_off" field — does not exist in this format)
+        bytes 68-75: xinc (one slot too late)
+        bytes 76-83: yinc (one slot too late)
+        bytes 84-91: 0.0 (nan_value at wrong offset)
+    GMT reinterpreted this as: xinc=1.0, yinc=xinc=4, and gridline-reg,
+    causing n_columns=(xmax-xmin)/1+1 = 3413 (instead of 854), producing
+    1435×3414 conv output instead of the correct 718×854.
 
     Data: ny*nx float32 LE values, top row (y[-1]) first.
     NaN cells are written as float32 NaN (0x7fc00000).
@@ -502,12 +518,22 @@ def _write_gmt_binary_float(path: str, data: np.ndarray,
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
 
-    xmin = float(x[0])
-    xmax = float(x[-1])
-    ymin = float(y[0])
-    ymax = float(y[-1])
     xinc = float(info.get("x_inc", (x[-1] - x[0]) / (nx - 1) if nx > 1 else 1.0))
     yinc = float(info.get("y_inc", (y[-1] - y[0]) / (ny - 1) if ny > 1 else 1.0))
+    node_offset = int(info.get("node_offset", 1))  # 1=pixel (GMTSAR default), 0=gridline
+
+    # WESN: for pixel-registration, boundaries are half-cell outside the node centres.
+    # For gridline-registration, node centres ARE the boundaries.
+    if node_offset == 1:
+        xmin = float(x[0]) - xinc / 2.0
+        xmax = float(x[-1]) + xinc / 2.0
+        ymin = float(y[0]) - yinc / 2.0
+        ymax = float(y[-1]) + yinc / 2.0
+    else:
+        xmin = float(x[0])
+        xmax = float(x[-1])
+        ymin = float(y[0])
+        ymax = float(y[-1])
 
     valid = data[~np.isnan(data)]
     if valid.size == 0:
@@ -519,20 +545,20 @@ def _write_gmt_binary_float(path: str, data: np.ndarray,
     # Build header in exactly 892 bytes
     hdr = bytearray(892)
 
-    # Fixed-layout fields
+    # Fixed-layout fields — layout verified against gmt grdmath oracle (RS2 Hawaii)
     struct.pack_into("<i", hdr, 0, nx)
     struct.pack_into("<i", hdr, 4, ny)
-    struct.pack_into("<i", hdr, 8, 0)
+    struct.pack_into("<i", hdr, 8, node_offset)   # registration: 0=gridline, 1=pixel
     struct.pack_into("<d", hdr, 12, xmin)
     struct.pack_into("<d", hdr, 20, xmax)
     struct.pack_into("<d", hdr, 28, ymin)
     struct.pack_into("<d", hdr, 36, ymax)
     struct.pack_into("<d", hdr, 44, zmin)
     struct.pack_into("<d", hdr, 52, zmax)
-    struct.pack_into("<d", hdr, 60, 1.0)   # xy_off — GMT gridline-reg always writes 1.0
-    struct.pack_into("<d", hdr, 68, xinc)
-    struct.pack_into("<d", hdr, 76, yinc)
-    struct.pack_into("<d", hdr, 84, 0.0)   # nan_value
+    struct.pack_into("<d", hdr, 60, xinc)         # xinc at 60 — NO xy_off field here
+    struct.pack_into("<d", hdr, 68, yinc)         # yinc at 68
+    struct.pack_into("<d", hdr, 76, 1.0)          # nan_value at 76 (GMT 6.4 writes 1.0)
+    # bytes 84-91: remain 0x00 (bytearray is zero-initialised)
 
     # String fields (null-padded to fixed widths)
     def _pack_str(buf, offset, s, width):
@@ -581,16 +607,27 @@ def grdmath_corr_chain(amp_grd: str, tmp_grd: str, mask_grd: str,
             f"{mask_grd}{mask.shape}")
     sqrt_tmp = _op_sqrt(tmp_d)
     divided = _op_div(amp, sqrt_tmp)
-    result = np.flipud(_op_mul(divided, mask))
+    mul_result = _op_mul(divided, mask)
     hist = (f"gmt grdmath {amp_grd} {tmp_grd} SQRT DIV "
             f"{mask_grd} MUL FLIPUD = {dst} [gmt_grdmath_py {ctx}]")
     if "=bf" in dst:
         # Strip the =bf suffix to get the actual file path, then write
         # a genuine GMT binary-float file that conv can fopen() directly.
+        #
+        # ROW ORDER NOTE (v2.3.6 fix):
+        # `read_gmt_grd` returns data with row 0 = smallest y (south).
+        # `gmt grdmath ... FLIPUD = file=bf` writes the FLIPUD result to the
+        # =bf file with row 0 = smallest y (verified byte-for-byte against the
+        # C oracle on RS2 Hawaii).  Our reader already delivers south-first, so
+        # writing mul_result directly (NO np.flipud) produces the oracle layout.
+        # Applying np.flipud before writing was the old bug: it inverted the rows
+        # relative to the oracle, causing conv to produce wrong values.
         dst_path = dst.split("=")[0]
-        _write_gmt_binary_float(dst_path, result, x, y, info, hist=hist)
+        _write_gmt_binary_float(dst_path, mul_result, x, y, info, hist=hist)
     else:
-        _save(dst, result, x, y, info, hist=hist)
+        # Non-=bf path: write netCDF with FLIPUD applied so that downstream
+        # readers that interpret y-axis conventionally get the correct mapping.
+        _save(dst, np.flipud(mul_result), x, y, info, hist=hist)
 
 
 def grdmath_ge_nan_mul(a: str, thresh, mask_grd: str, dst: str,
