@@ -969,7 +969,12 @@ def _tree_solve_kernel(
 
         # ---- inner loop: process candidate list ----
         _cand_iter_guard = np.int64(0)
-        _cand_max_iter   = nconnected * np.int64(10)
+        # C has no cycling guard; 100× nconnected is a safety cap
+        # against true infinite cycling.  10× was too tight for some patches
+        # (e.g. 100x100 ALOS_haiti at r0=800 c0=500 requires >10× passes)
+        # but 10000× causes multi-hour runtimes on truly hard instances.
+        # 100× is a pragmatic middle ground matching observed real-data needs.
+        _cand_max_iter   = nconnected * np.int64(100)
         while cand_n_bag[0] > np.int64(0):
             _cand_iter_guard += np.int64(1)
             if _cand_iter_guard > _cand_max_iter:

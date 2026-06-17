@@ -24,3 +24,7 @@ bin_py/tests/data/
 utils/_surface_kernel*.so
 utils/_surface_kernel.c
 utils/build/
+# snaphu Cython extension build artifacts — built in-place by build_snaphu_kernel.py
+bin_py/snaphu_py/_snaphu_solver_kernel*.so
+bin_py/snaphu_py/_snaphu_solver_kernel.c
+bin_py/snaphu_py/build/
