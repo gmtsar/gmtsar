@@ -630,6 +630,207 @@ class TestCompounds(unittest.TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# grdmath_corr_chain + conv C-parity test  (Rule 10a — real-data oracle)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Locate conv binary and fill.3x3 filter (needed for the CORR_CHAIN test).
+_CONV = shutil.which("conv") or os.path.join(
+    os.environ.get("GMTSAR", "/home/staff/dliu/gmtsar"), "bin", "conv"
+)
+_HAS_CONV = os.path.isfile(_CONV)
+
+# Canonical real-data inputs from the RS2 Hawaii smoke run.
+_RS2_INTF_DIR = (
+    "/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test"
+    "/RS2_SLC_Hawaii/intf/2011134_2011230"
+)
+_RS2_AMP  = os.path.join(_RS2_INTF_DIR, "amp.grd")
+_RS2_TMP  = os.path.join(_RS2_INTF_DIR, "tmp.grd")
+_RS2_MASK = os.path.join(_RS2_INTF_DIR, "mask.grd")
+_HAS_RS2_INPUTS = all(os.path.isfile(p) for p in [_RS2_AMP, _RS2_TMP, _RS2_MASK])
+
+# fill.3x3 filter used by filter:CORR_CHAIN
+_SHAREDIR = os.path.join(
+    os.environ.get("GMTSAR", "/home/staff/dliu/gmtsar"), "share", "gmtsar"
+)
+_FILTER3 = os.path.join(_SHAREDIR, "filters", "fill.3x3")
+_HAS_FILTER3 = os.path.isfile(_FILTER3)
+
+
+@unittest.skipUnless(_HAS_GMT,  "gmt not on PATH")
+@unittest.skipUnless(_HAS_CONV, "conv not on PATH/GMTSAR/bin")
+@unittest.skipUnless(_HAVE_IO,  f"gmt_grd_io unavailable: {_IO_ERR}")
+@unittest.skipUnless(_HAVE_PY,  f"gmt_grdmath_py unavailable: {_PY_ERR}")
+class TestCorrChainVsConv(unittest.TestCase):
+    """C-parity gate for grdmath_corr_chain → conv → corr.grd.
+
+    Rule 10a: this test runs the C binary path (gmt grdmath =bf then conv) AND
+    the Python path (grdmath_corr_chain then conv) on the SAME input bytes and
+    asserts float32-exact output.
+
+    Sub-tests:
+      test_bf_header_matches_oracle  — =bf header is byte-for-byte correct
+      test_corr_grd_exact_real_data  — full chain on RS2 Hawaii (real inputs)
+      test_corr_grd_exact_synthetic  — full chain on synthetic pixel-reg grids
+                                       (always runs, regardless of smoke-run state)
+
+    Fails loudly (not silently) if conv or gmt are missing.
+    """
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _run_conv(self, tmp2_grd_path: str, out_path: str) -> None:
+        """Run `conv 1 1 fill.3x3 <tmp2>=bf <out>`."""
+        if not _HAS_FILTER3:
+            self.skipTest(f"fill.3x3 not found at {_FILTER3}")
+        # conv expects the =bf suffix on the input name
+        bf_arg = tmp2_grd_path + "=bf"
+        result = subprocess.run(
+            [_CONV, "1", "1", _FILTER3, bf_arg, out_path],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"conv failed (rc={result.returncode}): "
+                f"{result.stderr.decode(errors='replace')}"
+            )
+
+    def _run_c_grdmath_chain(self, amp: str, tmp_grd: str, mask: str,
+                              tmp2_bf: str, conv_out: str) -> None:
+        """Run the full C path: gmt grdmath ... FLIPUD =bf, then conv."""
+        # gmt grdmath amp.grd tmp.grd SQRT DIV mask.grd MUL FLIPUD = tmp2.grd=bf
+        _gmt("grdmath", amp, tmp_grd, "SQRT", "DIV", mask, "MUL", "FLIPUD",
+             "=", tmp2_bf + "=bf")
+        self._run_conv(tmp2_bf, conv_out)
+
+    # ── test: header bytes ────────────────────────────────────────────────────
+
+    @unittest.skipUnless(_HAS_RS2_INPUTS, "RS2 Hawaii smoke inputs not present")
+    def test_bf_header_matches_oracle(self):
+        """=bf header written by grdmath_corr_chain must be byte-for-byte
+        identical to the gmt grdmath oracle on real RS2 inputs.  Verifies
+        every numeric field: nx, ny, registration, wesn[4], zmin, zmax,
+        xinc, yinc, nan_value.
+        """
+        import struct as _struct
+        with tempfile.TemporaryDirectory() as d:
+            oracle_bf = os.path.join(d, "oracle_tmp2.grd")
+            py_bf     = os.path.join(d, "py_tmp2.grd")
+
+            # C oracle
+            _gmt("grdmath", _RS2_AMP, _RS2_TMP, "SQRT", "DIV",
+                 _RS2_MASK, "MUL", "FLIPUD", "=", oracle_bf + "=bf")
+            # Py port
+            _py.grdmath_corr_chain(_RS2_AMP, _RS2_TMP, _RS2_MASK,
+                                    py_bf + "=bf", ctx="test_header")
+
+            with open(oracle_bf, "rb") as f:
+                oracle_hdr = f.read(892)
+            with open(py_bf, "rb") as f:
+                py_hdr = f.read(892)
+
+            fields = [
+                (0,  "i", "nx"),
+                (4,  "i", "ny"),
+                (8,  "i", "registration"),
+                (12, "d", "xmin"),
+                (20, "d", "xmax"),
+                (28, "d", "ymin"),
+                (36, "d", "ymax"),
+                (44, "d", "zmin"),
+                (52, "d", "zmax"),
+                (60, "d", "xinc"),
+                (68, "d", "yinc"),
+                (76, "d", "nan_value"),
+            ]
+            for off, typ, name in fields:
+                fmt = f"<{typ}"
+                o_val = _struct.unpack_from(fmt, oracle_hdr, off)[0]
+                p_val = _struct.unpack_from(fmt, py_hdr, off)[0]
+                self.assertEqual(
+                    o_val, p_val,
+                    msg=f"=bf header field '{name}' at byte {off}: "
+                        f"oracle={o_val!r}, py={p_val!r}",
+                )
+
+    # ── test: full chain on real RS2 data ────────────────────────────────────
+
+    @unittest.skipUnless(_HAS_RS2_INPUTS, "RS2 Hawaii smoke inputs not present")
+    @unittest.skipUnless(_HAS_FILTER3,    "fill.3x3 filter not found")
+    def test_corr_grd_exact_real_data(self):
+        """Full corr chain on RS2 Hawaii real inputs: Py corr.grd must be
+        float32-exact vs C corr.grd (atol=0, verified to be achievable).
+
+        This is the primary C-parity gate for the v2.3.6 =bf header fix.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            oracle_bf  = os.path.join(d, "oracle_tmp2.grd")
+            oracle_corr = os.path.join(d, "oracle_corr.grd")
+            py_bf      = os.path.join(d, "py_tmp2.grd")
+            py_corr    = os.path.join(d, "py_corr.grd")
+
+            # C path
+            self._run_c_grdmath_chain(
+                _RS2_AMP, _RS2_TMP, _RS2_MASK, oracle_bf, oracle_corr
+            )
+            # Py path
+            _py.grdmath_corr_chain(_RS2_AMP, _RS2_TMP, _RS2_MASK,
+                                    py_bf + "=bf", ctx="test_real")
+            self._run_conv(py_bf, py_corr)
+
+            # Assert float32-exact
+            _compare(oracle_corr, py_corr, atol=0.0,
+                     label="corr_chain+conv real RS2")
+
+    # ── test: full chain on synthetic pixel-reg grids ─────────────────────────
+
+    @unittest.skipUnless(_HAS_FILTER3, "fill.3x3 filter not found")
+    def test_corr_grd_exact_synthetic(self):
+        """Full corr chain on synthetic pixel-registration grids.
+
+        Uses pixel-reg grids (node_offset=1) to reproduce the GMTSAR convention.
+        Asserts Py corr.grd is float32-exact vs C corr.grd.  Always runs
+        regardless of whether the RS2 smoke run has been executed.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            # Build small pixel-reg grids (32×24 cells)
+            rng = np.random.default_rng(1234)
+            ny, nx = 32, 24
+            x = np.arange(nx, dtype=np.float64) * 4.0 + 2.0   # xinc=4, x[0]=2
+            y = np.arange(ny, dtype=np.float64) * 8.0 + 4.0   # yinc=8, y[0]=4
+            amp_d  = rng.uniform(1e-4, 1e-3, (ny, nx)).astype(np.float32)
+            tmp_d  = rng.uniform(1e-6, 1e-4, (ny, nx)).astype(np.float32)
+            mask_d = (rng.random((ny, nx)) > 0.3).astype(np.float32)
+
+            def _write_pixel(path, data, x_arr, y_arr):
+                _write(path, data, x_arr, y_arr,
+                       node_offset=1, geographic=False, history="synth")
+
+            amp_p  = os.path.join(d, "amp.grd")
+            tmp_p  = os.path.join(d, "tmp.grd")
+            mask_p = os.path.join(d, "mask.grd")
+            _write_pixel(amp_p,  amp_d,  x, y)
+            _write_pixel(tmp_p,  tmp_d,  x, y)
+            _write_pixel(mask_p, mask_d, x, y)
+
+            oracle_bf   = os.path.join(d, "oracle_tmp2.grd")
+            oracle_corr = os.path.join(d, "oracle_corr.grd")
+            py_bf       = os.path.join(d, "py_tmp2.grd")
+            py_corr     = os.path.join(d, "py_corr.grd")
+
+            # C path
+            self._run_c_grdmath_chain(amp_p, tmp_p, mask_p, oracle_bf, oracle_corr)
+            # Py path
+            _py.grdmath_corr_chain(amp_p, tmp_p, mask_p,
+                                    py_bf + "=bf", ctx="test_synth")
+            self._run_conv(py_bf, py_corr)
+
+            # Assert float32-exact
+            _compare(oracle_corr, py_corr, atol=0.0,
+                     label="corr_chain+conv synthetic pixel-reg")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # Error handling / bad-input tests
 # ═════════════════════════════════════════════════════════════════════════════
 

@@ -817,3 +817,40 @@ Dispatched Mira (worktree agent-a721259fd298372ef): wire 5 `gmt surface` calls i
 **My gate (Rule 13):** Syntax OK (3 files). Unit tests OK (skipped=4). Stale-worktree diff: only 3 target files changed vs HEAD — clean. Import checks: each script runs and shows usage error (not import error) confirming _HAVE_GMT_GRD_IO resolves True at runtime. Upstream invariant: 0 lines.
 
 **LANDED:** commit b35f6b2, tag v2.3.4. 5 surface calls routed: proj_ll2ra (float32 binary), tide_correction (ASCII, pixel-reg), align_tops (float64 binary, pixel-reg, parallel Popen→sequential inproc). GMTSAR_SURFACE_INPROC=0 preserves fallback.
+
+## 2026-06-17 01:03 — v2.3.5 landed; concurrency cap lifted; grid-helper track opened
+v2.3.5 (8f428d9): wei-lin fixed grdmath_corr_chain =bf → genuine GMT binary-float output (unblocks grdmath default-flip; upstream clean). User LIFTED the ≤2-agent cap ("spawn more if resource permits"). Box: 48 cores, load ~7, 20G/1007G mem — ample headroom.
+PARTITION (avoid file overlap): wei-lin (a72f09080b6c03050) owns snaphu (pinpointed node_level-corruption fix) + grdmath default-flip (escalates flip to me). I (supervisor) own the GRID-INTERP HELPER track in parallel. Dispatched mira a69c06b17257bcae8: gmt_grdsample_py (top grid op, 6 calls), helper-first + C-parity test, opt-in default-OFF, NO wiring. Next grid-helpers (grdfilter/triangulate/nearest_grid/grdlandmask) can parallelize too. Policy: up to ~5-6 concurrent agents while load stays < ~24.
+
+## 2026-06-17 01:15 — supervisor wake: orphan cleanup, grdsample RESOLVED (redundant), grdmath flip gate re-run
+- **Orphan hygiene:** killed 6 orphaned hung snaphu solver repro procs (`/tmp/repro_orig.py` 73m, `quick_test.py` 49m, `test_fix.py` 39m, `verify_scalar.py` 27m, 2× `test_snaphu_fix.py`) — all cycling-forever at 100% CPU, no agent transcript active in 60min, nothing consuming output. Load 8.6→easing. One live snaphu agent remains (a71831b5 `parity_c_test.py`, on the cycling fix).
+- **grdsample cp RESOLVED — redundant dispatch, reverted.** gmt_grdsample_py.py + test already on main (prior Mira #65); my a69c06b1 dispatch was redundant. Its only artifact was a `grdsample_wrapper.py` rewrite flipping default ON→OFF, justified by "2.7× slower on NaN-heavy landmask." **Disproved by fresh A/B on real ALOS_haiti landmask (9.77M cells, 38% NaN, 4×4 bicubic):**
+    - C `gmt grdsample`: ~1.00s
+    - py port cold (no JIT cache): ~3.25s; cold (warm disk-cache, real per-invocation): ~1.1s ≈ parity; warm in-process multi-call: 0.58s (1.7× faster)
+    - **byte-identical: max|py-c| = 0.000, NaN-pattern identical**
+  → BOTH Miras' headline numbers wrong (not "2.25× faster" #65, not "2.7× slower"). Truth: byte-id + ~parity per-invocation. Reverted the wrapper (`git checkout`); main stays at its committed default-ON. The overclaiming "2.25× faster" docstring on main is inaccurate (real = parity) — non-urgent doc-accuracy item; default left at status quo (byte-id, negligible perf impact; snaphu solver dominates wall time).
+  - **LESSON:** survey `git ls-files utils/` for existing ports BEFORE dispatching. Already on main: surface, blockmedian, grdfill, **grdfilter**, grdmath, grdsample, grd_io. Remaining grid gaps (triangulate/nearest_grid/grdlandmask) are low-value GMT wrappers, not compute cores — deprioritized vs finishing snaphu.
+- **grdmath default-flip:** re-running RS2_SLC_Hawaii smoke (GMTSAR_GRDMATH_PY=1, SWEEP_FORCE=py) now that v2.3.5 fixed the =bf bug that caused the prior FAIL (4 missing files). Result pending → makes the flip decision evidence-ready for user.
+- **Open USER decisions (relayed):** (1) grdmath default-flip (pending this smoke); (2) snaphu cffi→C-solver vs park-on-C-binary (numba-SoA walls on anti-cycling remount bug); (3) surface cffi→libgmt (new build dep). HEAD=v2.3.5, upstream invariant clean.
+
+## 2026-06-17 01:25 — grdmath default-flip BLOCKED (confirmed A/B); corr_chain =bf bug pinpointed; focused mira dispatched
+- **Decisive A/B control (Rule 13, same SHA 8f428d9=v2.3.5, RS2_SLC_Hawaii smoke, SWEEP_FORCE=py):**
+    - GMTSAR_GRDMATH_PY=0: corr_ll.grd PASS (rms 9.7e-7), 3 PNGs PASS (ssim ~1.0), blessed diff PASS.
+    - GMTSAR_GRDMATH_PY=1: corr_ll.grd FAIL (rms 0.39), corr_ll/display_amp_ll/phasefilt_mask_ll PNGs MISSING, mask2.grd not produced.
+  → grdmath=1 IS the cause. **Default-flip BLOCKED.**
+- **Root cause pinpoint:** filter:237 `_gm.grdmath_corr_chain('amp.grd','tmp.grd','mask.grd','tmp2.grd=bf')` then filter:242 `conv 1 1 <f3> tmp2.grd=bf corr.grd`. The =bf writer in gmt_grdmath_py.grdmath_corr_chain (touched by v2.3.5) writes a header whose dims/registration don't match `gmt grdmath ... =bf` → conv misreads → py corr.grd shape 1435x3414 vs csh 718x854 → corr_ll diverges + PNG cascade. v2.3.5 only verified "conv exits 0 + bf format", NEVER that corr.grd OUTPUT matches csh. mask.grd/phasefilt.grd/filtcorr.grd all PASS — only corr_chain broken.
+- **Dispatched mira aa7444594516b0734** (focused): fix grdmath_corr_chain =bf header so conv→corr.grd matches csh (shape+values, rms<0.01); verify via GMTSAR_GRDMATH_PY=1 RS2 smoke (corr_ll SUCCESS + PNGs) AND grdmath=0 no-regress; add C-parity test for the full corr_chain->conv chain. Default stays OFF; no commit/tag (supervisor lands).
+- **Surface:** DROPPED the "cffi→libgmt" item from the queue — surface is done+verified (v2.3.0 default-ON, 20/21); cffi was only optional perf polish (1.14x→<=1.0x), not rework. (User flagged the misleading framing.)
+- **snaphu:** awaiting USER decision — cffi→C solver vs park-on-C-binary vs one more remount-debug pass.
+
+## 2026-06-17 01:35 — USER: "one more focused remount-debug pass on snaphu" → dispatched
+- Killed a71831b5's hung snaphu procs (test_snaphu_fix.py 14min cycling + parity_c_test.py). a71831b5 was on STALE base (abd29f4 vs HEAD 8f428d9), likely-dead parent.
+- Preserved a71831b5's worktree solver (2150 lines, 4 remount thread-loops + -6666 guards at 1322/1453/1529/1603) → /tmp/snaphu_solver_a71831b5_preserved.py. It's MORE advanced than main's untracked snaphu_solver_numba.py (1882 lines, 542-line diff) → used as the focused pass's starting base.
+- **Dispatched mira a6b06c7791c1ef40f** (focused snaphu remount): start from preserved solver; match C TreeSolve remount (snaphu_solver.c:197 / remount block :656 — apexlist timing vs groupcounter, prev_root==mntpt thread rewire read-after-write, level-update loop `while nd1->next->level > startlevel`) line-by-line; verify integer-exact vs C binary (snaphu/src/snaphu) on the KNOWN failing 30x30 r0=800/c0=500 14-residue case + 64/256, NO -6666. If still cycles → report precise un-replicable C step (becomes cffi-vs-park evidence). Pure-Python/numba only; not wired; no commit.
+- Parallel: mira aa7444594516b0734 still on grdmath corr_chain =bf fix.
+
+## 2026-06-17 01:50 — v2.3.6 LANDED: grdmath corr_chain =bf header fix (verified myself, Rule 13)
+- Mira aa7444594516b0734 fixed gmt_grdmath_py._write_gmt_binary_float: removed phantom xy_off field (shifted xinc/yinc/nan_value by one slot), set node_offset=pixel(1) not gridline(0), wrote pixel-reg WESN cell boundaries (x[0]-xinc/2) not node centres, and removed an erroneous np.flipud in grdmath_corr_chain's =bf path. Root: wrong =bf header → conv misread dims → corr.grd 1435x3414 vs csh 718x854.
+- **SUPERVISOR VERIFY (not trusting agent):** 42/42 grdmath C-parity tests pass (3 new TestCorrChainVsConv). Fresh GMTSAR_GRDMATH_PY=1 RS2_SLC_Hawaii smoke ALL SUCCESS: corr_ll.grd rms 9.69e-7 (was 0.39), 3 PNGs ssim ~1.0, phasefilt/filtcorr still pass. grdmath=0 path unaffected (code only touches the =1 corr_chain). Eyeballed the diff — matches root cause.
+- Landed ONLY grdmath files (utils/gmt_grdmath_py.py + bin_py/tests/test_gmt_grdmath_py.py); snaphu_py.py + snaphu_solver_numba.py left to in-flight snaphu mira a6b06c77 (disjoint file sets, both miras ran in main checkout).
+- **grdmath default-flip now EVIDENCE-READY** (all known corr_chain/=bf bugs fixed; full RS2 pipeline clean under =1) → escalating flip decision to user. Default still OFF until user approves.
