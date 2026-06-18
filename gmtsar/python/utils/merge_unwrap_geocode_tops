@@ -31,6 +31,20 @@ from gmtsar_lib import run, grep_value, check_file_report
 # NOT accept that argument shape and would silently mis-invoke.
 from snaphu import snaphu_unwrap, snaphu_interp_unwrap
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+# Note: expressions using PI/MOD (line 236 ionosphere correction) remain on
+# the gmt subprocess path — those operators are not in the port.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _maybe_exec_csh_fallback() -> None:
     """If GMTSAR_MERGE_TOPS_PY=0, exec merge_unwrap_geocode_tops.csh.
@@ -282,8 +296,15 @@ def merge_unwrap_geocode_tops():
     if threshold_geocode != 0:
         print("\nGEOCODE - START")
         run(f"proj_ra2ll trans.dat phasefilt.grd phasefilt_ll.grd")
-        run(f"gmt grdmath corr.grd {threshold_geocode} GE 0 NAN mask.grd MUL = mask2.grd")
-        run("gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd")
+        if _grdmath_py_on():
+            _gm.grdmath_ge_nan_mul("corr.grd", threshold_geocode, "mask.grd",
+                                   "mask2.grd",
+                                   ctx="merge_unwrap_geocode_tops:GE_NAN_MUL")
+            _gm.grdmath2("MUL", "phasefilt.grd", "mask2.grd", "phasefilt_mask.grd",
+                         ctx="merge_unwrap_geocode_tops:MUL_phasefilt")
+        else:
+            run(f"gmt grdmath corr.grd {threshold_geocode} GE 0 NAN mask.grd MUL = mask2.grd")
+            run("gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd")
         run("proj_ra2ll trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd")
         run("proj_ra2ll trans.dat corr.grd corr_ll.grd")
         run("gmt makecpt -Crainbow -T-3.15/3.15/0.05 -Z > phase.cpt")
@@ -294,9 +315,18 @@ def merge_unwrap_geocode_tops():
         run("grd2kml corr_ll corr.cpt")
 
         if check_file_report("unwrap.grd"):
-            run("gmt grdmath unwrap.grd mask2.grd MUL = unwrap_mask.grd")
+            if _grdmath_py_on():
+                _gm.grdmath2("MUL", "unwrap.grd", "mask2.grd", "unwrap_mask.grd",
+                             ctx="merge_unwrap_geocode_tops:MUL_unwrap")
+            else:
+                run("gmt grdmath unwrap.grd mask2.grd MUL = unwrap_mask.grd")
             wavel = _capture("grep wavelength *.PRM | awk '{print $3}' | head -1")
-            run(f"gmt grdmath unwrap_mask.grd {wavel} MUL -79.58 MUL = los.grd")
+            if _grdmath_py_on():
+                _gm.grdmath_mul_scalar_mul_scalar(
+                    "unwrap_mask.grd", float(wavel), -79.58, "los.grd",
+                    ctx="merge_unwrap_geocode_tops:MUL_MUL_los")
+            else:
+                run(f"gmt grdmath unwrap_mask.grd {wavel} MUL -79.58 MUL = los.grd")
             run("proj_ra2ll trans.dat unwrap.grd unwrap_ll.grd")
             run("proj_ra2ll trans.dat unwrap_mask.grd unwrap_mask_ll.grd")
             run("proj_ra2ll trans.dat los.grd los_ll.grd")

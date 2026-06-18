@@ -48,6 +48,18 @@ try:
 except Exception as _e:
     _HAVE_GMT_GRD_IO = False
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _surface_inproc_f64(xyz_path: str, region_str: str, inc_str: str,
                          tension: float, max_iter: int, out_path: str,
@@ -280,8 +292,12 @@ def align_tops():
                 f"gmt surface atmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Gatmp.grd -N1000 -r",
                 shell=True)
             p1.wait(); p2.wait()
-        run("gmt grdmath rtmp.grd FLIPUD = r.grd")
-        run("gmt grdmath atmp.grd FLIPUD = a.grd")
+        if _grdmath_py_on():
+            _gm.grdmath1("FLIPUD", "rtmp.grd", "r.grd", ctx="align_tops:FLIPUD_r")
+            _gm.grdmath1("FLIPUD", "atmp.grd", "a.grd", ctx="align_tops:FLIPUD_a")
+        else:
+            run("gmt grdmath rtmp.grd FLIPUD = r.grd")
+            run("gmt grdmath atmp.grd FLIPUD = a.grd")
 
     # ===== Stage 3: actual aligned-SLC creation via second make_s1a_tops pass =====
     if skip_master == 0:

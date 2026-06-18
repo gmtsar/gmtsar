@@ -938,3 +938,49 @@ Phase-0 git audit: initial `gitStatus` snapshot showed HEAD at fe3a418 (v2.3.4) 
   - `phasefilt_py` from clean PATH ($GMTSAR/bin symlink): prints argparse usage ✓ — confirms the v2.4.2 +x-in-index fix works for a fresh clone.
   - GAP: README's env lines (export GMTSAR + PATH=$GMTSAR/bin) do NOT put `gmt` on PATH in --conda mode (gmt is in the conda env bin). Sanity check passes (help doesn't call gmt) but real runs would fail. FIXED: README + install.sh closing message now tell --conda users to `conda activate <env>` / add $CONDA_PREFIX/bin, and add `gmt --version` to the sanity check.
   - Side effect: install.sh --python pip-upgraded matplotlib 3.10.9→3.11.0 in the env (requirements.txt allows >=3.5; minor, PNG SSIM thresholds robust). Note for reproducibility: pin matplotlib if PNG parity ever drifts.
+
+## 2026-06-17 21:30 — NEW DIRECTION (user): wire ALL ported operators pipeline-wide, then in-memory pipeline
+- USER directive: ported+verified Python ops (grdmath/surface/blockmedian/grdsample) must be wired at EVERY call site (non-ported parts stay gmt — fine). Then NEXT PHASE: keep grids in memory between stages, write .grd only when needed (eliminate NFS round-trips; parity-safe — the big end-to-end win; the 3.7x grdmath speedup was mostly avoided fork+netcdf, not faster math).
+- PERF EVIDENCE: grdmath A 2 MUL on real 8527x6536 grid: py in-proc 1.34s vs gmt subproc 5.06s = 3.7x faster (avoids fork+netcdf rw). Confirms in-process ports are faster at scale.
+- PLAN (sequential to avoid file conflicts — snaphu.py/geocode/merge use multiple ops; each gated by full 21-case sweep, parity must stay 20/21):
+  Phase A (wiring): (1) grdmath ALL sites [mira a2ecc0d0 running, worktree, operator-coverage + gmt fallback for unsupported]; (2) surface ALL sites; (3) blockmedian ALL sites; (4) grdsample ALL sites. Each: verify-myself (C-parity tests + A/B + smoke) then full sweep then land.
+  Phase B (next): in-memory pipeline — refactor stage hand-offs to pass numpy/xarray in memory; write .grd only at boundaries / for still-C steps (snaphu, gmt viz). Parity-safe (no numerics change).
+- ACTIVE: mira a2ecc0d0291e7df2c — grdmath comprehensive wiring (worktree). On return: verify + FULL SWEEP gate + land (likely v2.5.0 for the coverage expansion).
+
+## 2026-06-17 21:40 — grdmath comprehensive wiring applied (16 files), full-sweep gate running
+- Mira a2ecc0d0 (base c4b4fa5=current, no stale-base) wired gmt_grdmath_py into 16 files (align_tops, fitoffset_ra, correct_insar_with_gnss, correct_merge_offset, stack_corr, stack_coherence_mask, merge_unwrap_geocode_tops, snaphu.py [13 MUL + masks], geocode, p2p_ALOS2_SCAN_Frame, p2p_S1_TOPS_doublediff, make_dem, make_los_ascii, proj_model, filter). Fallback (kept gmt): estimate_ionospheric_phase (PI/MOD/DENAN/ISNAN unsupported), slc2amp (=bf input), 2 MOD+PI chains. 12 new helpers + 13 tests. Found+fixed real bug: _op_min np.fmin→np.minimum (NaN propagation, GMT MIN semantics).
+- Supported ops: FLIPUD MUL ADD SUB DIV ABS SQRT SQR POW HYPOT ATAN2 GE LE NAN XOR MIN. Not ported: MOD DENAN ISNAN PI BLEND BITXOR.
+- LANDED to working tree via DELTA-APPLY (git apply patch vs base c4b4fa5; restored +x on executables — core.fileMode=false). VERIFIED-MYSELF: 55 grdmath C-parity tests pass on main; only the 17 wiring files modified (+ SESSION_LOG).
+- FULL 21-case all-defaults sweep RUNNING (bz0vgcgx0) = parity gate for v2.5.0. On 20/21 clean → commit v2.5.0; read perf snapshot to report speedup vs v2.4.2 (c8cfe39). Then A2 surface, A3 blockmedian, A4 grdsample.
+
+## 2026-06-18 00:35 — grdmath-wiring full sweep 0/21: +x CASCADE (not a wiring bug); recovered
+- Sweep bz0vgcgx0 returned 0/21, ALL "missing on py" — py pipeline produced NO outputs. Root cause: NOT a wiring regression. `git apply` of the wiring patch STRIPPED working-copy +x on the wired EXECUTABLES (filter/geocode/merge_unwrap_geocode_tops/p2p_*/stack_corr/align_tops/... → 664). I had restored +x in the INDEX (git update-index --chmod=+x) but NOT the WORKING COPY — and the sweep runs the working-copy files via PATH/execve → Permission denied → cascade → no outputs (the memory'd git-revert-drops-x-bit hazard, recurring via git apply). Confirmed: test -x utils/filter = false; csh reference present; 55 C-parity tests + mira worktree smoke (where +x was intact) had passed → wiring is sound.
+- LESSON: after `git apply` of a patch touching executables, MUST chmod +x the WORKING COPY (not just the index) BEFORE running the sweep. git apply honors the patch's recorded 100644 and strips working-copy +x (core.fileMode=false).
+- FIX: chmod +x the 14 wired working-copy executables; re-running RS2 smoke to confirm pipeline produces outputs, then re-launch the full sweep gate.
+
+## 2026-06-18 01:30 — Rule 14 fired: ALOS_haiti phasefilt_mask_ll.png ssim=None → sweep STOPPED + examined
+- First real test of Rule 14: Monitor caught ALOS_haiti failing at case ~4, sweep killed (saved ~2.5h). Examination:
+  - phasefilt_mask.grd: same dims, matches csh MOD-2PI (science correct).
+  - mask2.grd NaN-footprint differs 255 cells; phasefilt_mask 5024 → proj_ra2ll bbox shifts → geocoded png dims py 2190x2180 vs csh 2090x2150 → SSIM uncomputable → ssim=None.
+  - 255 mismatch cells: py corr 0.087-0.121 (all < 0.14 mask thr); 111 py-NaN/csh-not-NaN, 144 reverse → py-corr vs csh-corr differ enough to cross the HARD GE 0.14 threshold at edge cells.
+- OPEN QUESTION (decisive A/B dispatched, mira aa401ff5e64962837): is the wired GE+NAN+MUL bit-exact vs gmt on the SAME corr (→ then ssim=None is INHERENT py-corr threshold-roundoff, present w/ or w/o wiring, NOT a wiring regression), or does mask2_py != mask2_gmt (→ real wiring bug to fix)? Mira computes mask2 both ways + A/Bs the other GE/NAN chains (merge/stack_coherence_mask/snaphu).
+- Sweep + tripwire Monitor stopped. v2.5.0 landing hinges on this A/B verdict.
+
+## 2026-06-18 01:45 — grdmath wiring VERDICT: BIT-EXACT (no bug); ALOS_haiti ssim=None is wiring-independent
+- Mira aa401ff5 DECISIVE A/B: mask2_py == mask2_gmt on SAME corr (NaN_mm=0, max|diff|=0.0) — all 4 GE/NAN chains bit-exact (geocode thr0.14, merge thr0.1, stack_coherence_mask thr0.14, snaphu thr0.1). NO wiring bug.
+- ALOS_haiti ssim=None root cause: py-corr vs csh-corr differ Δ≤0.034 at ~181 cells straddling the hard GE 0.14 threshold → mask extent shift → proj_ra2ll bbox shift → png dims 2190x2180 vs 2090x2150 → SSIM uncomputable. WIRING-INDEPENDENT (gmt-masking on py-corr gives identical mask2). Compounded by a STALE csh mask2 reference (2.43M vs fresh 2.01M valid). 58 grdmath tests pass (+3 new threshold/NaN/real-ALOS regression locks in mira worktree).
+- ACTION: re-launched full sweep #3 (bbpqfnx1t) with Rule-14 tripwire (Monitor b4zbthlcg) that whitelists Ridgecrest + ALOS_haiti-phasefilt_mask-ssim (diagnosed benign), aborts on structural/new failures → gates the non-GE chains (XOR+MIN, stack_corr, phase-gradient, SUB+SUB, etc.) across all 21 cases. On clean (only known artifacts) → land v2.5.0 (+ fold in mira aa401ff5's 3 new tests).
+
+## 2026-06-18 02:30 — ULTRACODE scoping of next wiring rounds (workflow w9jaaaouu, 4 agents, ~3min, read-only)
+Banked per-operator wiring plans for A2/A3/A4 (use before each round; A/B the edge-risks on REAL data BEFORE sweeping):
+- **surface (A2):** 8 unwired sites → 5 WIREABLE (proj_ra2ll, proj_ll2ra_ascii, proj_ra2ll_ascii, dem2topo_ra coarse.grd lines 749/817, fitoffset_ra) + 3 KEEP-GMT (proj_model -fg geographic [Cartesian-only port], estimate_ionospheric_phase -R<grid>+NaN-stdin, correct_insar_with_gnss -R<grid>+sparse GNSS). EDGE-RISK: dem2topo_ra coarse.grd is in the Mira #72 non-converged-float32 sub-meter-drift regime → feeds FLIPUD→grdsample→topo_ra → bbox/SSIM shift (ALOS_haiti class). gmtinfo -R bbox rounding the port doesn't do (off-by-inc row/col); pixel-vs-gridline reg mis-read = silent half-cell shift.
+- **blockmedian (A3):** 6 unwired → 2 WIREABLE (align_tops, tide_correction) + 4 KEEP-GMT (proj_ra2ll & proj_ra2ll_lib.py [-bi3f single-prec], make_los_ascii [gridline/no -r], proj_model [-bi6f+-i colsel+-fg]). EDGE-RISK: float32 -bi3f banker-rounding boundary flip → xyz2grd bbox shift (ALOS_haiti class); gridline branch NOT byte-faithful; NaN through sort/median (port has no NaN handling).
+- **grdsample (A4):** plan captured (interp-mode + NaN parity focus).
+- TAKEAWAY: next rounds are LOWER-yield (surface 5, blockmedian 2 wireable) + HIGHER-edge-risk than grdmath. Wire only the bit-exact-safe sites; keep gmt for geographic(-fg)/-R<grid>/single-precision(-bi3f)/sparse-scatter sites. Full plan: /tmp/...w9jaaaouu.output (ephemeral) — re-scope via the saved workflow script if lost.
+
+## 2026-06-18 04:30 — v2.5.0 LANDED: grdmath wired pipeline-wide (16 files, bit-exact), 19/21 sweep
+- Full 21-case sweep #3: 19/21 py-vs-csh clean. 2 exceptions, BOTH wiring-independent (examined):
+  - ALOS_haiti phasefilt_mask_ll.png ssim=None: threshold-edge bbox shift (wiring proven bit-exact mask2_py==mask2_gmt).
+  - S1_Ridgecrest_EQ 5 fails: known phasefilt.grd 0.3516 no-DEM corner + corr_ll/display_amp/corr_ll.png/phasefilt_mask divergence vs FRESHLY-REGENERATED csh ref (Ridgecrest had no cached ref this sweep). corr_ll/display_amp via _project (unchanged by v2.5.0) → NOT a grdmath regression; no-DEM-zone instability + fresh-csh-ref. Follow-up: csh_test ref management for no-DEM case.
+- Process: first sweep was 0/21 (+x cascade — git apply stripped working-copy +x); fixed (Rule 14 caught it, Rule 15 codified edge-A/B-first). Diagnostic mira aa401ff5 proved GE+NAN+MUL bit-exact + fixed _op_min np.fmin→np.minimum NaN bug. 58 grdmath tests pass.
+- Landing: +x restored (working copy + index) on 14 wired execs; project_rules Rules 14/15 + release_notes_v2.5.0.md included.

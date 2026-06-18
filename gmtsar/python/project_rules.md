@@ -470,3 +470,47 @@ only reach statistical parity" (a 30×30 fresh run showed float32-EXACT).
 4. Be especially skeptical of "can't / impossible / inherent" conclusions — they
    end investigation prematurely. Demand file:line + reproduced evidence.
 5. When you cite a past result, say whether it was freshly verified or inherited.
+
+## 14. Sweep tripwire — verify every case as it completes; stop on failure
+
+Do NOT wait for a full sweep to finish to learn it failed. Each case writes
+its scorecard (`work/results/<case>.json`) the moment it completes. As cases
+land, verify each one's `py-vs-csh` status:
+
+- A case is **structurally broken** if any file is `missing on py` (the
+  pipeline didn't produce output — e.g. the +x cascade: `git apply` strips
+  working-copy execute bits under `core.fileMode=false`, so a wired script
+  hits `Permission denied`). One such case means EVERY case will fail the
+  same way → **kill the sweep immediately and examine**; do not waste hours.
+- A case is a **real regression** if outputs exist but a metric exceeds
+  threshold, and it is NOT the one documented exception (S1_Ridgecrest_EQ
+  no-DEM-corner phasefilt complex-rms ~0.35). On the first such case →
+  **stop the sweep and examine** the diff before continuing.
+- The only accepted in-sweep failure is the documented Ridgecrest no-DEM
+  corner. Anything else halts the sweep.
+
+Mechanism: arm an event Monitor on `work/results/*.json` (or the sweep log
+`DONE`/`FAIL` lines) so the first failing case wakes the supervisor to abort
+— not a slow poll. After a `git apply` of any patch touching executables,
+`chmod +x` the WORKING COPY (not just `git update-index`) and confirm
+`test -x` BEFORE launching the sweep.
+
+## 15. Edge-case A/B BEFORE wiring a port at a new site (don't discover divergence via a 3h sweep)
+
+When wiring a Python port (`gmt_*_py`) into a new call site, FIRST A/B-verify the
+operator on the real grid that STRESSES its known edge cases — BEFORE wiring and
+BEFORE the full-sweep gate:
+
+1. **A/B on the stressing case, not a benign smoke.** Run the op `env=0` (gmt) vs
+   `env=1` (py) on the same real input and compare bit/float-exact + NaN-footprint.
+   Choose the input that exercises the edge: high-relief/sparse DEM for surface
+   (non-converged-float32, Mira #72); threshold-straddling corr for GE masking;
+   single-precision `-bi3f` for blockmedian; each interp mode for grdsample. RS2
+   smoke MISSED the ALOS_haiti GE-0.14 edge — that cost a 3h sweep abort.
+2. **Wire only sites that A/B bit-exact.** Edge sites that diverge keep the gmt
+   fallback — do not wire them.
+3. **Then one full-sweep gate** (Rule 14 tripwire).
+
+This converts "wire-blind → 3h sweep → maybe abort" into "minutes of targeted A/B
+→ wire-only-safe → one clean sweep." Edge risks are enumerated per round by a
+read-only scoping pass (parallel agents) before wiring begins.

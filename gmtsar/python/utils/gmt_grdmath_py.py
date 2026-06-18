@@ -30,34 +30,66 @@ OPERATORS IMPLEMENTED (13 of 13 requested)
 
 OPERATORS NOT IMPLEMENTED (left on C path)
 -------------------------------------------
-  MOD, DENAN, ISNAN, PI (constant), SQR (handled inline), BLEND, BITXOR
-  — these appear in complex chained expressions in estimate_ionospheric_phase
-    and p2p_S1_TOPS_doublediff that mix constants, PI, and multi-op chains.
-    Wiring those sites safely requires a full RPN stack evaluator; deferred.
+  MOD, DENAN, ISNAN, PI (constant), BLEND, BITXOR
+  — MOD and PI appear in estimate_ionospheric_phase and p2p_S1_TOPS_doublediff
+    in expressions like `PI ADD 2 PI MUL MOD PI SUB`.  These require a full
+    RPN stack evaluator to safely decompose; those specific call sites remain
+    on the gmt subprocess path.  All other call sites in those files that use
+    only supported operators ARE wired.
 
 GATE
 ----
-  GMTSAR_GRDMATH_PY=1  → use this module's helpers
-  GMTSAR_GRDMATH_PY=0  → fall back to `gmt grdmath ...` subprocess (default OFF)
+  GMTSAR_GRDMATH_PY=1  → use this module's helpers (default ON since v2.3.8)
+  GMTSAR_GRDMATH_PY=0  → fall back to `gmt grdmath ...` subprocess
 
-WIRE-IN STATUS
---------------
-  filter:195     HYPOT     ← gmt_grdmath_py._grdmath2("HYPOT", ...)
-  filter:196     POW+FLIPUD ← chained via _grdmath_pow_flipud()
-  filter:216     MUL       ← _grdmath2("MUL", ...)
-  filter:217     GE+NAN    ← _grdmath_ge_nan()
-  filter:218     multi-op  ← _grdmath_corr_chain()
-  filter:228     ATAN2+MUL+FLIPUD ← _grdmath_atan2_mul_flipud()
-  filter:250     MUL+FLIPUD ← _grdmath_mul_flipud()
-  filter:266     FLIPUD    ← _grdmath1("FLIPUD", ...)
+WIRE-IN STATUS (v2.4.x comprehensive wiring)
+---------------------------------------------
+  filter:195     HYPOT          ← grdmath2("HYPOT", ...)
+  filter:196     POW+FLIPUD     ← grdmath_pow_flipud()
+  filter:216     MUL            ← grdmath2("MUL", ...)
+  filter:217     GE+NAN         ← grdmath_ge_nan()
+  filter:218     multi-op chain ← grdmath_corr_chain()
+  filter:228     ATAN2+MUL+FLIPUD ← grdmath_atan2_mul_flipud()
+  filter:250     MUL+FLIPUD     ← grdmath_mul_flipud()
+  filter:266     FLIPUD         ← grdmath1("FLIPUD", ...)
+  filter:294     POW            ← grdmath2("POW", ...)
+  filter:295-296 phase-gradient ← grdmath_phase_gradient_chain()
 
-  stack:67       copy (A = out) ← _grdmath_assign()
-  stack:69       ADD       ← _grdmath2("ADD", ...)
-  stack:72       DIV       ← _grdmath2("DIV", ...)
-  stack:78       SUB+SQR   ← _grdmath_sub_sqr()
-  stack:80       SUB+SQR+ADD ← _grdmath_sub_sqr_add()
-  stack:82       DIV+SQRT  ← _grdmath_div_sqrt()
-  stack:85/87    MUL       ← _grdmath2("MUL", ...)
+  stack:67       copy (A = out) ← grdmath_assign()
+  stack:69       ADD            ← grdmath2("ADD", ...)
+  stack:72       DIV            ← grdmath2("DIV", ...)
+  stack:78       SUB+SQR        ← grdmath_sub_sqr()
+  stack:80       SUB+SQR+ADD    ← grdmath_sub_sqr_add()
+  stack:82       DIV+SQRT       ← grdmath_div_sqrt()
+  stack:85/87    MUL            ← grdmath2("MUL", ...)
+
+  align_tops:283-284      FLIPUD      ← grdmath1("FLIPUD", ...)
+  fitoffset_ra:42-43      FLIPUD      ← grdmath1("FLIPUD", ...)
+  correct_insar_with_gnss:85   SUB    ← grdmath2("SUB", ...)
+  correct_merge_offset:104,113 SUB    ← grdmath2("SUB", ...)
+  correct_merge_offset:120,129 SUB    ← grdmath2("SUB", ...)
+  correct_merge_offset:130     SUB+SUB ← grdmath_sub_sub()
+  stack_corr:40-49        SQR/SUB/DIV/ADD/SQRT chain ← grdmath_stack_corr_*()
+  stack_coherence_mask:29-37  MUL/ADD/DIV/GE/NAN ← grdmath2() + grdmath_ge_nan()
+  merge_unwrap_geocode_tops:285 GE+NAN+MUL ← grdmath_ge_nan_mul()
+  merge_unwrap_geocode_tops:286,297 MUL ← grdmath2("MUL", ...)
+  merge_unwrap_geocode_tops:299 MUL+MUL ← grdmath_mul_scalar_mul_scalar()
+  snaphu:173-174,183-184  MUL         ← grdmath2("MUL", ...)
+  snaphu:187-188          GE+NAN+MUL  ← grdmath_ge_nan_mul()
+  snaphu:189,358          XOR+MIN     ← grdmath_xor_min()
+  snaphu:190,196,229,234,237,341,354,359,364,404,413,419  MUL ← grdmath2("MUL")
+  snaphu:357              GE+NAN+MUL  ← grdmath_ge_nan_mul()
+  geocode:161             GE+NAN+MUL  ← grdmath_ge_nan_mul()
+  p2p_ALOS2_SCAN_Frame:219 MUL        ← grdmath2("MUL", ...)
+  p2p_S1_TOPS_doublediff:148 SUB      ← grdmath2("SUB", ...)
+  make_dem:53             ADD         ← grdmath2("ADD", ...)
+  make_los_ascii:30       ones-mask   ← grdmath_make_ones_mask()
+  proj_model:56           tri-mul-add ← grdmath_tri_mul_add()
+
+  FALLBACK (unsupported ops — stay on gmt subprocess):
+  estimate_ionospheric_phase: PI, MOD, DENAN, ISNAN ops
+  merge_unwrap_geocode_tops:236  MOD+PI chain
+  p2p_S1_TOPS_doublediff:149     MOD+PI chain
 
 PARITY GATE
 -----------
@@ -247,11 +279,12 @@ def _op_xor(a: np.ndarray, b) -> np.ndarray:
 
 
 def _op_min(a, b) -> np.ndarray:
+    # GMT MIN propagates NaN when either operand is NaN (same as np.minimum).
+    # np.fmin would ignore NaN, which differs from GMT's behaviour.
     a64 = _f64(a)
     b64 = float(b) if _is_scalar(b) else _f64(b)
     with np.errstate(invalid="ignore"):
-        # np.fmin: ignores NaN unless BOTH are NaN (propagates when both NaN)
-        return np.fmin(a64, b64).astype(np.float32)
+        return np.minimum(a64, b64).astype(np.float32)
 
 
 # ── Public single/binary-op helpers (used by wired call sites) ───────────────
@@ -634,7 +667,7 @@ def grdmath_ge_nan_mul(a: str, thresh, mask_grd: str, dst: str,
                         ctx: str = "") -> None:
     """In-process `gmt grdmath <a> <thresh> GE 0 NAN <mask> MUL = <dst>`.
 
-    Handles geocode:161 and merge_unwrap_geocode_tops:285 pattern.
+    Handles geocode:161, merge_unwrap_geocode_tops:285, and snaphu pattern.
     """
     if not _HAVE_IO:
         raise RuntimeError(f"grdmath_ge_nan_mul requires gmt_grd_io: {_io_err_msg}")
@@ -645,4 +678,212 @@ def grdmath_ge_nan_mul(a: str, thresh, mask_grd: str, dst: str,
     result = _op_mul(nan_mask, m_data)
     _save(dst, result, x, y, info,
           hist=(f"gmt grdmath {a} {thresh} GE 0 NAN {mask_grd} MUL = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+# ── New helpers added for comprehensive wiring (v2.4.x) ───────────────────────
+
+def grdmath_xor_min(a: str, b_xor, b_min, dst: str, ctx: str = "") -> None:
+    """In-process `gmt grdmath <a> <b_xor> XOR <b_min> MIN = <dst>`.
+
+    Handles snaphu pattern:
+        gmt grdmath corr_patch.grd 0. XOR 1. MIN = corr_patch.grd
+
+    XOR with b_xor=0.: NaN cells → 0.0, non-NaN cells unchanged.
+    Then MIN with b_min=1.: clamp to <= 1.0.
+    Net effect: replace NaN with 0, clamp to [0,1].
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(f"grdmath_xor_min requires gmt_grd_io: {_io_err_msg}")
+    a_data, x, y, info = _read_gmt_grd(a)
+    xor_result = _op_xor(a_data, b_xor)
+    result = _op_min(xor_result, b_min)
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {a} {b_xor} XOR {b_min} MIN = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_sub_sub(a: str, s1, s2, dst: str, ctx: str = "") -> None:
+    """In-process `gmt grdmath <a> <s1> SUB <s2> SUB = <dst>`.
+
+    Handles correct_merge_offset 3-frame pattern:
+        gmt grdmath tmp3_{out} {diff1} SUB {diff2} SUB = tmp3_{out}
+    Both s1 and s2 may be scalars or grid paths.
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(f"grdmath_sub_sub requires gmt_grd_io: {_io_err_msg}")
+    a_data, x, y, info = _read_gmt_grd(a)
+    if _is_scalar(s1):
+        step1 = _op_sub(a_data, float(s1))
+    else:
+        s1_data, _, _, _ = _read_gmt_grd(s1)
+        step1 = _op_sub(a_data, s1_data)
+    if _is_scalar(s2):
+        result = _op_sub(step1, float(s2))
+    else:
+        s2_data, _, _, _ = _read_gmt_grd(s2)
+        result = _op_sub(step1, s2_data)
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {a} {s1} SUB {s2} SUB = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_mul_scalar_mul_scalar(a: str, s1, s2, dst: str,
+                                   ctx: str = "") -> None:
+    """In-process `gmt grdmath <a> <s1> MUL <s2> MUL = <dst>`.
+
+    Handles merge_unwrap_geocode_tops LOS pattern:
+        gmt grdmath unwrap_mask.grd {wavel} MUL -79.58 MUL = los.grd
+    Both s1 and s2 must be scalars (for grid×grid chains use grdmath2 twice).
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_mul_scalar_mul_scalar requires gmt_grd_io: {_io_err_msg}")
+    a_data, x, y, info = _read_gmt_grd(a)
+    step1 = _op_mul(a_data, float(s1))
+    result = _op_mul(step1, float(s2))
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {a} {s1} MUL {s2} MUL = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_make_ones_mask(los: str, topo: str, dst: str, ctx: str = "") -> None:
+    """In-process `gmt grdmath <los> 0 MUL 1 ADD <topo> MUL = <dst>`.
+
+    make_los_ascii:30 pattern — builds a topo grid masked to the los footprint:
+        los * 0  → zeros (NaN where los is NaN)
+        + 1      → ones  (NaN where los was NaN)
+        * topo   → topo values masked to los footprint
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_make_ones_mask requires gmt_grd_io: {_io_err_msg}")
+    los_d, x, y, info = _read_gmt_grd(los)
+    topo_d, _, _, _ = _read_gmt_grd(topo)
+    zeros = _op_mul(los_d, 0.0)    # NaN propagates from los
+    ones = _op_add(zeros, 1.0)
+    result = _op_mul(ones, topo_d)
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {los} 0 MUL 1 ADD {topo} MUL = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_phase_gradient_chain(rf: str, xi: str, im: str, xr: str,
+                                  ap: str, mk: str, dst: str,
+                                  ctx: str = "") -> None:
+    """In-process `gmt grdmath rf xi MUL im xr MUL SUB ap DIV mk MUL FLIPUD = dst`.
+
+    Handles filter:295-296 phase-gradient pattern (x and y components):
+        gmt grdmath realfilt.grd ximag.grd MUL imagfilt.grd xreal.grd MUL SUB
+                   amp_pow.grd DIV mask.grd MUL FLIPUD = xphase.grd
+    RPN: push rf, push xi, MUL → rf*xi; push im, push xr, MUL → im*xr;
+         SUB → rf*xi - im*xr; push ap, DIV → .../ap;
+         push mk, MUL → ...*mk; FLIPUD.
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_phase_gradient_chain requires gmt_grd_io: {_io_err_msg}")
+    rf_d, x, y, info = _read_gmt_grd(rf)
+    xi_d, _, _, _ = _read_gmt_grd(xi)
+    im_d, _, _, _ = _read_gmt_grd(im)
+    xr_d, _, _, _ = _read_gmt_grd(xr)
+    ap_d, _, _, _ = _read_gmt_grd(ap)
+    mk_d, _, _, _ = _read_gmt_grd(mk)
+    term1 = _op_mul(rf_d, xi_d)
+    term2 = _op_mul(im_d, xr_d)
+    diff = _op_sub(term1, term2)
+    divided = _op_div(diff, ap_d)
+    masked = _op_mul(divided, mk_d)
+    result = np.flipud(masked).astype(np.float32)
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {rf} {xi} MUL {im} {xr} MUL SUB "
+                f"{ap} DIV {mk} MUL FLIPUD = {dst} [gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_tri_mul_add(ve: str, lle: str, vn: str, lln: str,
+                         vu: str, llu: str, dst: str,
+                         ctx: str = "") -> None:
+    """In-process `gmt grdmath ve lle MUL vn lln MUL ADD vu llu MUL ADD = dst`.
+
+    Handles proj_model:56 LOS projection:
+        gmt grdmath tmpve.grd lle.grd MUL tmpvn.grd lln.grd MUL ADD
+                   tmpvu.grd llu.grd MUL ADD = {out}
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_tri_mul_add requires gmt_grd_io: {_io_err_msg}")
+    ve_d, x, y, info = _read_gmt_grd(ve)
+    lle_d, _, _, _ = _read_gmt_grd(lle)
+    vn_d, _, _, _ = _read_gmt_grd(vn)
+    lln_d, _, _, _ = _read_gmt_grd(lln)
+    vu_d, _, _, _ = _read_gmt_grd(vu)
+    llu_d, _, _, _ = _read_gmt_grd(llu)
+    result = _op_add(_op_add(_op_mul(ve_d, lle_d), _op_mul(vn_d, lln_d)),
+                     _op_mul(vu_d, llu_d))
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {ve} {lle} MUL {vn} {lln} MUL ADD "
+                f"{vu} {llu} MUL ADD = {dst} [gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_stack_corr_init(cor: str, dst_sum: str, ctx: str = "") -> None:
+    """In-process first iteration of stack_corr:
+        gmt grdmath {cor} SQR = tmp.grd
+        gmt grdmath 1 tmp.grd SUB tmp.grd DIV = sum.grd
+
+    Computes sum = (1 - cor^2) / cor^2 and writes to dst_sum.
+
+    RPN for second line: push 1, push tmp (=cor^2), SUB → 1-cor^2,
+    push tmp again, DIV → (1-cor^2)/cor^2.
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_stack_corr_init requires gmt_grd_io: {_io_err_msg}")
+    cor_d, x, y, info = _read_gmt_grd(cor)
+    sqr = _op_sqr(cor_d)                  # cor^2
+    numerator = _op_sub(1.0, sqr)         # 1 - cor^2  (scalar SUB grid: 1 tmp SUB)
+    result = _op_div(numerator, sqr)      # (1 - cor^2) / cor^2
+    _save(dst_sum, result, x, y, info,
+          hist=(f"gmt grdmath {cor} SQR = tmp; 1 tmp SUB tmp DIV = {dst_sum} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_stack_corr_accum(cor: str, acc: str, dst: str, ctx: str = "") -> None:
+    """In-process subsequent iterations of stack_corr:
+        gmt grdmath {cor} SQR = tmp.grd
+        gmt grdmath 1 tmp.grd SUB tmp.grd DIV sum.grd ADD = tmp2.grd
+        (caller does: mv tmp2.grd sum.grd)
+
+    Computes new_acc = (1 - cor^2)/cor^2 + acc and writes to dst.
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_stack_corr_accum requires gmt_grd_io: {_io_err_msg}")
+    cor_d, x, y, info = _read_gmt_grd(cor)
+    acc_d, _, _, _ = _read_gmt_grd(acc)
+    sqr = _op_sqr(cor_d)
+    term = _op_div(_op_sub(1.0, sqr), sqr)   # (1 - cor^2) / cor^2
+    result = _op_add(term, acc_d)
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath {cor} SQR ... {acc} ADD = {dst} "
+                f"[gmt_grdmath_py {ctx}]"))
+
+
+def grdmath_stack_corr_final(acc: str, num: int, dst: str, ctx: str = "") -> None:
+    """In-process final step of stack_corr:
+        gmt grdmath 1 sum.grd {num} DIV 1 ADD DIV SQRT = {out}
+
+    Computes mean_corr = sqrt(1 / (1 + sum/num)).
+
+    RPN: push 1, push sum, push num, DIV → sum/num,
+         (stack: 1, sum/num); 1 ADD → 1+sum/num,
+         (stack: 1, 1+sum/num); DIV → 1/(1+sum/num); SQRT.
+    """
+    if not _HAVE_IO:
+        raise RuntimeError(
+            f"grdmath_stack_corr_final requires gmt_grd_io: {_io_err_msg}")
+    acc_d, x, y, info = _read_gmt_grd(acc)
+    inner = _op_add(_op_div(acc_d, float(num)), 1.0)  # sum/num + 1
+    result = _op_sqrt(_op_div(1.0, inner))             # sqrt(1/(1+sum/num))
+    _save(dst, result, x, y, info,
+          hist=(f"gmt grdmath 1 {acc} {num} DIV 1 ADD DIV SQRT = {dst} "
                 f"[gmt_grdmath_py {ctx}]"))

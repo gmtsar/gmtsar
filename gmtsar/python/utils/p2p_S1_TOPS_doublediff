@@ -13,6 +13,19 @@ Usage:
 import os, sys, glob, shutil, subprocess, multiprocessing
 from gmtsar_lib import run
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+# Line 149 (MOD+PI chain) stays on gmt subprocess — MOD/PI not in the port.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _ann_stem(safe_root, iw, pol):
     """Return the .xml stem in <safe>/annotation/ matching subswath iw and pol.
@@ -145,7 +158,12 @@ def _doublediff():
     run("gmt grdsample phasefilt_1_temp.grd -Rphasefilt_2.grd -Gphasefilt_1.grd -V")
     for f in glob.glob("*_temp*"):
         os.remove(f)
-    run("gmt grdmath phasefilt_1.grd phasefilt_2.grd SUB = temp.grd")
+    if _grdmath_py_on():
+        _gm.grdmath2("SUB", "phasefilt_1.grd", "phasefilt_2.grd", "temp.grd",
+                     ctx="p2p_S1_TOPS_doublediff:SUB")
+    else:
+        run("gmt grdmath phasefilt_1.grd phasefilt_2.grd SUB = temp.grd")
+    # MOD and PI are not in the port — keep this line on gmt subprocess.
     run("gmt grdmath temp.grd 6.2832 ADD 6.2832 MOD PI SUB = phase_diff.grd")
     run("gmt makecpt -Crainbow -T-3.1416/3.1416 -Z > phase.cpt")
     run("grd2kml phase_diff phase.cpt")
