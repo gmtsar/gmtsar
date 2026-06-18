@@ -10,6 +10,18 @@ import os
 import sys
 from gmtsar_lib import run
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def make_los_ascii():
     if len(sys.argv) < 6:
@@ -27,7 +39,11 @@ def make_los_ascii():
 
     run(f"gmt grdsample {dem} -Gtmp_topo.grd `gmt grdinfo {los} -I-` "
         f"`gmt grdinfo {los} -I` -F")
-    run(f"gmt grdmath {los} 0 MUL 1 ADD tmp_topo.grd MUL = tmp_topo.grd")
+    if _grdmath_py_on():
+        _gm.grdmath_make_ones_mask(los, "tmp_topo.grd", "tmp_topo.grd",
+                                   ctx="make_los_ascii:ones_mask")
+    else:
+        run(f"gmt grdmath {los} 0 MUL 1 ADD tmp_topo.grd MUL = tmp_topo.grd")
     run(f"gmt grd2xyz {los} > tmp.xyz")
     run("gmt grd2xyz tmp_topo.grd > tmp_topo.xyz")
     run(f"gmt blockmedian tmp.xyz `gmt grdinfo {los} -I-` {inc_flag} {V} > tmp_b.xyz")

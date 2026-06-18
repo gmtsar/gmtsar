@@ -7,8 +7,21 @@ mask_def.grd (1 above threshold, NaN below).
 
 Usage:  stack_coherence_mask grid_list average_corr_threshold
 """
+import os
 import sys
 from gmtsar_lib import run
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
 def stack_coherence_mask():
@@ -26,15 +39,26 @@ def stack_coherence_mask():
 
     # Initialize mask_def.grd to zeros with same dimensions as first file.
     run(f"cp {files[0]} ./mask_def.grd")
-    run("gmt grdmath mask_def.grd 0 MUL = mask_def.grd")
-
-    # Sum all files (legacy iterates over the whole list — matches csh).
-    for fpath in files:
-        run(f"gmt grdmath {fpath} mask_def.grd ADD = mask_def.grd")
-
-    # Divide by count → mean; threshold → binary mask.
-    run(f"gmt grdmath mask_def.grd {len(files)} DIV = mask_def.grd")
-    run(f"gmt grdmath mask_def.grd {threshold} GE 0 NAN = mask_def.grd")
+    if _grdmath_py_on():
+        _gm.grdmath2("MUL", "mask_def.grd", 0, "mask_def.grd",
+                     ctx="stack_coherence_mask:MUL_zero")
+        # Sum all files (legacy iterates over the whole list — matches csh).
+        for fpath in files:
+            _gm.grdmath2("ADD", fpath, "mask_def.grd", "mask_def.grd",
+                         ctx="stack_coherence_mask:ADD")
+        # Divide by count → mean; threshold → binary mask.
+        _gm.grdmath2("DIV", "mask_def.grd", len(files), "mask_def.grd",
+                     ctx="stack_coherence_mask:DIV")
+        _gm.grdmath_ge_nan("mask_def.grd", float(threshold), "mask_def.grd",
+                           ctx="stack_coherence_mask:GE_NAN")
+    else:
+        run("gmt grdmath mask_def.grd 0 MUL = mask_def.grd")
+        # Sum all files (legacy iterates over the whole list — matches csh).
+        for fpath in files:
+            run(f"gmt grdmath {fpath} mask_def.grd ADD = mask_def.grd")
+        # Divide by count → mean; threshold → binary mask.
+        run(f"gmt grdmath mask_def.grd {len(files)} DIV = mask_def.grd")
+        run(f"gmt grdmath mask_def.grd {threshold} GE 0 NAN = mask_def.grd")
 
 
 if __name__ == "__main__":

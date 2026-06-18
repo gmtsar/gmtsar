@@ -864,6 +864,219 @@ class TestErrorHandling(unittest.TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# New-helper parity tests (v2.4.x comprehensive wiring)
+# ═════════════════════════════════════════════════════════════════════════════
+
+@_need_all
+class TestNewHelpers(unittest.TestCase):
+    """C-parity tests for helpers added in the v2.4.x comprehensive wiring.
+
+    Each test runs `gmt grdmath` (C oracle) AND the Python helper on the
+    SAME input grids and asserts max|diff| == 0 (exact) or < 1e-5 (floats).
+    """
+
+    # ── grdmath_xor_min ──────────────────────────────────────────────────────
+
+    def test_xor_min_basic(self):
+        """A 0. XOR 1. MIN: NaN → 0.0, then clamp to 1."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "a.grd", with_nan=True)
+            # C oracle: gmt grdmath a 0. XOR 1. MIN = c.grd
+            c_out = _gmt_grdmath(d, a, "0.", "XOR", "1.", "MIN", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_xor_min(a, 0., 1., py_out, ctx="test_xor_min")
+            _compare(c_out, py_out, atol=0.0, label="XOR MIN")
+
+    def test_xor_min_no_nan(self):
+        """Grid without NaN: XOR 0. is identity (B=0. is not NaN), MIN 1. clamps."""
+        with tempfile.TemporaryDirectory() as d:
+            rng = np.random.default_rng(55)
+            data = rng.uniform(0.1, 2.0, (20, 15)).astype(np.float32)
+            x = np.arange(15, dtype=np.float64)
+            y = np.arange(20, dtype=np.float64)
+            a = os.path.join(d, "a.grd")
+            _write(a, data, x, y, node_offset=0, geographic=False, history="xor_min")
+            c_out = _gmt_grdmath(d, a, "0.", "XOR", "1.", "MIN", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_xor_min(a, 0., 1., py_out, ctx="test_xor_min_no_nan")
+            _compare(c_out, py_out, atol=0.0, label="XOR MIN no-nan")
+
+    # ── grdmath_sub_sub ───────────────────────────────────────────────────────
+
+    def test_sub_sub_scalar_scalar(self):
+        """A s1 SUB s2 SUB with two scalars."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "a.grd")
+            c_out = _gmt_grdmath(d, a, "1.5", "SUB", "0.3", "SUB", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_sub_sub(a, 1.5, 0.3, py_out, ctx="test_sub_sub_scalar")
+            _compare(c_out, py_out, atol=0.0, label="SUB SUB scalar scalar")
+
+    def test_sub_sub_with_nan(self):
+        """A s1 SUB s2 SUB with NaN cells — NaN must propagate."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "a.grd", with_nan=True)
+            c_out = _gmt_grdmath(d, a, "0.5", "SUB", "0.1", "SUB", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_sub_sub(a, 0.5, 0.1, py_out, ctx="test_sub_sub_nan")
+            _compare(c_out, py_out, atol=0.0, label="SUB SUB with nan")
+
+    # ── grdmath_mul_scalar_mul_scalar ─────────────────────────────────────────
+
+    def test_mul_scalar_mul_scalar(self):
+        """A s1 MUL s2 MUL with scalars (LOS = unwrap * wavel * -79.58)."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "a.grd")
+            c_out = _gmt_grdmath(d, a, "0.0556", "MUL", "-79.58", "MUL",
+                                  out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_mul_scalar_mul_scalar(a, 0.0556, -79.58, py_out,
+                                               ctx="test_mul_scalar_mul_scalar")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6,
+                     label="MUL scalar MUL scalar")
+
+    def test_mul_scalar_mul_scalar_nan(self):
+        """NaN propagates through both MUL operations."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "a.grd", with_nan=True)
+            c_out = _gmt_grdmath(d, a, "2.0", "MUL", "3.0", "MUL", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_mul_scalar_mul_scalar(a, 2.0, 3.0, py_out,
+                                               ctx="test_mul_scalar_mul_scalar_nan")
+            _compare(c_out, py_out, atol=0.0, label="MUL scalar MUL scalar nan")
+
+    # ── grdmath_make_ones_mask ────────────────────────────────────────────────
+
+    def test_make_ones_mask(self):
+        """A 0 MUL 1 ADD B MUL: mask topo to los footprint."""
+        with tempfile.TemporaryDirectory() as d:
+            # los has some NaN cells; topo has none
+            los = _make_test_grid(d, "los.grd", with_nan=True)
+            topo = _make_test_grid(d, "topo.grd", seed=200)
+            c_out = _gmt_grdmath(d, los, "0", "MUL", "1", "ADD", topo, "MUL",
+                                  out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_make_ones_mask(los, topo, py_out, ctx="test_ones_mask")
+            _compare(c_out, py_out, atol=0.0, label="ones mask")
+
+    # ── grdmath_phase_gradient_chain ──────────────────────────────────────────
+
+    def test_phase_gradient_chain(self):
+        """rf xi MUL im xr MUL SUB ap DIV mk MUL FLIPUD = dst (filter:295-296)."""
+        with tempfile.TemporaryDirectory() as d:
+            rng = np.random.default_rng(77)
+            ny, nx = 20, 15
+            x = np.arange(nx, dtype=np.float64)
+            y = np.arange(ny, dtype=np.float64)
+
+            def _g(name, seed):
+                data = rng.uniform(0.1, 2.0, (ny, nx)).astype(np.float32)
+                p = os.path.join(d, name)
+                _write(p, data, x, y, node_offset=0, geographic=False,
+                       history=name)
+                return p
+
+            rf = _g("rf.grd", 1); xi = _g("xi.grd", 2)
+            im = _g("im.grd", 3); xr = _g("xr.grd", 4)
+            ap = _g("ap.grd", 5); mk = _g("mk.grd", 6)
+
+            # C: rf xi MUL im xr MUL SUB ap DIV mk MUL FLIPUD
+            c_out = _gmt_grdmath(d, rf, xi, "MUL", im, xr, "MUL", "SUB",
+                                  ap, "DIV", mk, "MUL", "FLIPUD", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_phase_gradient_chain(rf, xi, im, xr, ap, mk, py_out,
+                                              ctx="test_phase_grad")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6,
+                     label="phase gradient chain")
+
+    # ── grdmath_tri_mul_add ───────────────────────────────────────────────────
+
+    def test_tri_mul_add(self):
+        """ve lle MUL vn lln MUL ADD vu llu MUL ADD = dst (proj_model:56)."""
+        with tempfile.TemporaryDirectory() as d:
+            rng = np.random.default_rng(88)
+            ny, nx = 20, 15
+            x = np.arange(nx, dtype=np.float64)
+            y = np.arange(ny, dtype=np.float64)
+
+            def _g(name):
+                data = rng.uniform(-1.0, 1.0, (ny, nx)).astype(np.float32)
+                p = os.path.join(d, name)
+                _write(p, data, x, y, node_offset=0, geographic=False,
+                       history=name)
+                return p
+
+            ve = _g("ve.grd"); lle = _g("lle.grd")
+            vn = _g("vn.grd"); lln = _g("lln.grd")
+            vu = _g("vu.grd"); llu = _g("llu.grd")
+
+            # C: ve lle MUL vn lln MUL ADD vu llu MUL ADD
+            c_out = _gmt_grdmath(d, ve, lle, "MUL", vn, lln, "MUL", "ADD",
+                                  vu, llu, "MUL", "ADD", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_tri_mul_add(ve, lle, vn, lln, vu, llu, py_out,
+                                    ctx="test_tri_mul_add")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6, label="tri mul add")
+
+    # ── grdmath_stack_corr_init / _accum / _final ─────────────────────────────
+
+    def test_stack_corr_init(self):
+        """First iteration: cor^2 → (1 - cor^2)/cor^2 = sum.grd."""
+        with tempfile.TemporaryDirectory() as d:
+            a = _make_test_grid(d, "cor.grd", seed=10)
+            # C equivalent: gmt grdmath cor SQR = tmp; gmt grdmath 1 tmp SUB tmp DIV = sum
+            tmp_path = os.path.join(d, "tmp.grd")
+            _gmt_grdmath(d, a, "SQR", out_name=os.path.basename(tmp_path))
+            c_out = _gmt_grdmath(d, "1", tmp_path, "SUB", tmp_path, "DIV",
+                                  out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_stack_corr_init(a, py_out, ctx="test_stack_corr_init")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6,
+                     label="stack_corr_init")
+
+    def test_stack_corr_accum(self):
+        """Subsequent iteration: acc + (1 - cor^2)/cor^2."""
+        with tempfile.TemporaryDirectory() as d:
+            cor = _make_test_grid(d, "cor.grd", seed=11)
+            acc = _make_test_grid(d, "acc.grd", seed=12)
+            tmp_path = os.path.join(d, "tmp.grd")
+            _gmt_grdmath(d, cor, "SQR", out_name=os.path.basename(tmp_path))
+            c_out = _gmt_grdmath(d, "1", tmp_path, "SUB", tmp_path, "DIV",
+                                  acc, "ADD", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_stack_corr_accum(cor, acc, py_out, ctx="test_stack_corr_accum")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6,
+                     label="stack_corr_accum")
+
+    def test_stack_corr_final(self):
+        """Final step: sqrt(1 / (1 + sum/N))."""
+        with tempfile.TemporaryDirectory() as d:
+            acc = _make_test_grid(d, "sum.grd", seed=13)
+            num = 5
+            c_out = _gmt_grdmath(d, "1", acc, str(num), "DIV", "1", "ADD",
+                                  "DIV", "SQRT", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_stack_corr_final(acc, num, py_out, ctx="test_stack_corr_final")
+            _compare(c_out, py_out, atol=1e-5, rtol=1e-6,
+                     label="stack_corr_final")
+
+    # ── grdmath_ge_nan_mul (existing helper — regression coverage) ────────────
+
+    def test_ge_nan_mul_basic(self):
+        """corr thresh GE 0 NAN mask MUL (geocode / snaphu / merge pattern)."""
+        with tempfile.TemporaryDirectory() as d:
+            corr = _make_test_grid(d, "corr.grd", seed=20)
+            mask = _make_test_grid(d, "mask.grd", seed=21)
+            thresh = 0.15
+            c_out = _gmt_grdmath(d, corr, str(thresh), "GE", "0", "NAN",
+                                  mask, "MUL", out_name="c.grd")
+            py_out = os.path.join(d, "py.grd")
+            _py.grdmath_ge_nan_mul(corr, thresh, mask, py_out,
+                                   ctx="test_ge_nan_mul")
+            _compare(c_out, py_out, atol=0.0, label="GE NAN MUL")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

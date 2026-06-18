@@ -8,9 +8,22 @@ produce r.grd / a.grd (range / azimuth alignment grids).
 
 Usage:  fitoffset_ra npar_rng npar_azi xcorr.dat [SNR]
 """
+import os
 import subprocess
 import sys
 from gmtsar_lib import run
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
 def fitoffset_ra():
@@ -39,8 +52,12 @@ def fitoffset_ra():
     run(f"gmt trend2d a.xyz -Fxym -N{azi_p}r > a_model.xyz")
     run("gmt surface r_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Gr_tmp.grd")
     run("gmt surface a_model.xyz `gmt grdinfo amp*.grd -I-` -rp -I64/64 -T.3 -Ga_tmp.grd")
-    run("gmt grdmath r_tmp.grd FLIPUD = r.grd")
-    run("gmt grdmath a_tmp.grd FLIPUD = a.grd")
+    if _grdmath_py_on():
+        _gm.grdmath1("FLIPUD", "r_tmp.grd", "r.grd", ctx="fitoffset_ra:FLIPUD_r")
+        _gm.grdmath1("FLIPUD", "a_tmp.grd", "a.grd", ctx="fitoffset_ra:FLIPUD_a")
+    else:
+        run("gmt grdmath r_tmp.grd FLIPUD = r.grd")
+        run("gmt grdmath a_tmp.grd FLIPUD = a.grd")
     run("rm -f r_model.xyz a_model.xyz r_tmp.grd a_tmp.grd")
 
 

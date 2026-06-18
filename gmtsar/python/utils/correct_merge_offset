@@ -8,9 +8,23 @@ comparing narrow strips on each side of the boundary and subtracts it.
 
 Usage:  correct_merge_offset merge_list merge_log input.grd output.grd
 """
+import os
 import subprocess
 import sys
 from gmtsar_lib import run
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 # Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
 # Default ON per Rule 10 carve-out (byte-id to gmt C + 3.3× faster file→file).
@@ -101,7 +115,11 @@ def correct_merge_offset():
     _grdcut(inp, f"tmp1_{out}", R1.removeprefix("-R"))
     _grdcut(inp, f"tmp2_{out}", R2.removeprefix("-R"))
     run(f"gmt grdedit tmp2_{out} -Rtmp1_{out} -Gtmp2_{out}")
-    run(f"gmt grdmath tmp2_{out} tmp1_{out} SUB = tmp12_diff.grd")
+    if _grdmath_py_on():
+        _gm.grdmath2("SUB", f"tmp2_{out}", f"tmp1_{out}", "tmp12_diff.grd",
+                     ctx="correct_merge_offset:SUB12")
+    else:
+        run(f"gmt grdmath tmp2_{out} tmp1_{out} SUB = tmp12_diff.grd")
     diff1 = float(_capture("gmt grdinfo tmp12_diff.grd -L1 -C | awk '{print $12}'"))
 
     diff2 = None
@@ -110,14 +128,22 @@ def correct_merge_offset():
         _grdcut(inp, f"tmp1_{out}", R1b.removeprefix("-R"))
         _grdcut(inp, f"tmp2_{out}", R2b.removeprefix("-R"))
         run(f"gmt grdedit tmp2_{out} -Rtmp1_{out} -Gtmp2_{out}")
-        run(f"gmt grdmath tmp2_{out} tmp1_{out} SUB = tmp23_diff.grd")
+        if _grdmath_py_on():
+            _gm.grdmath2("SUB", f"tmp2_{out}", f"tmp1_{out}", "tmp23_diff.grd",
+                         ctx="correct_merge_offset:SUB23")
+        else:
+            run(f"gmt grdmath tmp2_{out} tmp1_{out} SUB = tmp23_diff.grd")
         diff2 = float(_capture("gmt grdinfo tmp23_diff.grd -L1 -C | awk '{print $12}'"))
 
     if nf == 2:
         _grdcut(inp, f"tmp1_{out}", f"{xmin}/{position1}/{ymin}/{ymax}")
         _grdcut(inp, f"tmp2_{out}", f"{position1}/{xmax}/{ymin}/{ymax}")
         print(f"Correcting second image by {diff1} ...")
-        run(f"gmt grdmath tmp2_{out} {diff1} SUB = tmp2_{out}")
+        if _grdmath_py_on():
+            _gm.grdmath2("SUB", f"tmp2_{out}", diff1, f"tmp2_{out}",
+                         ctx="correct_merge_offset:SUB_d1_2f")
+        else:
+            run(f"gmt grdmath tmp2_{out} {diff1} SUB = tmp2_{out}")
         run(f"gmt grdpaste tmp1_{out} tmp2_{out} -G{out}")
         run(f"rm -f tmp1_{out} tmp2_{out} tmp12_diff.grd")
     else:  # nf == 3
@@ -126,8 +152,14 @@ def correct_merge_offset():
         _grdcut(inp, f"tmp3_{out}", f"{position2}/{xmax}/{ymin}/{ymax}")
         print(f"Correcting second image by {diff1} ...")
         print(f"Correcting third image by {diff1} + {diff2} ...")
-        run(f"gmt grdmath tmp2_{out} {diff1} SUB = tmp2_{out}")
-        run(f"gmt grdmath tmp3_{out} {diff1} SUB {diff2} SUB = tmp3_{out}")
+        if _grdmath_py_on():
+            _gm.grdmath2("SUB", f"tmp2_{out}", diff1, f"tmp2_{out}",
+                         ctx="correct_merge_offset:SUB_d1_3f")
+            _gm.grdmath_sub_sub(f"tmp3_{out}", diff1, diff2, f"tmp3_{out}",
+                                ctx="correct_merge_offset:SUB_SUB_3f")
+        else:
+            run(f"gmt grdmath tmp2_{out} {diff1} SUB = tmp2_{out}")
+            run(f"gmt grdmath tmp3_{out} {diff1} SUB {diff2} SUB = tmp3_{out}")
         run(f"gmt grdpaste tmp1_{out} tmp2_{out} -Gtmp4_{out}")
         run(f"gmt grdpaste tmp4_{out} tmp3_{out} -G{out}")
         run(f"rm -f tmp1_{out} tmp2_{out} tmp3_{out} tmp4_{out} tmp12_diff.grd tmp23_diff.grd")

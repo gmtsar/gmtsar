@@ -15,6 +15,18 @@ import os
 import sys
 from gmtsar_lib import run
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def stack_corr():
     if len(sys.argv) != 3:
@@ -33,20 +45,34 @@ def stack_corr():
         sys.exit("stack_corr: empty input list")
 
     print("computing the mean correlation of the grids ..")
-    for i, cor in enumerate(files, start=1):
-        if not os.path.isfile(cor):
-            sys.exit(f" Error: file not found: {cor}")
-        # tmp = corr^2;   per-pair contribution = (1 - tmp) / tmp
-        run(f"gmt grdmath {cor} SQR = tmp.grd")
-        if i == 1:
-            run("gmt grdmath 1 tmp.grd SUB tmp.grd DIV = sum.grd")
-        else:
-            run("gmt grdmath 1 tmp.grd SUB tmp.grd DIV sum.grd ADD = tmp2.grd")
-            run("mv tmp2.grd sum.grd")
-
-    num = len(files)
-    # Final: mean_corr = sqrt(1 / (1 + sum/N))
-    run(f"gmt grdmath 1 sum.grd {num} DIV 1 ADD DIV SQRT = {out}")
+    if _grdmath_py_on():
+        for i, cor in enumerate(files, start=1):
+            if not os.path.isfile(cor):
+                sys.exit(f" Error: file not found: {cor}")
+            if i == 1:
+                _gm.grdmath_stack_corr_init(cor, "sum.grd",
+                                             ctx="stack_corr:init")
+            else:
+                _gm.grdmath_stack_corr_accum(cor, "sum.grd", "tmp2.grd",
+                                              ctx="stack_corr:accum")
+                run("mv tmp2.grd sum.grd")
+        num = len(files)
+        _gm.grdmath_stack_corr_final("sum.grd", num, out,
+                                      ctx="stack_corr:final")
+    else:
+        for i, cor in enumerate(files, start=1):
+            if not os.path.isfile(cor):
+                sys.exit(f" Error: file not found: {cor}")
+            # tmp = corr^2;   per-pair contribution = (1 - tmp) / tmp
+            run(f"gmt grdmath {cor} SQR = tmp.grd")
+            if i == 1:
+                run("gmt grdmath 1 tmp.grd SUB tmp.grd DIV = sum.grd")
+            else:
+                run("gmt grdmath 1 tmp.grd SUB tmp.grd DIV sum.grd ADD = tmp2.grd")
+                run("mv tmp2.grd sum.grd")
+        num = len(files)
+        # Final: mean_corr = sqrt(1 / (1 + sum/N))
+        run(f"gmt grdmath 1 sum.grd {num} DIV 1 ADD DIV SQRT = {out}")
     run("rm -f tmp.grd sum.grd")
 
 

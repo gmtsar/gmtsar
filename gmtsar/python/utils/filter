@@ -291,9 +291,21 @@ def filter():
     
     if compute_phase_gradient != 0:
         print('FILTER: making phase gradient ... ...')
-        run('gmt grdmath amp.grd 2. POW = amp_pow.grd')
-        run('gmt grdmath realfilt.grd ximag.grd MUL imagfilt.grd xreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = xphase.grd')
-        run('gmt grdmath realfilt.grd yimag.grd MUL imagfilt.grd yreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = yphase.grd') 
+        if _grdmath_py_on():
+            _gm.grdmath2("POW", 'amp.grd', 2.0, 'amp_pow.grd',
+                         ctx="filter:POW_amp")
+            _gm.grdmath_phase_gradient_chain(
+                'realfilt.grd', 'ximag.grd', 'imagfilt.grd', 'xreal.grd',
+                'amp_pow.grd', 'mask.grd', 'xphase.grd',
+                ctx="filter:phase_grad_x")
+            _gm.grdmath_phase_gradient_chain(
+                'realfilt.grd', 'yimag.grd', 'imagfilt.grd', 'yreal.grd',
+                'amp_pow.grd', 'mask.grd', 'yphase.grd',
+                ctx="filter:phase_grad_y")
+        else:
+            run('gmt grdmath amp.grd 2. POW = amp_pow.grd')
+            run('gmt grdmath realfilt.grd ximag.grd MUL imagfilt.grd xreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = xphase.grd')
+            run('gmt grdmath realfilt.grd yimag.grd MUL imagfilt.grd yreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = yphase.grd')
     
     file_shuttle('mask.grd','tmp.grd','mv')
     if _grdmath_py_on():

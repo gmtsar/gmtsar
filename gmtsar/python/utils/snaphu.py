@@ -37,6 +37,19 @@ except ImportError as _e:
           "using gmt subprocess.", file=sys.stderr)
     _HAVE_GRDCUT_PY = False
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+# Only ops in {MUL, GE, NAN, XOR, MIN} are wired here; snaphu itself is C.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _grdcut(in_grd: str, out_grd: str, region) -> None:
     """Cut ``in_grd`` to ``region`` → ``out_grd``. Honours
@@ -170,8 +183,12 @@ def _snaphu_run(interp, threshold, defomax, region):
                 dx_phase, dy_phase, _ = _phase_patch_inc()
                 _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
                                   x_inc=dx_phase, y_inc=dy_phase)
-        run(f'gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = '
-            f'phase_patch.grd {V}')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'phase_patch.grd', 'landmask_ra_patch.grd',
+                         'phase_patch.grd', ctx='snaphu_unwrap:MUL_landmask_phase')
+        else:
+            run(f'gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = '
+                f'phase_patch.grd {V}')
 
     # --- user-defined mask ----------------------------------------------
     if check_file_report('mask_def.grd') is True:
@@ -180,20 +197,37 @@ def _snaphu_run(interp, threshold, defomax, region):
             _grdcut('mask_def.grd', 'mask_def_patch.grd', region)
         else:
             file_shuttle('mask_def.grd', 'mask_def_patch.grd', 'cp')
-        run(f'gmt grdmath corr_patch.grd mask_def_patch.grd MUL = '
-            f'corr_patch.grd {V}')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'corr_patch.grd', 'mask_def_patch.grd',
+                         'corr_patch.grd', ctx='snaphu_unwrap:MUL_maskdef_corr')
+        else:
+            run(f'gmt grdmath corr_patch.grd mask_def_patch.grd MUL = '
+                f'corr_patch.grd {V}')
 
     # --- correlation threshold + mask composition -----------------------
-    run(f'gmt grdmath corr_patch.grd {threshold} GE 0 NAN mask_patch.grd '
-        f'MUL = mask2_patch.grd')
-    run('gmt grdmath corr_patch.grd 0. XOR 1. MIN  = corr_patch.grd')
-    run('gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd')
+    if _grdmath_py_on():
+        _gm.grdmath_ge_nan_mul('corr_patch.grd', threshold, 'mask_patch.grd',
+                               'mask2_patch.grd',
+                               ctx='snaphu_unwrap:GE_NAN_MUL')
+        _gm.grdmath_xor_min('corr_patch.grd', 0., 1., 'corr_patch.grd',
+                            ctx='snaphu_unwrap:XOR_MIN')
+        _gm.grdmath2("MUL", 'mask2_patch.grd', 'corr_patch.grd', 'corr_tmp.grd',
+                     ctx='snaphu_unwrap:MUL_corr_tmp')
+    else:
+        run(f'gmt grdmath corr_patch.grd {threshold} GE 0 NAN mask_patch.grd '
+            f'MUL = mask2_patch.grd')
+        run('gmt grdmath corr_patch.grd 0. XOR 1. MIN  = corr_patch.grd')
+        run('gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd')
 
     # --- phase -> xyz (with optional nearest_grid fill for interp) ------
     if interp == 0:
         run('gmt grd2xyz phase_patch.grd -ZTLf -do0 > phase.in')
     else:
-        run('gmt grdmath mask2_patch.grd phase_patch.grd MUL = phase_tmp.grd')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'mask2_patch.grd', 'phase_patch.grd',
+                         'phase_tmp.grd', ctx='snaphu_unwrap:MUL_phase_tmp')
+        else:
+            run('gmt grdmath mask2_patch.grd phase_patch.grd MUL = phase_tmp.grd')
         run('nearest_grid phase_tmp.grd tmp.grd 300')
         file_shuttle('tmp.grd', 'phase_tmp.grd', 'mv')
         run('gmt grd2xyz phase_tmp.grd -ZTLf -do0 > phase.in')
@@ -226,15 +260,27 @@ def _snaphu_run(interp, threshold, defomax, region):
     # Env-gated GMTSAR_XYZ2GRD_PY (default ON since v2.1.23; set =0 for subprocess fallback).
     _xyz2grd_file('unwrap.out', 'tmp.grd', par1=par1, par2=par2, ztype='f')
     _xyz2grd_file('conncomp.out', 'conncomp.grd', par1=par1, par2=par2, ztype='u')
-    run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
+    if _grdmath_py_on():
+        _gm.grdmath2("MUL", 'tmp.grd', 'mask2_patch.grd', 'tmp.grd',
+                     ctx='snaphu_unwrap:MUL_unwrap_mask')
+    else:
+        run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
     file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
 
     # --- post-mask -------------------------------------------------------
     if check_file_report('landmask_ra.grd') is True:
-        run(f'gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd {V}')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'unwrap.grd', 'landmask_ra_patch.grd',
+                         'tmp.grd', ctx='snaphu_unwrap:MUL_landmask_unwrap')
+        else:
+            run(f'gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd {V}')
         file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
     if check_file_report('mask_def.grd') is True:
-        run(f'gmt grdmath unwrap.grd mask_def_patch.grd MUL = tmp.grd {V}')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'unwrap.grd', 'mask_def_patch.grd',
+                         'tmp.grd', ctx='snaphu_unwrap:MUL_maskdef_unwrap')
+        else:
+            run(f'gmt grdmath unwrap.grd mask_def_patch.grd MUL = tmp.grd {V}')
         file_shuttle('tmp.grd', 'unwrap.grd', 'mv')
 
     # --- plot ------------------------------------------------------------
@@ -338,30 +384,50 @@ def snaphu():
                 _grdsample_inproc('landmask_ra.grd', 'landmask_ra_patch.grd',
                                   x_inc=dx_phase, y_inc=dy_phase)
         print(' ')
-        run('gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = phase_patch.grd '+V)
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'phase_patch.grd', 'landmask_ra_patch.grd',
+                         'phase_patch.grd', ctx='snaphu:MUL_landmask_phase')
+        else:
+            run('gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = phase_patch.grd '+V)
 
     print(' ')
     print('SNAPHU: user defined mask ... ...')
-    
+
     if check_file_report('mask_def.grd')==True:
         if n==5:
             # Mira (2026-05-22): in-process grdcut.
             _grdcut('mask_def.grd', 'mask_def_patch.grd', sys.argv[4])
         else:
             file_shuttle('mask_def.grd','mask_def_patch.grd','cp')
-    
-        print(' ')
-        run('gmt grdmath corr_patch.grd mask_def_patch.grd MUL = corr_patch.grd '+V)
 
-    
-    run('gmt grdmath corr_patch.grd '+sys.argv[1]+' GE 0 NAN mask_patch.grd MUL = mask2_patch.grd')
-    run('gmt grdmath corr_patch.grd 0. XOR 1. MIN  = corr_patch.grd')
-    run('gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd') 
-    
+        print(' ')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'corr_patch.grd', 'mask_def_patch.grd',
+                         'corr_patch.grd', ctx='snaphu:MUL_maskdef_corr')
+        else:
+            run('gmt grdmath corr_patch.grd mask_def_patch.grd MUL = corr_patch.grd '+V)
+
+    if _grdmath_py_on():
+        _gm.grdmath_ge_nan_mul('corr_patch.grd', float(sys.argv[1]),
+                               'mask_patch.grd', 'mask2_patch.grd',
+                               ctx='snaphu:GE_NAN_MUL')
+        _gm.grdmath_xor_min('corr_patch.grd', 0., 1., 'corr_patch.grd',
+                            ctx='snaphu:XOR_MIN')
+        _gm.grdmath2("MUL", 'mask2_patch.grd', 'corr_patch.grd', 'corr_tmp.grd',
+                     ctx='snaphu:MUL_corr_tmp')
+    else:
+        run('gmt grdmath corr_patch.grd '+sys.argv[1]+' GE 0 NAN mask_patch.grd MUL = mask2_patch.grd')
+        run('gmt grdmath corr_patch.grd 0. XOR 1. MIN  = corr_patch.grd')
+        run('gmt grdmath mask2_patch.grd corr_patch.grd MUL = corr_tmp.grd')
+
     if interp==0:
         run('gmt grd2xyz phase_patch.grd -ZTLf -do0 > phase.in')
     elif interp==1:
-        run('gmt grdmath mask2_patch.grd phase_patch.grd MUL = phase_tmp.grd')
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'mask2_patch.grd', 'phase_patch.grd',
+                         'phase_tmp.grd', ctx='snaphu:MUL_phase_tmp')
+        else:
+            run('gmt grdmath mask2_patch.grd phase_patch.grd MUL = phase_tmp.grd')
         run('nearest_grid phase_tmp.grd tmp.grd 300')
         file_shuttle('tmp.grd', 'phase_tmp.grd', 'mv')
         run('gmt grd2xyz phase_tmp.grd -ZTLf -do0 > phase.in')
@@ -401,22 +467,34 @@ def snaphu():
     print(' ')
     print('SNAPHU: generate connected component ... ...')
     _xyz2grd_file('conncomp.out', 'conncomp.grd', par1=par1, par2=par2, ztype='u')
-    run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
-    
+    if _grdmath_py_on():
+        _gm.grdmath2("MUL", 'tmp.grd', 'mask2_patch.grd', 'tmp.grd',
+                     ctx='snaphu:MUL_unwrap_mask')
+    else:
+        run('gmt grdmath tmp.grd mask2_patch.grd MUL = tmp.grd')
+
     print(' ')
     print('SNAPHU: detrend the unwrapped if DEFOMAX = 0 for interseismic ... ...')
     file_shuttle('tmp.grd','unwrap.grd', 'mv')
-    
+
     print(' ')
     print('SNAPHU: landmask ... ...')
     if check_file_report('landmask_ra.grd')==True:
-        run('gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd '+V)
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'unwrap.grd', 'landmask_ra_patch.grd',
+                         'tmp.grd', ctx='snaphu:MUL_landmask_unwrap')
+        else:
+            run('gmt grdmath unwrap.grd landmask_ra_patch.grd MUL = tmp.grd '+V)
         file_shuttle('tmp.grd','unwrap.grd', 'mv')
-    
+
     print(' ')
     print('SNAPHU: user defined mask ... ...')
     if check_file_report('mask_def.grd')==True:
-        run('gmt grdmath unwrap.grd mask_def_patch.grd MUL = tmp.grd '+V)
+        if _grdmath_py_on():
+            _gm.grdmath2("MUL", 'unwrap.grd', 'mask_def_patch.grd',
+                         'tmp.grd', ctx='snaphu:MUL_maskdef_unwrap')
+        else:
+            run('gmt grdmath unwrap.grd mask_def_patch.grd MUL = tmp.grd '+V)
         file_shuttle('tmp.grd','unwrap.grd', 'mv')
     
     print(' ')
