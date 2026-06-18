@@ -189,6 +189,11 @@ To use gmtsar from this checkout, add to ~/.bashrc (or run in your shell):
   export GMTSAR=$REPO_ROOT
   export PATH=\$GMTSAR/bin:\$PATH
 
+If you used --conda, also put the conda env on PATH so 'gmt' is found
+(the line above only adds \$GMTSAR/bin):
+  conda activate \${CONDA_GMTSAR_ENV:-gmtsar}    # or: export PATH=\$CONDA_PREFIX/bin:\$PATH
+
 Sanity check:
   which p2p_processing && p2p_processing
+  gmt --version        # confirms gmt is reachable (needed for actual runs)
 EOF

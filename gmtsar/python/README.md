@@ -28,11 +28,19 @@ export GMTSAR=<this repo>
 export PATH=$GMTSAR/bin:$PATH
 ```
 
+**`--conda` mode:** also put the conda env on PATH so `gmt` (and other
+build-env tools) are found — the line above only adds `$GMTSAR/bin`:
+```
+conda activate gmtsar            # or: export PATH=$CONDA_PREFIX/bin:$PATH
+```
+(In `--ubuntu` mode `gmt` is installed system-wide and already on PATH, so
+this step is not needed.)
+
 Sanity check:
 ```
-p2p_processing
+p2p_processing       # prints the usage/help message
+gmt --version        # confirms gmt is reachable (needed for actual runs)
 ```
-should print the help message.
 
 # Testing for developers
 
