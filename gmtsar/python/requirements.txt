@@ -1,0 +1,17 @@
+# Python dependencies for the GMTSAR Python framework (gmtsar/python/).
+# Pinned floors from the known-working dev environment; tighten before a
+# tagged release if exact reproducibility is required.
+#
+# Pip-installable:
+numpy<2
+scipy>=1.10
+scikit-image>=0.19
+matplotlib>=3.5
+xarray>=2022.11
+netCDF4>=1.6
+numba>=0.56      # JIT kernels: xcorr_py, resamp_py, SAT JIT path, snaphu_py
+cython>=3.0      # builds utils/_surface_kernel (gmt_surface_py default-ON path)
+#
+# NOT pip-installable — install via system package manager / install.sh:
+#   gmt>=6.4, csh, gfortran, gcc, autoconf, make, libtiff, libhdf5, liblapack
+# See install.sh (--ubuntu) and docker/Dockerfile for the full system list.

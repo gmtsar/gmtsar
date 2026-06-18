@@ -26,12 +26,7 @@ from typing import Optional
 
 import numpy as np
 
-# Locate gmt — prefer the conda env on this host.
-_GMT_CANDIDATES = [
-    "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt",
-    shutil.which("gmt") or "",
-]
-GMT = next((g for g in _GMT_CANDIDATES if g and os.path.exists(g)), "")
+GMT = shutil.which("gmt") or ""
 
 _HERE = Path(__file__).resolve().parent
 _UTILS = _HERE.parent.parent / "utils"
@@ -247,9 +242,11 @@ class TestGmtGrdfilterParityIonoRealistic(unittest.TestCase):
     READ-ONLY input (Rule 9 compliance: no writes under csh_test)."""
 
     REAL_CORR = Path(
-        "/home/staff/dliu/gmtsar/gmtsar/python/work/csh_test/"
-        "ALOS_haiti/intf/2009068_2010025/corr.grd"
-    )
+        os.environ.get("GMTSAR_TEST_WORK")
+        or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+            if os.environ.get("GMTSAR") else "")
+        or str(_HERE.parents[2] / "work")
+    ) / "csh_test/ALOS_haiti/intf/2009068_2010025/corr.grd"
 
     @classmethod
     def setUpClass(cls):

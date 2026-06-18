@@ -80,10 +80,21 @@ conv = _NS["conv"]
 sys.path.insert(0, str(_HERE.parent))
 from _gmt_native_bf import read_bf, write_bf  # noqa: E402
 
-_RS2 = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/RS2_SLC_Hawaii")
-_FILTER_DIR = Path("/home/utig5/dliu/gmtsar/share/gmtsar/filters")
-C_CONV = shutil.which("conv") or "/home/utig5/dliu/gmtsar/bin/conv"
-C_PHASEDIFF = shutil.which("phasediff") or "/home/utig5/dliu/gmtsar/bin/phasediff"
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
+)
+_GMTSAR_ROOT = Path(os.environ.get("GMTSAR", ""))
+_RS2 = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii"
+_FILTER_DIR = _GMTSAR_ROOT / "share/gmtsar/filters" if _GMTSAR_ROOT != Path("") else Path("/nonexistent")
+C_CONV = shutil.which("conv") or (
+    str(_GMTSAR_ROOT / "bin" / "conv") if _GMTSAR_ROOT != Path("") else ""
+)
+C_PHASEDIFF = shutil.which("phasediff") or (
+    str(_GMTSAR_ROOT / "bin" / "phasediff") if _GMTSAR_ROOT != Path("") else ""
+)
 
 
 def _have_c_conv() -> bool:

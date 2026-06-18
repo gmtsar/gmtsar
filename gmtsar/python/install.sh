@@ -55,7 +55,7 @@ require_apt() {
 # so subsequent steps can wire CPPFLAGS/LDFLAGS without re-resolving.
 locate_conda_env() {
   local envname="${CONDA_GMTSAR_ENV:-gmtsar}"
-  for base in "$HOME/anaconda3" "$HOME/miniconda3" "/home/staff/dliu/anaconda3" "/opt/conda"; do
+  for base in "$HOME/anaconda3" "$HOME/miniconda3" "/opt/conda"; do
     if [[ -d "$base/envs/$envname" ]]; then
       CONDA_PREFIX_GMTSAR="$base/envs/$envname"
       return 0

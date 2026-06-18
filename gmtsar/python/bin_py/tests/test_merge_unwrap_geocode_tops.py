@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -38,10 +39,15 @@ from pathlib import Path
 _PY_TREE = Path(__file__).resolve().parents[2]  # .../gmtsar/python
 _PY_UTIL = _PY_TREE / "utils" / "merge_unwrap_geocode_tops"
 _PY_UTILS_DIR = _PY_TREE / "utils"
-_CSH_BIN_CANDIDATES = [
-    Path("/home/utig5/dliu/gmtsar/bin/merge_unwrap_geocode_tops.csh"),
-    Path("/home/staff/dliu/gmtsar/bin/merge_unwrap_geocode_tops.csh"),
-]
+def _csh_candidates():
+    found = shutil.which("merge_unwrap_geocode_tops.csh")
+    cands = [Path(found)] if found else []
+    gmtsar = os.environ.get("GMTSAR", "")
+    if gmtsar:
+        cands.append(Path(gmtsar) / "bin" / "merge_unwrap_geocode_tops.csh")
+    return cands
+
+_CSH_BIN_CANDIDATES = _csh_candidates()
 
 
 def _find_csh() -> Path | None:

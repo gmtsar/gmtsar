@@ -187,8 +187,8 @@ def _find_c_resamp() -> str | None:
     for cand in (
         os.environ.get("GMTSAR_RESAMP_BIN"),
         shutil.which("resamp"),
-        "/home/utig5/dliu/gmtsar/bin/resamp",
-        "/home/staff/dliu/gmtsar/bin/resamp",
+        str(Path(os.environ.get("GMTSAR", "")) / "bin" / "resamp")
+        if os.environ.get("GMTSAR") else None,
     ):
         if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand
@@ -196,9 +196,13 @@ def _find_c_resamp() -> str | None:
 
 
 # Default real-data inputs (RS2 Hawaii, the standard csh test case).
-_RS2_DIR = Path(
-    "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/RS2_SLC_Hawaii"
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
 )
+_RS2_DIR = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii"
 _MASTER_PRM = _RS2_DIR / "SLC" / "RS220110515.PRM"
 _ALIGNED_PRM = _RS2_DIR / "SLC" / "RS220110819.PRM"
 # The SLC files are symlinks; resolve to the real ones for cross-tool input.
@@ -313,7 +317,7 @@ class TestResampVsCBinary(unittest.TestCase):
 
 # Mode-5 fixture: NISAR_Ethiopia case + GMT-derived shift grids.
 _NISAR_DIR = Path(
-    "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/NISAR_Ethiopia"
+    str(_WORK_ROOT / "csh_test/NISAR_Ethiopia")
 )
 _NISAR_MASTER_PRM = _NISAR_DIR / "SLC" / "NSR_20251122A.PRM"
 _NISAR_ALIGNED_PRM = _NISAR_DIR / "SLC" / "NSR_20251204A.PRM"
@@ -333,7 +337,8 @@ def _find_fitoffset_ra() -> str | None:
     for cand in (
         os.environ.get("GMTSAR_FITOFFSET_RA"),
         shutil.which("fitoffset_ra.csh"),
-        "/home/utig5/dliu/gmtsar/bin/fitoffset_ra.csh",
+        str(Path(os.environ.get("GMTSAR", "")) / "bin" / "fitoffset_ra.csh")
+        if os.environ.get("GMTSAR") else None,
     ):
         if cand and os.path.isfile(cand):
             return cand
@@ -344,7 +349,6 @@ def _find_gmt() -> str | None:
     for cand in (
         os.environ.get("GMT"),
         shutil.which("gmt"),
-        "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt",
     ):
         if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
             return cand

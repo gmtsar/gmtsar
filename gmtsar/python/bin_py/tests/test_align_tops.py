@@ -30,26 +30,36 @@ from pathlib import Path
 # and the port lives at <pyroot>/utils/align_tops.
 _PY_TREE = Path(__file__).resolve().parents[2]  # .../gmtsar/python
 _PY_UTIL = _PY_TREE / "utils" / "align_tops"
-_CSH_BIN_CANDIDATES = [
-    Path("/home/utig5/dliu/gmtsar/bin/align_tops.csh"),
-    Path("/home/staff/dliu/gmtsar/bin/align_tops.csh"),
-]
-# Greece F2 raw dir — first try the worktree's work/csh_test/, then fall
-# back to the main checkout's work/ (heavy test fixtures aren't duplicated
-# per worktree). Set GMTSAR_GREECE_F2_RAW to override.
+def _find_csh_align_tops_in_path() -> Path | None:
+    found = shutil.which("align_tops.csh")
+    if found:
+        return Path(found)
+    # Also probe $GMTSAR/bin directly (the env is set by sweep.sh).
+    gmtsar = os.environ.get("GMTSAR")
+    if gmtsar:
+        cand = Path(gmtsar) / "bin" / "align_tops.csh"
+        if cand.exists() and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+_CSH_BIN_CANDIDATES = [p for p in [_find_csh_align_tops_in_path()] if p]
+
+# Greece F2 raw dir.  Set GMTSAR_GREECE_F2_RAW to override.
+# Default: try the local work/csh_test/ then $GMTSAR/gmtsar/python/work/.
 def _resolve_greece_dir() -> Path:
     override = os.environ.get("GMTSAR_GREECE_F2_RAW")
     if override:
         return Path(override)
-    candidates = [
-        _PY_TREE / "work" / "csh_test" / "S1A_SLC_TOPS_Greece" / "F2" / "raw",
-        Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test"
-             "/S1A_SLC_TOPS_Greece/F2/raw"),
-    ]
-    for c in candidates:
-        if c.is_dir():
-            return c
-    return candidates[0]  # report the worktree path in skip msg
+    work_root = Path(
+        os.environ.get("GMTSAR_TEST_WORK")
+        or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+            if os.environ.get("GMTSAR") else "")
+        or str(_PY_TREE / "work")
+    )
+    cand = work_root / "csh_test/S1A_SLC_TOPS_Greece/F2/raw"
+    if cand.is_dir():
+        return cand
+    return cand  # report this path in skip msg
 
 _GREECE_F2_RAW = _resolve_greece_dir()
 _TOPS_PREFIXES = (
@@ -231,14 +241,11 @@ class TestAlignTopsCshParity(unittest.TestCase):
         _stage_greece_inputs(work)
         env = os.environ.copy()
         env.update(env_extra)
-        # Ensure both align_tops and its dependencies (make_s1a_tops,
-        # ext_orb_s1a, calc_dop_orb, gmt, SAT_baseline*, SAT_llt2rat,
-        # resamp, fitoffset, ...) are on PATH.
-        env["PATH"] = (
-            "/home/staff/dliu/anaconda3/envs/gmtsar/bin:"
-            "/home/staff/dliu/gmtsar/bin:"
-            + env.get("PATH", "")
-        )
+        # Ensure align_tops and its dependencies are on PATH.
+        # Prepend $GMTSAR/bin if set; the rest comes from the caller's env.
+        gmtsar_bin = os.environ.get("GMTSAR", "")
+        gmtsar_bin = (gmtsar_bin + "/bin:") if gmtsar_bin else ""
+        env["PATH"] = gmtsar_bin + env.get("PATH", "")
         # Invoke the worktree's align_tops by absolute path so the env-gate
         # under test is the one in THIS commit, not the system bin symlink.
         cmd = [

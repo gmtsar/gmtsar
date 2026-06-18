@@ -34,14 +34,10 @@ GEOCODE_FACTOR = _NS["GEOCODE_FACTOR"]
 
 from gmt_grd_io import read_gmt_grd, write_gmt_grd  # noqa: E402
 
-_GMT_CANDIDATES = [
-    Path("/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"),
-    Path(shutil.which("gmt") or "/__NO_GMT__"),
-]
-
-
 def _find_gmt() -> Path | None:
-    for p in _GMT_CANDIDATES:
+    gmt = shutil.which("gmt")
+    if gmt:
+        p = Path(gmt)
         if p.exists() and os.access(p, os.X_OK):
             return p
     return None

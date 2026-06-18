@@ -31,12 +31,8 @@ _UTILS = _HERE.parent.parent / "utils"      # gmtsar/python/utils/
 sys.path.insert(0, str(_UTILS))
 from gmt_surface_py import gmt_surface_py    # noqa: E402  (after sys.path)
 
-# Find the gmt binary.  Prefer PATH; fall back to the conda env's bin.
+# Find the gmt binary.  Prefer PATH; skip loudly if not found.
 _GMT = shutil.which("gmt")
-if _GMT is None:
-    _alt = "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"
-    if os.path.exists(_alt):
-        _GMT = _alt
 _HAVE_GMT = _GMT is not None and os.access(_GMT, os.X_OK)
 
 

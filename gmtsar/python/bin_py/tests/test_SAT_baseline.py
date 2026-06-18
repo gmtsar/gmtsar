@@ -215,26 +215,35 @@ class TestSATBaselineCParity(unittest.TestCase):
     silently pass on missing data — per failure-avoidance checklist.
     """
 
-    C_BIN = "/home/staff/dliu/gmtsar/bin/SAT_baseline"
+    C_BIN = shutil.which("SAT_baseline") or str(
+        Path(os.environ.get("GMTSAR", "")) / "bin" / "SAT_baseline"
+        if os.environ.get("GMTSAR") else "/usr/local/bin/SAT_baseline"
+    )
 
+    _WORK_ROOT = Path(
+        os.environ.get("GMTSAR_TEST_WORK")
+        or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+            if os.environ.get("GMTSAR") else "")
+        or str(_HERE.parents[2] / "work")
+    )
     # (case-name, dir, master.PRM, aligned.PRM)
     CASES = [
         ("RS2",
-         "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/RS2_SLC_Hawaii/SLC",
+         str(_WORK_ROOT / "csh_test/RS2_SLC_Hawaii/SLC"),
          "RS220110515.PRM", "RS220110819.PRM"),
         ("ALOS_haiti",
-         "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/ALOS_haiti/SLC",
+         str(_WORK_ROOT / "csh_test/ALOS_haiti/SLC"),
          "IMG-HH-ALPSRP166373240-H1.0__D.PRM",
          "IMG-HH-ALPSRP213343240-H1.0__D.PRM"),
         ("TSX_Hawaii",
-         "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/TSX_SLC_Hawaii/SLC",
+         str(_WORK_ROOT / "csh_test/TSX_SLC_Hawaii/SLC"),
          "TSX20120615.PRM", "TSX20121208.PRM"),
         ("ENVI_Baja",
-         "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/ENVI_Baja_EQ/SLC",
+         str(_WORK_ROOT / "csh_test/ENVI_Baja_EQ/SLC"),
          "ENV1_2_084_2943_2961_42222.PRM",
          "ENV1_2_084_2943_2961_42723.PRM"),
         ("ALOS_SLC",
-         "/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/ALOS_SLC_L1.1/SLC",
+         str(_WORK_ROOT / "csh_test/ALOS_SLC_L1.1/SLC"),
          "IMG-HH-ALPSRP223500660-H1.1__A.PRM",
          "IMG-HH-ALPSRP230210660-H1.1__A.PRM"),
     ]

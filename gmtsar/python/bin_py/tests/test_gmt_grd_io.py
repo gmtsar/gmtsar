@@ -58,17 +58,9 @@ except Exception as e:  # noqa: BLE001
     _IMPORT_ERR = repr(e)
 
 
-# Locate `gmt`. Prefer PATH; otherwise probe the conda env the install
-# docs recommend. If neither works, every test in the file skips
-# (LOUDLY — via unittest.skipUnless message, not silently).
+# Locate `gmt`. Use PATH only; skip loudly if not found.
 def _find_gmt() -> str | None:
-    if shutil.which("gmt") is not None:
-        return shutil.which("gmt")
-    # Conda env from gmtsar/python/CLAUDE.md
-    candidate = "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"
-    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-        return candidate
-    return None
+    return shutil.which("gmt")
 
 
 _GMT = _find_gmt()

@@ -81,7 +81,13 @@ fi
 # (`gmt: Command not found.` in log). Was the root cause of v1.12.0's
 # false-pass on COVE/Larsen — their topo_ra.grd never got built but the
 # auto-discovered comparison set hid the missing files.
-export PATH=/home/staff/dliu/anaconda3/envs/gmtsar/bin:/home/staff/dliu/gmtsar/bin:$PATH
+# Ensure gmtsar tools are reachable. Derive the repo bin/ from the script
+# location (case_runner.sh lives at <repo>/gmtsar/python/tests/), then
+# honour GMTSAR env if set (sweep.sh always exports it).
+_CR_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && git rev-parse --show-toplevel 2>/dev/null || echo "")"
+_CR_GMTSAR_BIN="${GMTSAR:+$GMTSAR/bin}"
+_CR_REPO_BIN="${_CR_REPO_ROOT:+$_CR_REPO_ROOT/bin}"
+export PATH="${_CR_GMTSAR_BIN:+$_CR_GMTSAR_BIN:}${_CR_REPO_BIN:+$_CR_REPO_BIN:}$PATH"
 
 # If GMTSAR_PROFILE=1 is set by the caller (or below by passing
 # CASE_RUNNER_PROFILE=1), emit per-case timing JSON. Profiler is a no-op

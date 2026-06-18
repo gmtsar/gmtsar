@@ -35,12 +35,20 @@ case ${1:-} in
     *) echo "unknown arg: $1 (try --smoke / --fast / --full / --unit / --sample [N] / --smart_fast / --help)" >&2; exit 2 ;;
 esac
 
-export GMTSAR=/home/staff/dliu/gmtsar
-# Prepend gmtsar bin AND the conda gmtsar env so `gmt` is on PATH for
-# subprocess calls inside the unit tests (required by test_dem2topo_ra
-# TestWiredFlipudParity fallback path and any test that shells out to gmt).
-export PATH=$GMTSAR/bin:/home/staff/dliu/anaconda3/envs/gmtsar/bin:$PATH
-PY=/home/staff/dliu/anaconda3/envs/gmtsar/bin/python3
+# Derive GMTSAR from this script's location: sweep.sh lives at
+#   <repo>/gmtsar/python/tests/sweep.sh → repo root is three dirs up.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${GMTSAR:-}" ]; then
+    GMTSAR="$(cd "$_SCRIPT_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null)" \
+        || { echo "sweep.sh: cannot derive GMTSAR — set GMTSAR env var or run from inside the git repo" >&2; exit 1; }
+fi
+export GMTSAR
+# Prepend gmtsar bin so gmtsar tools are on PATH for subprocess calls inside
+# unit tests. Any conda/system path already on PATH (e.g. from caller's env)
+# is preserved after the repo's own bin.
+export PATH=$GMTSAR/bin:$PATH
+PY="$(command -v python3 2>/dev/null)" \
+    || { echo "sweep.sh: python3 not on PATH — activate conda env or set PATH" >&2; exit 1; }
 DATASET_DIR=$GMTSAR/gmtsar/python/work/dataset
 WORK=$GMTSAR/gmtsar/python/work
 LOG=$WORK/sweep.log
@@ -49,10 +57,9 @@ mkdir -p "$DATASET_DIR" "$WORK"
 
 # ── Tier 0: --unit ────────────────────────────────────────────────────────────
 # Runs pytest over bin_py/tests/ without any SAR data downloads.
-# Pytest is in anaconda_knox (which ships pytest 7.4.4); the gmtsar conda env
-# python3 is missing pytest.  We use the knox python3 for collection + run,
-# but the gmtsar PATH is already set above so gmt is reachable by subprocesses.
-_PYTEST=/home/staff/dliu/anaconda_knox/bin/python3
+# Uses whatever python3 is on PATH (set by caller's conda env or system).
+_PYTEST="$(command -v python3 2>/dev/null)" \
+    || { echo "sweep.sh: python3 not on PATH — cannot run unit tests" >&2; exit 1; }
 _UNIT_TESTS=$GMTSAR/gmtsar/python/bin_py/tests
 
 if [ "${_MODE:-}" = "unit" ]; then

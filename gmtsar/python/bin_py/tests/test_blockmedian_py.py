@@ -27,12 +27,7 @@ from pathlib import Path
 import numpy as np
 
 
-# Locate gmt — prefer the conda env on this host.
-_GMT_CANDIDATES = [
-    "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt",
-    shutil.which("gmt") or "",
-]
-GMT = next((g for g in _GMT_CANDIDATES if g and os.path.exists(g)), "")
+GMT = shutil.which("gmt") or ""
 
 # Locate the wrapper CLI.
 _HERE = Path(__file__).resolve().parent

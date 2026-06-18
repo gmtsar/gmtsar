@@ -57,11 +57,6 @@ sys.path.insert(0, str(_UTILS))
 
 from gmt_grd_io import read_gmt_grd, write_gmt_grd  # noqa: E402
 
-_GMT_CANDIDATES = [
-    Path("/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"),
-    Path(shutil.which("gmt") or "/__NO_GMT__"),
-]
-
 # Tolerance bands (see module docstring).
 MAX_REL_DIVERGENCE_SMOOTH = 0.02   # 2% on iono-shape smooth signal
 MAX_REL_DIVERGENCE_NOISE  = 0.30   # 30% on white-noise input (sanity-only;
@@ -69,7 +64,9 @@ MAX_REL_DIVERGENCE_NOISE  = 0.30   # 30% on white-noise input (sanity-only;
 
 
 def _find_gmt() -> Path | None:
-    for p in _GMT_CANDIDATES:
+    gmt = shutil.which("gmt")
+    if gmt:
+        p = Path(gmt)
         if p.exists() and os.access(p, os.X_OK):
             return p
     return None

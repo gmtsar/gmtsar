@@ -42,11 +42,11 @@ Python framework is invoked via the scripts in `gmtsar/python/utils/` (most are 
 ```
 bash gmtsar/python/install.sh --conda --python --build
 ```
-Uses the existing `gmtsar` conda env at `/home/staff/dliu/anaconda3/envs/gmtsar` (no full activation; just sets `CPPFLAGS`/`LDFLAGS`). Builds in-place; `make install` lands in `<repo>/bin` via `--prefix=<repo>`. `bin/` also gets the Python utilities and symlinks to all `gmtsar/csh/*.csh` so `pop_config.csh`, `p2p_processing.csh`, etc. are on `PATH`.
+Uses the existing `gmtsar` conda env (auto-detected at `$HOME/anaconda3`, `$HOME/miniconda3`, or `/opt/conda`; set `CONDA_GMTSAR_ENV=<name>` to override the env name). Builds in-place; `make install` lands in `<repo>/bin` via `--prefix=<repo>`. `bin/` also gets the Python utilities and symlinks to all `gmtsar/csh/*.csh` so `pop_config.csh`, `p2p_processing.csh`, etc. are on `PATH`.
 
 After install, in any shell:
 ```
-export GMTSAR=/home/staff/dliu/gmtsar
+export GMTSAR=<your-repo-root>   # e.g. /home/yourname/gmtsar
 export PATH=$GMTSAR/bin:$PATH
 ```
 
