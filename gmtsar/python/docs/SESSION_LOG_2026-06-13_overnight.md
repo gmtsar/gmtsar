@@ -930,3 +930,11 @@ Phase-0 git audit: initial `gitStatus` snapshot showed HEAD at fe3a418 (v2.3.4) 
 ## 2026-06-17 20:58 — PORTABILITY VERIFIED end-to-end → contribution-ready CONFIRMED
 - RS2 smoke at v2.4.2 (c8cfe39), default-ish env, SWEEP_FORCE=py: 6/6 py-vs-csh SUCCESS (103s); no Permission-denied / path-derivation errors. The portable code (sweep.sh git-derived GMTSAR, phasefilt_py shutil.which, bin_py +x in index) runs the pipeline clean.
 - CAMPAIGN ENDPOINT (verified): v2.4.0 (all compute cores Python-by-default, 20/21 capstone) + v2.4.1 (portability) + v2.4.2 (+x). Code is contribution-ready for the user's upstream gmtsar/gmtsar PR. Remaining = low-value tail (4 test files w/ fallback hardcoded paths flagged for the PR; utils_pygmt experimental). Awaiting user direction.
+
+## 2026-06-17 21:10 — README followability test (per user) → 1 gap found + fixed (v2.4.3)
+- Followed README no-sudo path on a fresh-ish shell (skipped tarballs per user). RESULTS:
+  - install.sh --conda --python --build: WORKS end-to-end (exit 0; conda env auto-detected at $HOME/anaconda3/envs/gmtsar — kai's removal of the /home/staff hardcode is fine since $HOME=/home/staff/dliu; C build OK).
+  - Sanity check `p2p_processing`: prints usage/help ✓.
+  - `phasefilt_py` from clean PATH ($GMTSAR/bin symlink): prints argparse usage ✓ — confirms the v2.4.2 +x-in-index fix works for a fresh clone.
+  - GAP: README's env lines (export GMTSAR + PATH=$GMTSAR/bin) do NOT put `gmt` on PATH in --conda mode (gmt is in the conda env bin). Sanity check passes (help doesn't call gmt) but real runs would fail. FIXED: README + install.sh closing message now tell --conda users to `conda activate <env>` / add $CONDA_PREFIX/bin, and add `gmt --version` to the sanity check.
+  - Side effect: install.sh --python pip-upgraded matplotlib 3.10.9→3.11.0 in the env (requirements.txt allows >=3.5; minor, PNG SSIM thresholds robust). Note for reproducibility: pin matplotlib if PNG parity ever drifts.
