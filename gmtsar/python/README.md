@@ -1,5 +1,19 @@
 # GMTSAR Python framework
 
+Python implementations of GMTSAR's heavy per-pixel **compute kernels** (cross-
+correlation, phase difference, resampling, SAT geometry, biharmonic surface,
+blockmedian, phase filter, plus selected grdmath/grdsample operators), wired
+default-on at their primary call sites and verified bit-faithful to the csh/C
+pipeline across a 21-case satellite matrix (20/21 clean; the one diff is the
+documented Ridgecrest no-DEM corner).
+
+**This is a hybrid, not a pure-Python or GMT-free pipeline.** A working **GMT
+(≥6.4) install is required** — at runtime (~60 `gmt` subcommands for grid I/O,
+projection, and visualization are never ported; most invocations of even the
+*ported* operators still call `gmt`) and at build time (gmtsar's C binaries
+link `libgmt`). The C/Fortran SAR preprocessors and snaphu (phase unwrapping)
+also remain C. See `docs/release_notes_v2.4.0.md` → *Scope & dependencies*.
+
 ## Installation
 
 One consolidated installer: `gmtsar/python/install.sh`. It builds gmtsar **in-place** from this checkout (no system-wide install, no re-clone). Each step is an independent flag — combine as needed:

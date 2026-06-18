@@ -1,15 +1,30 @@
 # Release notes — v2.4.0 (2026-06-17)
 
-## Milestone: every compute core runs in Python by default, verified vs csh
+## Milestone: the compute kernels have verified, default-on Python implementations
 
-v2.4.0 marks the completion of the compute-core port. With all in-process
-Python defaults enabled, a full 21-case sweep against the csh oracle is
-**20/21 py-vs-csh clean** — the lone diff being the long-documented
-`S1_Ridgecrest_EQ` no-DEM-corner surface artifact (phasefilt complex-rms
-0.3516, undefined for both C and Python where the DEM does not cover the
-H_res grid; masked/merged products match).
+v2.4.0 marks the point where every heavy per-pixel **compute kernel** has a
+Python implementation that is default-on **at its primary call site(s)** and
+verified bit-faithful to the csh/C pipeline. With those defaults enabled, a
+full 21-case sweep against the csh oracle is **20/21 py-vs-csh clean** — the
+lone diff being the long-documented `S1_Ridgecrest_EQ` no-DEM-corner surface
+artifact (phasefilt complex-rms 0.3516, undefined for both C and Python where
+the DEM does not cover the H_res grid; masked/merged products match).
 
-### Compute cores now Python-by-default
+> **Scope — read this before "it's fully Python."** This is **not** a
+> GMT-free pipeline, and the framework still requires a GMT install (see
+> *Scope & dependencies* below). The Python ports replace the numerically
+> expensive *inner loops* at their main call sites; the surrounding
+> geospatial toolkit (grid I/O, projection, visualization, ~60 `gmt`
+> subcommands), the C/Fortran SAR preprocessors, and snaphu remain C. The
+> 20/21 result validates that **the hybrid pipeline** (Python kernels at
+> wired sites + GMT everywhere else) matches csh bit-for-bit — not that gmt
+> is no longer called.
+
+### Compute kernels — Python implementation, default-on at primary call sites
+(Selective wiring: e.g. `gmt_grdmath_py` is wired in `filter` + `stack`; other
+`gmt grdmath` call sites — iono, snaphu masking, merge, stack_corr, geocode —
+still call the `gmt` C binary. Surface is wired in `dem2topo_ra` + 5 rerouted
+calls. So most operator *invocations* across the pipeline still go to gmt.)
 
 | Core | Python module | Default |
 |------|---------------|---------|
@@ -36,6 +51,32 @@ ALOS_haiti patches are float32-exact vs the C binary). A Cython kernel
 (~125×), not algorithm or interpreter — so full-grid production speed would
 require an AoS rewrite or a cffi→C wrap. Since snaphu is ~0.3% of pipeline
 wall-time (macro profile), production stays on the C binary.
+
+## Scope & dependencies (what is *not* Python)
+
+The framework is a **hybrid**, not a pure-Python reimplementation. It still
+requires a working **GMT (≥6.4) install** — at both runtime and build time:
+
+- **~60 GMT subcommands are called and were never ported** — `grdinfo`,
+  `grd2xyz`, `xyz2grd`, `grdcut`, `gmtinfo`, `grdimage`, `gmtconvert`,
+  `psconvert`, `grdtrack`, `makecpt`, `psscale`, `grdedit`, `project`,
+  `grd2kml`, `trend2d`, … (grid I/O, projection, visualization).
+- **Even ported operators are wired selectively** — only the primary call
+  sites route to Python. Most `gmt grdmath` / `gmt surface` / `gmt blockmedian`
+  *invocations* across the pipeline still call the `gmt` C binary.
+- **GMT is a build/link dependency** — gmtsar's own C binaries compile
+  against `-lgmt` (libgmt).
+- **SAR preprocessing is C/Fortran, unported** — `make_slc_s1a`,
+  `make_slc_csk`, `make_raw_csk`, `make_slc_tsx/rs2/gf3/lt1`, `calc_dop_orb`,
+  `extend_orbit`, `update_PRM`, etc. (reading/focusing raw SAR data).
+- **snaphu** (phase unwrapping) is the C binary in production.
+- GMT is also the `.grd` (netCDF) I/O layer the pipeline reads/writes through.
+
+Dropping the GMT dependency would require porting the remaining ~60 GMT
+subcommands (incl. projection and all visualization), replacing GMT's grid
+I/O wholesale, and relinking/porting the C/Fortran SAR preprocessors off
+libgmt — effectively reimplementing GMT. That is far beyond this milestone's
+scope and is not planned.
 
 ## What got here (v2.3.6 → v2.4.0)
 
