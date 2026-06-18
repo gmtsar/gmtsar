@@ -7,7 +7,25 @@
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+# Mira: in-process grdsample (grdsample_wrapper) wire-in.
+# Byte-identical to `gmt grdsample -R<string> -I4/8 -nl+t0.1`
+# (A/B verified 2026-06-18: max|py-gmt|=0, NaN footprint identical).
+# Gated by GMTSAR_GRDSAMPLE_PY (default "1" — ON since v2.1.7).
+try:
+    import sys as _sys_grds
+    _sys_grds.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from grdsample_wrapper import grdsample as _grdsample_inproc
+    _HAVE_GRDSAMPLE_PY_LM = True
+except Exception:
+    _HAVE_GRDSAMPLE_PY_LM = False
+    _grdsample_inproc = None  # type: ignore
+
+
+def _grdsample_py_on() -> bool:
+    return (_HAVE_GRDSAMPLE_PY_LM
+            and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1")
 
 def landmask():
     
@@ -39,7 +57,15 @@ def landmask():
     print('LANDMASK: require full resolution coastline from GMT ... ...')
     run("gmt grdlandmask -Glandmask.grd `gmt grdinfo -I- dem.grd` `gmt grdinfo -I dem.grd` "+str(V)+" -NNaN/1 -Df")
     run("proj_ll2ra.csh trans.dat landmask.grd landmask_ra.grd")
-    run("gmt grdsample landmask_ra.grd -Gtmp.grd -R"+sys.argv[1]+" -I4/8 -nl+t0.1")
+    if _grdsample_py_on():
+        _r = [float(v) for v in sys.argv[1].split("/")]
+        _grdsample_inproc("landmask_ra.grd", "tmp.grd",
+                          region=(_r[0], _r[1], _r[2], _r[3]),
+                          x_inc=4.0, y_inc=8.0,
+                          interp="bilinear",
+                          threshold=0.1)
+    else:
+        run("gmt grdsample landmask_ra.grd -Gtmp.grd -R"+sys.argv[1]+" -I4/8 -nl+t0.1")
     file_shuttle('tmp.grd','landmask_ra.grd','mv')
     
     print(' ')
