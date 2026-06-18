@@ -61,6 +61,21 @@ def _grdmath_py_on() -> bool:
     return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
+# Mira GMTSAR_BLOCKMEDIAN_PY wire-in: in-process gmt_blockmedian_py via the
+# blockmedian_wrapper for the r.xyz / a.xyz `-bo3d` blockmedian below.
+# A/B verified byte-identical to `gmt blockmedian -r -bo3d` (binary stream
+# cmp = 0). Default ON; set GMTSAR_BLOCKMEDIAN_PY=0 to force the gmt subprocess.
+try:
+    from blockmedian_wrapper import blockmedian as _blockmedian_py
+    _HAVE_BLOCKMEDIAN_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_BLOCKMEDIAN_PY = False
+
+
+def _blockmedian_py_on() -> bool:
+    return _HAVE_BLOCKMEDIAN_PY and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1"
+
+
 def _surface_inproc_f64(xyz_path: str, region_str: str, inc_str: str,
                          tension: float, max_iter: int, out_path: str,
                          pixel_reg: bool = False) -> None:
@@ -277,8 +292,14 @@ def align_tops():
         # Build r.xyz and a.xyz, blockmedian → surface → flip → r.grd, a.grd
         run("awk '{ printf(\"%.6f %.6f %.6f \\n\", $1,$3,$2) }' < offset.dat > r.xyz")
         run("awk '{ printf(\"%.6f %.6f %.6f \\n\", $1,$3,$4) }' < offset.dat > a.xyz")
-        run(f"gmt blockmedian r.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > rtmp.xyz")
-        run(f"gmt blockmedian a.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > atmp.xyz")
+        if _blockmedian_py_on():
+            _blockmedian_py("r.xyz", "rtmp.xyz",
+                            region=f"0/{rmax}/0/{amax}", inc="16/8", out_binary=3)
+            _blockmedian_py("a.xyz", "atmp.xyz",
+                            region=f"0/{rmax}/0/{amax}", inc="16/8", out_binary=3)
+        else:
+            run(f"gmt blockmedian r.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > rtmp.xyz")
+            run(f"gmt blockmedian a.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > atmp.xyz")
         if inproc:
             _surface_inproc_f64("rtmp.xyz", f"0/{rmax}/0/{amax}", "16/8",
                                 0.3, 1000, "rtmp.grd", pixel_reg=True)

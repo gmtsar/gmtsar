@@ -35,6 +35,22 @@ import sys
 
 from gmtsar_lib import run, grep_value
 
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper. The `tmp_filt -Rph0.grd` and `tmp_ph -Rph0.grd`
+# resamples here operate on radar-geometry grids with clean integer
+# increments → byte-identical to `gmt grdsample` (A/B verified maxabs=0,
+# NaN-footprint identical). Default ON (GMTSAR_GRDSAMPLE_PY=1); set =0 to
+# force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
 
 def _capture(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
@@ -256,7 +272,10 @@ def estimate_ionospheric_phase():
     run("cp tmp_ph.grd ph_iono.grd")
 
     # ph0 - tmp_filt → corrected phase
-    run("gmt grdsample tmp_filt.grd -Rph0.grd -Gtmp.grd")
+    if _grdsample_py_on():
+        _grdsample_py("tmp_filt.grd", "tmp.grd", ref_grd="ph0.grd")
+    else:
+        run("gmt grdsample tmp_filt.grd -Rph0.grd -Gtmp.grd")
     run("gmt grdmath ph0.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = ph_corrected.grd")
 
     # 2pi-cycle correction for ph_iono
@@ -266,7 +285,10 @@ def estimate_ionospheric_phase():
     run(f"gmt grdmath tmp_filt.grd {cc} PI MUL ADD = tmp_ph.grd")
     run("gmt grdmath tmp_ph.grd PI ADD 2 PI MUL MOD PI SUB = ph_iono.grd")
 
-    run("gmt grdsample tmp_ph.grd -Rph0.grd -Gtmp.grd")
+    if _grdsample_py_on():
+        _grdsample_py("tmp_ph.grd", "tmp.grd", ref_grd="ph0.grd")
+    else:
+        run("gmt grdsample tmp_ph.grd -Rph0.grd -Gtmp.grd")
     run("gmt grdmath ph0.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = ph_corrected.grd")
     run("mv tmp_ph.grd ph_iono_orig.grd")
 

@@ -12,9 +12,17 @@ Public API
 y_inc=None, interp='bicubic', pixel_reg=None, threshold=0.5)`` —
 mirrors the gmt CLI option semantics:
 
-  * If ``ref_grd`` is given (csh ``-R<grdfile>``), the region, increments
-    AND registration of the output are taken from that .grd unless an
-    explicit ``x_inc``/``y_inc``/``region`` overrides.
+  * If ``ref_grd`` is given (csh ``-R<grdfile>``), the increments AND
+    registration of the output are taken from that .grd; the output REGION
+    is the ref grid's region CLIPPED to the input grid's data extent and
+    SNAPPED to the ref grid's node lattice — exactly what
+    ``gmt grdsample -R<grdfile>`` does. (Earlier versions reconstructed
+    the region from read_gmt_grd x/y vectors and re-derived the dims by
+    rounding ``(xmax-xmin)/inc``, which produced an output one row/col off
+    when the ref grid overhung the input or registrations differed. Fixed
+    by reading the authoritative geometry via ``gmt grdinfo -C`` and
+    replicating gmt's clip-snap region logic; see ``_clip_snap_region`` /
+    ``_ref_geometry``.)
   * If only ``region`` is given (csh ``-R<w>/<e>/<s>/<n>``) without ``x_inc``,
     the input's increments are reused (gmt grdsample default).
   * Registration: output inherits the input's registration unless
@@ -83,28 +91,127 @@ def _py_enabled() -> bool:
     return os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
 
 
-def _grd_region(grd_path: str) -> Tuple[float, float, float, float]:
-    """Read (xmin, xmax, ymin, ymax) from a .grd file via read_gmt_grd.
+class _RefGeom:
+    """Authoritative geometry of a reference grid, read from ``gmt grdinfo -C``.
 
-    For a pixel-registered grid, the returned region matches gmt's
-    convention: x_min = x[0] - dx/2, x_max = x[-1] + dx/2.
+    ``gmt grdsample -R<grdfile>`` takes the OUTPUT region, increments, AND
+    registration directly from that grid's header — it does NOT re-derive
+    dims by rounding ``(xmax-xmin)/inc``. Reconstructing those values from
+    the read_gmt_grd x/y vectors (``dx = x[1]-x[0]``, region = node-extent)
+    is lossy: float drift in the reconstructed inc, or a registration
+    mismatch between the in-grid and the ref-grid, can make the port's
+    ``round((xhi-xlo)/inc)+1-reg`` land one row/col off → output shape
+    differs from ``gmt grdsample -R<grdfile>`` by 1. (Diagnosed bug.)
+
+    So we read the EXACT n_columns/n_rows/registration from grdinfo and
+    pin the port's output dims to them — guaranteeing the same shape and
+    registration gmt would produce.
     """
-    _data, x, y, info = read_gmt_grd(grd_path)
-    dx = float(x[1] - x[0]) if len(x) > 1 else 0.0
-    dy = float(y[1] - y[0]) if len(y) > 1 else 0.0
-    off = 0.5 if info.get("node_offset", 0) == 1 else 0.0
-    return (float(x[0]) - off * dx,
-            float(x[-1]) + off * dx,
-            float(y[0]) - off * dy,
-            float(y[-1]) + off * dy)
+
+    __slots__ = ("xmin", "xmax", "ymin", "ymax", "x_inc", "y_inc",
+                 "n_columns", "n_rows", "node_offset")
+
+    def __init__(self, xmin, xmax, ymin, ymax, x_inc, y_inc,
+                 n_columns, n_rows, node_offset):
+        self.xmin = xmin
+        self.xmax = xmax
+        self.ymin = ymin
+        self.ymax = ymax
+        self.x_inc = x_inc
+        self.y_inc = y_inc
+        self.n_columns = n_columns
+        self.n_rows = n_rows
+        self.node_offset = node_offset
+
+    @property
+    def region(self) -> Tuple[float, float, float, float]:
+        return (self.xmin, self.xmax, self.ymin, self.ymax)
 
 
-def _grd_inc_reg(grd_path: str) -> Tuple[float, float, int]:
-    """Return (x_inc, y_inc, node_offset) of an existing .grd."""
-    _data, x, y, info = read_gmt_grd(grd_path)
-    dx = float(x[1] - x[0]) if len(x) > 1 else 0.0
-    dy = float(y[1] - y[0]) if len(y) > 1 else 0.0
-    return dx, dy, int(info.get("node_offset", 0))
+def _ref_geometry(grd_path: str) -> _RefGeom:
+    """Read the ref grid's authoritative geometry via ``gmt grdinfo -C``.
+
+    grdinfo ``-C`` is whitespace-delimited:
+      1=name 2=x_min 3=x_max 4=y_min 5=y_max 6=z_min 7=z_max
+      8=x_inc 9=y_inc 10=n_columns 11=n_rows 12=registration[ 13=...]
+
+    For a PIXEL-registered grid, grdinfo's x_min/x_max ARE the cell-edge
+    (boundary) extent — exactly the region gmt grdsample uses. So we can
+    feed these straight to the port.
+    """
+    res = subprocess.run(["gmt", "grdinfo", "-C", grd_path],
+                         capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"gmt grdinfo -C failed on {grd_path} (rc={res.returncode})\n"
+            f"  stderr: {res.stderr}"
+        )
+    f = res.stdout.split()
+    if len(f) < 12:
+        raise RuntimeError(
+            f"gmt grdinfo -C produced too few fields for {grd_path}: "
+            f"{res.stdout!r}"
+        )
+    return _RefGeom(
+        xmin=float(f[1]), xmax=float(f[2]),
+        ymin=float(f[3]), ymax=float(f[4]),
+        x_inc=float(f[7]), y_inc=float(f[8]),
+        n_columns=int(round(float(f[9]))),
+        n_rows=int(round(float(f[10]))),
+        node_offset=int(round(float(f[11]))),
+    )
+
+
+def _clip_snap_region(ref: "_RefGeom", inp: "_RefGeom",
+                      x_inc: float, y_inc: float
+                      ) -> Tuple[float, float, float, float]:
+    """Replicate gmt grdsample's `-R<grdfile>` output-region computation.
+
+    gmt takes the ref grid's region and increment, CLIPS it to the input
+    grid's data extent, and SNAPS the clipped bounds onto the ref grid's
+    node lattice (origin = ref_min, step = inc). The result is the largest
+    sub-region of the ref lattice that fits entirely inside the input.
+
+    Verified against gmt 6.4:
+      * ref overhangs input by part of a cell → that row/col is dropped
+        (raln -R corr: 18573 → 18572 rows).
+      * input bound not aligned to ref lattice → bound snapped inward
+        (in x:103/403, ref inc 5 origin 50 → out 105/400).
+    """
+    import math
+    eps = 1e-3  # cell fraction tolerance — absorb float round-off in span/inc
+
+    def _snap(lo_ref, hi_ref, n_ref, lo_in, hi_in, inc):
+        # Work in INTEGER ref-lattice cell indices [0 .. n_ref], anchored at
+        # lo_ref. n_ref is the ref grid's authoritative node/cell count, so
+        # index n_ref maps exactly to hi_ref — no float span/inc ratio.
+        # i_lo = first lattice index >= in_lo (clip the left/bottom overhang)
+        # i_hi = last lattice index <= in_hi (clip the right/top overhang)
+        if lo_in <= lo_ref + eps * inc:
+            i_lo = 0
+        else:
+            i_lo = math.ceil((lo_in - lo_ref) / inc - eps)
+        if hi_in >= hi_ref - eps * inc:
+            i_hi = n_ref
+        else:
+            i_hi = math.floor((hi_in - lo_ref) / inc + eps)
+        i_lo = max(0, min(i_lo, n_ref))
+        i_hi = max(0, min(i_hi, n_ref))
+        out_lo = hi_ref if i_lo == n_ref else lo_ref + i_lo * inc
+        out_hi = hi_ref if i_hi == n_ref else lo_ref + i_hi * inc
+        return out_lo, out_hi
+
+    # For pixel registration the lattice has n_columns cells (index 0..n);
+    # for gridline it has n_columns-1 intervals (index 0..n-1). Either way
+    # the index that maps to the upper bound is "number of inc steps from
+    # the lower bound" = round((hi-lo)/inc).
+    nref_x = int(round((ref.xmax - ref.xmin) / x_inc))
+    nref_y = int(round((ref.ymax - ref.ymin) / y_inc))
+    out_xmin, out_xmax = _snap(ref.xmin, ref.xmax, nref_x,
+                               inp.xmin, inp.xmax, x_inc)
+    out_ymin, out_ymax = _snap(ref.ymin, ref.ymax, nref_y,
+                               inp.ymin, inp.ymax, y_inc)
+    return (out_xmin, out_xmax, out_ymin, out_ymax)
 
 
 def grdsample(
@@ -154,18 +261,33 @@ def _grdsample_py(in_grd, out_grd, *, ref_grd, region, x_inc, y_inc,
     new_dy = y_inc
     out_reg = pixel_reg
 
+    ref_geom = None
+    expect_geom = None  # (n_columns, n_rows, registration) gmt would emit
     if ref_grd is not None:
-        # `-R<grdfile>`: take region+inc+registration from this grid.
-        ref_region = _grd_region(ref_grd)
-        ref_dx, ref_dy, ref_off = _grd_inc_reg(ref_grd)
-        if new_region is None:
-            new_region = ref_region
+        # `-R<grdfile>`: take inc + registration from the ref grid's header,
+        # but the OUTPUT REGION is the ref region CLIPPED to the input grid's
+        # data extent and SNAPPED to the ref grid's node lattice — this is
+        # exactly what `gmt grdsample -R<grdfile>` does (verified against
+        # gmt 6.4 on real merge-stage grids: ref region that overhangs the
+        # input by part of a cell drops that row/col). The naive "use the
+        # ref grid's region/dims verbatim" produced an off-by-one when the
+        # ref overhangs the input (e.g. raln -R corr: ref nrow 18573 but
+        # gmt emits 18572). See _ref_geometry docstring.
+        ref_geom = _ref_geometry(ref_grd)
+        in_geom = _ref_geometry(in_grd)
         if new_dx is None:
-            new_dx = ref_dx
+            new_dx = ref_geom.x_inc
         if new_dy is None:
-            new_dy = ref_dy
+            new_dy = ref_geom.y_inc
         if out_reg is None:
-            out_reg = (ref_off == 1)
+            out_reg = (ref_geom.node_offset == 1)
+        if new_region is None:
+            new_region = _clip_snap_region(ref_geom, in_geom, new_dx, new_dy)
+        # Predict gmt's output dims from the snapped region (Rule 1 guard).
+        _reg = 1 if out_reg else 0
+        _ncol = int(round((new_region[1] - new_region[0]) / new_dx)) + 1 - _reg
+        _nrow = int(round((new_region[3] - new_region[2]) / new_dy)) + 1 - _reg
+        expect_geom = (_ncol, _nrow, _reg)
 
     # Final registration default: inherit input's (gmt grdsample CLI default).
     if out_reg is None:
@@ -184,6 +306,23 @@ def _grdsample_py(in_grd, out_grd, *, ref_grd, region, x_inc, y_inc,
         in_pixel_reg=(in_off == 1),
         threshold=threshold,
     )
+
+    # 3a. When the region came from a `-R<grdfile>` ref grid, the output
+    #     MUST have the SAME shape/registration gmt grdsample would emit
+    #     (the ref grid's exact n_columns/n_rows/registration). If the
+    #     port's region+inc rounding lands off-by-one, fail loudly
+    #     (Rule 1: no silent off-by-one shape divergence downstream).
+    if expect_geom is not None:
+        got = (z_out.shape[1], z_out.shape[0], 1 if out_reg else 0)
+        if got != expect_geom:
+            raise RuntimeError(
+                "grdsample_wrapper: in-process output geometry "
+                f"(n_columns,n_rows,reg)={got} does not match the "
+                f"gmt grdsample -R<refgrid> geometry {expect_geom} for "
+                f"ref_grd={ref_grd!r}. This is the registration/off-by-one "
+                "bug the clip-snap fix targets — set GMTSAR_GRDSAMPLE_PY=0 "
+                "to fall back."
+            )
 
     # 4. Write the result. Preserve registration; tag history so
     #    downstream `grdinfo` shows which path produced the file.

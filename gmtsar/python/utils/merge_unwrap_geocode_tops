@@ -46,6 +46,22 @@ def _grdmath_py_on() -> bool:
     return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the ionosphere `ph_iono_orig -Rphasefilt.grd`
+# resample below. phasefilt.grd is radar-geometry with clean integer
+# increments → byte-identical to `gmt grdsample` (A/B verified maxabs=0,
+# NaN-footprint identical). Default ON; set GMTSAR_GRDSAMPLE_PY=0 to force gmt.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
 def _maybe_exec_csh_fallback() -> None:
     """If GMTSAR_MERGE_TOPS_PY=0, exec merge_unwrap_geocode_tops.csh.
 
@@ -246,7 +262,11 @@ def merge_unwrap_geocode_tops():
             print("Need ph_iono_orig.grd to correct ionosphere ...")
         else:
             print("Correcting ionosphere ...")
-            run("gmt grdsample ph_iono_orig.grd -Rphasefilt.grd -Gtmp.grd")
+            if _grdsample_py_on():
+                _grdsample_py("ph_iono_orig.grd", "tmp.grd",
+                              ref_grd="phasefilt.grd")
+            else:
+                run("gmt grdsample ph_iono_orig.grd -Rphasefilt.grd -Gtmp.grd")
             run("gmt grdmath phasefilt.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = tmp2.grd")
             run("mv phasefilt.grd phasefilt_orig.grd")
             run("mv tmp2.grd phasefilt.grd")

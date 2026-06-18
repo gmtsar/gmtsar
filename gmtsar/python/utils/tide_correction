@@ -28,6 +28,36 @@ try:
 except Exception as _e:
     _HAVE_GMT_GRD_IO = False
 
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the `dem -I0.02/0.02` downsample below. A/B vs
+# `gmt grdsample` is byte-identical (max|diff| = 0, NaN-footprint
+# identical) on a real geographic DEM. Default ON; set
+# GMTSAR_GRDSAMPLE_PY=0 to force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+# Mira GMTSAR_BLOCKMEDIAN_PY wire-in: in-process gmt_blockmedian_py via the
+# blockmedian_wrapper for the `topo.rad -I200/50 -r` ASCII blockmedian
+# below. A/B vs `gmt blockmedian -r` is byte-identical (ASCII %.12g TAB
+# output matches gmt's FORMAT_FLOAT_OUT). Default ON; set
+# GMTSAR_BLOCKMEDIAN_PY=0 to force the gmt subprocess.
+try:
+    from blockmedian_wrapper import blockmedian as _blockmedian_py
+    _HAVE_BLOCKMEDIAN_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_BLOCKMEDIAN_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
+def _blockmedian_py_on() -> bool:
+    return _HAVE_BLOCKMEDIAN_PY and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1"
+
 
 def _surface_inproc_ascii(xyz_path: str, region_str: str, inc_str: str,
                            tension: float, out_path: str,
@@ -96,7 +126,12 @@ def tide_correction():
     tt2  = grep_value(prm2, "SC_clock_start", 3)
     print(f"Computing tidal correction for dates {tt1} {tt2} ...")
 
-    run(f"gmt grdsample {dem} -I{inc1} -Gtmp_dem.grd")
+    if _grdsample_py_on():
+        _inc1 = inc1.split("/")
+        _grdsample_py(dem, "tmp_dem.grd",
+                      x_inc=float(_inc1[0]), y_inc=float(_inc1[-1]))
+    else:
+        run(f"gmt grdsample {dem} -I{inc1} -Gtmp_dem.grd")
     run("gmt grd2xyz tmp_dem.grd | awk '{print $1,$2}' > topo.ll")
     run(f"solid_tide {tt1} < topo.ll > topo1.llenu")
     run(f"solid_tide {tt2} < topo.ll > topo2.llenu")
@@ -116,7 +151,11 @@ def tide_correction():
     # -ph_correction = -tide_LOS * 4π / λ
     run(f"paste topo.ratll topo.d | "
         f"awk '{{printf(\"%.6f %.6f %.12f\\n\", $1,$2,-$6*2.0*2.0*3.141592653/{wave})}}' > topo.rad")
-    run(f"gmt blockmedian topo.rad -R0/{rng}/0/{azi} -I{inc2} -r > tmp.rad")
+    if _blockmedian_py_on():
+        _blockmedian_py("topo.rad", "tmp.rad",
+                        region=f"0/{rng}/0/{azi}", inc=inc2)
+    else:
+        run(f"gmt blockmedian topo.rad -R0/{rng}/0/{azi} -I{inc2} -r > tmp.rad")
     if inproc:
         _surface_inproc_ascii("tmp.rad", f"0/{rng}/0/{azi}", inc2,
                               0.5, "tide.grd", pixel_reg=True)
