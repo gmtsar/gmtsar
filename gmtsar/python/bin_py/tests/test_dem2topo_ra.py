@@ -55,11 +55,7 @@ except Exception as _exc:
     _UTILS_IMPORT_ERR = repr(_exc)
 
 
-_GMT_CANDIDATES = [
-    "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt",
-    shutil.which("gmt") or "",
-]
-_GMT = next((g for g in _GMT_CANDIDATES if g and os.path.exists(g)), "")
+_GMT = shutil.which("gmt") or ""
 
 
 @unittest.skipUnless(_UTILS_IMPORT_OK,

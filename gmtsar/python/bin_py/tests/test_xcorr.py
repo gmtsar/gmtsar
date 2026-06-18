@@ -238,8 +238,12 @@ class TestXcorrUnit(unittest.TestCase):
 class TestXcorrIntegration(unittest.TestCase):
     """Integration tests on live data; skipped if SLC files absent."""
 
-    LIVE_DIR = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test/"
-                    "RS2_SLC_Hawaii/SLC")
+    LIVE_DIR = Path(
+        os.environ.get("GMTSAR_TEST_WORK")
+        or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+            if os.environ.get("GMTSAR") else "")
+        or str(Path(__file__).resolve().parents[2] / "work")
+    ) / "python_test/RS2_SLC_Hawaii/SLC"
 
     @classmethod
     def setUpClass(cls):
@@ -329,8 +333,9 @@ class TestXcorrVsCBinary(unittest.TestCase):
             return envb
         if shutil.which("xcorr"):
             return "xcorr"
-        for p in ("/home/staff/dliu/gmtsar/bin/xcorr",
-                  os.path.expanduser("~/gmtsar/bin/xcorr")):
+        gmtsar = os.environ.get("GMTSAR", "")
+        if gmtsar:
+            p = os.path.join(gmtsar, "bin", "xcorr")
             if os.path.isfile(p) and os.access(p, os.X_OK):
                 return p
         return None

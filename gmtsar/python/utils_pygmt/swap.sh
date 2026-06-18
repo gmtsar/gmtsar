@@ -11,9 +11,14 @@
 # while the swap is on, and are restored verbatim by --off.
 
 set -u
-BIN="/home/staff/dliu/gmtsar/bin"
-LEGACY_UTILS="/home/staff/dliu/gmtsar/gmtsar/python/utils"
-PYGMT_UTILS="/home/staff/dliu/gmtsar/gmtsar/python/utils_pygmt"
+# Derive repo root from this script's location:
+#   utils_pygmt/swap.sh → gmtsar/python/utils_pygmt/ → repo root is three dirs up.
+_SWAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(cd "$_SWAP_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "swap.sh: cannot derive repo root — run from inside the git repo" >&2; exit 1; }
+BIN="${GMTSAR:-$_REPO_ROOT}/bin"
+LEGACY_UTILS="$_REPO_ROOT/gmtsar/python/utils"
+PYGMT_UTILS="$_SWAP_DIR"
 
 mode=${1:-}
 

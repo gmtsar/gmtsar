@@ -22,12 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Locate gmt — prefer the conda env on this host
-_GMT_CANDIDATES = [
-    "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt",
-    shutil.which("gmt") or "",
-]
-GMT = next((g for g in _GMT_CANDIDATES if g and os.path.exists(g)), "")
+GMT = shutil.which("gmt") or ""
 
 # Locate the port
 _HERE = Path(__file__).resolve().parent
@@ -223,9 +218,14 @@ class TestParitySynthetic(unittest.TestCase):
         _assert_bit_parity(self, py_out, gmt_out)
 
 
-_REAL_TRANS = Path(
-    "/home/staff/dliu/gmtsar/gmtsar/python/work/csh_test/"
-    "ALOS_Baja_EQ/topo/trans.dat")
+_HERE = Path(__file__).resolve().parent
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
+)
+_REAL_TRANS = _WORK_ROOT / "csh_test/ALOS_Baja_EQ/topo/trans.dat"
 
 
 @unittest.skipUnless(GMT and _REAL_TRANS.exists(),

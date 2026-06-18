@@ -49,10 +49,15 @@ except ImportError:
     _HAVE_LIB = False
 
 
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(Path(__file__).resolve().parents[2] / "work")
+)
 _RS2_INTF = Path(os.environ.get(
     "PROJ_RA2LL_TEST_INTF",
-    "/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test/"
-    "RS2_SLC_Hawaii/intf/2011134_2011230"
+    str(_WORK_ROOT / "python_test/RS2_SLC_Hawaii/intf/2011134_2011230"),
 ))
 
 

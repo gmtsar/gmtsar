@@ -42,10 +42,6 @@ from gmt_grdfill_py import (  # noqa: E402
 from gmt_grd_io import write_gmt_grd, read_gmt_grd  # noqa: E402
 
 _GMT = shutil.which("gmt")
-if _GMT is None:
-    _alt = "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"
-    if os.path.exists(_alt):
-        _GMT = _alt
 _HAVE_GMT = _GMT is not None and os.access(_GMT, os.X_OK)
 
 

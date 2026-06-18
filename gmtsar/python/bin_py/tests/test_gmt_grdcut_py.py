@@ -45,15 +45,16 @@ from gmt_grdcut_py import gmt_grdcut_py, gmt_grdcut_py_file  # noqa: E402
 from gmt_grd_io import write_gmt_grd, read_gmt_grd            # noqa: E402
 
 _GMT = shutil.which("gmt")
-if _GMT is None:
-    _alt = "/home/staff/dliu/anaconda3/envs/gmtsar/bin/gmt"
-    if os.path.exists(_alt):
-        _GMT = _alt
 _HAVE_GMT = _GMT is not None and os.access(_GMT, os.X_OK)
 
 # Real DEM file (READ-ONLY).
-_DEM_PATH = (Path("/home/staff/dliu/gmtsar/gmtsar/python/work/csh_test/"
-                  "RS2_SLC_Hawaii/topo/dem.grd"))
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
+)
+_DEM_PATH = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii/topo/dem.grd"
 _HAVE_DEM = _DEM_PATH.exists()
 
 

@@ -55,7 +55,13 @@ sys.path.insert(0, str(_HERE.parent))
 from _gmt_native_bf import read_bf  # noqa: E402
 
 # Real-data fixture (RS2 Hawaii)
-_RS2 = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/RS2_SLC_Hawaii")
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
+)
+_RS2 = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii"
 _SLC_DIR = _RS2 / "SLC"
 _TOPO_GRD = _RS2 / "topo" / "topo_ra.grd"
 _REF_PRM = _SLC_DIR / "RS220110515.PRM"
@@ -63,7 +69,10 @@ _REP_PRM = _SLC_DIR / "RS220110819.PRM"
 _REF_SLC = _SLC_DIR / "RS220110515.SLC"
 _REP_SLC = _SLC_DIR / "RS220110819.SLC"
 
-C_PHASEDIFF = shutil.which("phasediff") or "/home/utig5/dliu/gmtsar/bin/phasediff"
+C_PHASEDIFF = shutil.which("phasediff") or str(
+    Path(os.environ.get("GMTSAR", "")) / "bin" / "phasediff"
+    if os.environ.get("GMTSAR") else ""
+)
 
 
 def _have_fixture() -> bool:

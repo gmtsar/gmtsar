@@ -56,7 +56,13 @@ def _gmt(*argv: str, **kwargs) -> subprocess.CompletedProcess:
 
 
 # Real RS2 oracle paths — the smallest fast oracle per the user's brief.
-_RS2 = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test/RS2_SLC_Hawaii")
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_REPO_PY / "work")
+)
+_RS2 = _WORK_ROOT / "python_test/RS2_SLC_Hawaii"
 _RS2_DEM = _RS2 / "topo" / "dem.grd"
 _RS2_CORR = _RS2 / "intf" / "2011134_2011230" / "corr.grd"
 _RS2_TRANS = _RS2 / "topo" / "trans.dat"

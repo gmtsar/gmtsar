@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -43,9 +44,16 @@ to_pixel_coords = _NS["to_pixel_coords"]
 
 
 # ---------- C1 read PRM / LED -----------------------------------------------
+_WORK_ROOT = Path(
+    os.environ.get("GMTSAR_TEST_WORK")
+    or (os.environ.get("GMTSAR", "") + "/gmtsar/python/work"
+        if os.environ.get("GMTSAR") else "")
+    or str(_HERE.parents[2] / "work")
+)
+
+
 class TestC1ReadPrmLed(unittest.TestCase):
-    LIVE_DIR = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/python_test/"
-                    "RS2_SLC_Hawaii/raw")
+    LIVE_DIR = _WORK_ROOT / "python_test/RS2_SLC_Hawaii/raw"
 
     def test_read_led_rs2(self):
         led = self.LIVE_DIR / "RS220110515.LED"
@@ -367,13 +375,13 @@ class TestEndToEndCParity(unittest.TestCase):
     test we'd silently regress goldop/Hermite/plh2xyz arithmetic.
     """
 
-    C_BIN = "/home/staff/dliu/gmtsar/bin/SAT_llt2rat"
-    PRM = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
-               "RS2_SLC_Hawaii/topo/master.PRM")
-    LED = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
-               "RS2_SLC_Hawaii/topo/RS220110515.LED")
-    DEM = Path("/home/utig5/dliu/gmtsar/gmtsar/python/work/csh_test/"
-               "RS2_SLC_Hawaii/topo/dem.grd")
+    C_BIN = shutil.which("SAT_llt2rat") or str(
+        Path(os.environ.get("GMTSAR", "")) / "bin" / "SAT_llt2rat"
+        if os.environ.get("GMTSAR") else "/usr/local/bin/SAT_llt2rat"
+    )
+    PRM = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii/topo/master.PRM"
+    LED = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii/topo/RS220110515.LED"
+    DEM = _WORK_ROOT / "csh_test/RS2_SLC_Hawaii/topo/dem.grd"
 
     @classmethod
     def setUpClass(cls):
@@ -384,7 +392,6 @@ class TestEndToEndCParity(unittest.TestCase):
             if not f.exists():
                 raise unittest.SkipTest(f"input not present: {f}")
         # gmt grd2xyz needed
-        import shutil
         if shutil.which("gmt") is None:
             raise unittest.SkipTest("gmt not on PATH (needed to make DEM xyz)")
 
