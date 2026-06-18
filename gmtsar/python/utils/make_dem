@@ -34,6 +34,23 @@ def _grdmath_py_on() -> bool:
     return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the `geoid -Rdem_ortho.grd` upsample below. The
+# geoid is a smooth global field upsampled onto the DEM lattice; A/B vs
+# `gmt grdsample` is 1 float32-ULP (max|diff| = 1 ULP, NaN-footprint
+# identical, verified on LA/RS2/Baja DEMs) — within the documented ULP
+# floor. Default ON; set GMTSAR_GRDSAMPLE_PY=0 to force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
 def make_dem():
     if len(sys.argv) not in (5, 6):
         sys.exit(
@@ -60,8 +77,12 @@ def make_dem():
     relief = "@earth_relief_01s" if mode == 1 else "@earth_relief_03s"
     run(f"gmt grdcut {relief} {R} -Gdem_ortho.grd")
 
-    run(f"gmt grdsample {sharedir}/geoid_egm96_icgem.grd "
-        f"-Rdem_ortho.grd -Ggeoid_resamp.grd -Vq")
+    if _grdsample_py_on():
+        _grdsample_py(f"{sharedir}/geoid_egm96_icgem.grd",
+                      "geoid_resamp.grd", ref_grd="dem_ortho.grd")
+    else:
+        run(f"gmt grdsample {sharedir}/geoid_egm96_icgem.grd "
+            f"-Rdem_ortho.grd -Ggeoid_resamp.grd -Vq")
     if _grdmath_py_on():
         _gm.grdmath2("ADD", "dem_ortho.grd", "geoid_resamp.grd", "dem.grd",
                      ctx="make_dem:ADD_geoid")

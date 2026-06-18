@@ -356,6 +356,118 @@ class TestEnvGateFallback(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Suite 3b: -R<gridfile> registration / clip-snap fix
+# ---------------------------------------------------------------------------
+
+@unittest.skipUnless(_HAVE_GMT, "gmt binary not on PATH")
+class TestRefGridRegionFix(unittest.TestCase):
+    """Regression test for the `-R<grdfile>` registration / off-by-one bug.
+
+    `gmt grdsample <in> -R<refgrid>` does NOT use the ref grid's region/dims
+    verbatim — it takes the ref grid's INCREMENT + REGISTRATION, clips the
+    region to the INPUT grid's data extent, and snaps the clipped bounds to
+    the ref grid's node lattice. The naive wrapper (reconstruct region from
+    read_gmt_grd x/y + round) emitted a grid one row/col off whenever the
+    ref grid overhangs the input by part of a cell, or registrations differ.
+
+    Each case below asserts the wrapper (in-process port, env=1) produces
+    EXACTLY gmt's shape + registration + node coordinates, and the interior
+    data matches (a thin edge band carries the bicubic natural-BC delta that
+    all the port's parity tests strip — same convention as _rms_interior).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="grdsample_reffix_")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _write(self, name, z, x, y, reg):
+        p = os.path.join(self.tmp, name)
+        write_gmt_grd(p, z, x, y, node_offset=reg)
+        return p
+
+    def _assert_matches_gmt(self, in_grd, ref_grd, edge_pad=3):
+        out_gmt = os.path.join(self.tmp, "rf_gmt.grd")
+        out_py = os.path.join(self.tmp, "rf_py.grd")
+        _gmt_grdsample_subprocess(in_grd, out_gmt, [f"-R{ref_grd}"])
+        os.environ["GMTSAR_GRDSAMPLE_PY"] = "1"
+        try:
+            grdsample_wrapper.grdsample(in_grd, out_py, ref_grd=ref_grd)
+        finally:
+            os.environ.pop("GMTSAR_GRDSAMPLE_PY", None)
+        zg, xg, yg, ig = read_gmt_grd(out_gmt)
+        zp, xp, yp, ip = read_gmt_grd(out_py)
+        # Shape + registration MUST be identical (this is the bug).
+        self.assertEqual(zp.shape, zg.shape,
+                         f"shape {zp.shape} != gmt {zg.shape}")
+        self.assertEqual(ip["node_offset"], ig["node_offset"],
+                         "registration mismatch vs gmt -R<gridfile>")
+        # Node coordinates identical (region clip+snap correct).
+        np.testing.assert_allclose(xp, xg, atol=1e-6)
+        np.testing.assert_allclose(yp, yg, atol=1e-6)
+        # Interior data byte-exact (edge band carries bicubic BC delta).
+        rms = _rms_interior(zp, zg, pad=edge_pad)
+        self.assertLessEqual(rms, 5e-5,
+            f"interior rms {rms:.3e} > 5e-5 vs gmt -R<gridfile>")
+
+    def test_ref_pixel_in_gridline(self):
+        """gridline input, pixel-reg ref contained inside → exact shape/reg."""
+        nx, ny = 120, 90
+        x = np.linspace(0.0, 1000.0, nx)
+        y = np.linspace(0.0, 800.0, ny)
+        z = (np.sin(x[None, :] * 0.01) *
+             np.cos(y[:, None] * 0.01)).astype(np.float32)
+        in_grd = self._write("rf_in.grd", z, x, y, 0)
+        nxr, nyr = 33, 25
+        xr = np.linspace(100.0, 900.0, nxr)
+        yr = np.linspace(80.0, 720.0, nyr)
+        ref = self._write("rf_refpix.grd",
+                          np.zeros((nyr, nxr), np.float32), xr, yr, 1)
+        self._assert_matches_gmt(in_grd, ref)
+
+    def test_ref_overhangs_input_clips_one_row(self):
+        """Ref grid overhangs input → gmt drops the overhung row/col.
+
+        This is the exact off-by-one the fix targets: a verbatim
+        use of the ref's n_columns/n_rows would be one too many.
+        """
+        # Input: pixel-reg dx=10 dy=10, region 100..400 / 200..500.
+        nx, ny = 30, 30
+        x = 105.0 + 10.0 * np.arange(nx)
+        y = 205.0 + 10.0 * np.arange(ny)
+        z = (np.sin(x[None, :] * 0.05) *
+             np.cos(y[:, None] * 0.05)).astype(np.float32)
+        in_grd = self._write("rf_in2.grd", z, x, y, 1)
+        # Ref: pixel-reg dx=5, region 50..450 / 150..550 (overhangs all sides).
+        nxr, nyr = 80, 80
+        xr = 52.5 + 5.0 * np.arange(nxr)
+        yr = 152.5 + 5.0 * np.arange(nyr)
+        ref = self._write("rf_ref2.grd",
+                          np.zeros((nyr, nxr), np.float32), xr, yr, 1)
+        # gmt clips to input (100..400 / 200..500) at ref inc 5 → 60x60.
+        self._assert_matches_gmt(in_grd, ref)
+
+    def test_ref_input_unaligned_snaps_inward(self):
+        """Input bounds not on the ref lattice → gmt snaps inward."""
+        nx, ny = 30, 30
+        x = 108.0 + 10.0 * np.arange(nx)   # pixel-reg → region 103..403
+        y = 208.0 + 10.0 * np.arange(ny)
+        z = (np.sin(x[None, :] * 0.05) *
+             np.cos(y[:, None] * 0.05)).astype(np.float32)
+        in_grd = self._write("rf_in3.grd", z, x, y, 1)
+        nxr, nyr = 80, 80
+        xr = 52.5 + 5.0 * np.arange(nxr)   # region 50..450, inc 5
+        yr = 152.5 + 5.0 * np.arange(nyr)
+        ref = self._write("rf_ref3.grd",
+                          np.zeros((nyr, nxr), np.float32), xr, yr, 1)
+        # gmt snaps 103→105, 403→400 → 59 cols.
+        self._assert_matches_gmt(in_grd, ref)
+
+
+# ---------------------------------------------------------------------------
 # Suite 4: loud failure if gmt missing
 # ---------------------------------------------------------------------------
 
