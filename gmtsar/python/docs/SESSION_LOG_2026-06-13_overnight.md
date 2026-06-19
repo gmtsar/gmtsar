@@ -1026,3 +1026,16 @@ Banked per-operator wiring plans for A2/A3/A4 (use before each round; A/B the ed
 - Verdict: v2.5.3 (c) work is INNOCENT. (c)'s tools all act in ra-domain; the only divergent product family is the downstream proj_ra2ll _ll geocode region.
 - ACTION: refined tripwire — ABORT on structural(missing-on-py) or ANY ra-domain failure (phasefilt.grd/filtcorr.grd); NOTE-only when failures are confined to geocoded _ll products with ra-domain clean. Re-running 5 missing full-tier cases (Ridgecrest, TOPS_LA, TOPS_COVE, Larsen_C, ALOS2_SCAN_SSAF) to complete the 21-case gate.
 - FOLLOW-UP (separate, NOT a v2.5.3 blocker): investigate the py-vs-csh proj_ra2ll geocode-region west-edge rounding (5600 vs 5610) — pre-existing, surface/grdsample-independent.
+
+## 2026-06-18 11:25 — v2.5.3 LANDED (commit a4bd328, tag v2.5.3)
+- Full 21-case py-vs-csh gate: 17 fully CLEAN, 4 documented-benign (Ridgecrest no-DEM rms 0.3516=v2.5.0 value; ALOS_haiti GE-0.14 threshold; Greece+TOPS_LA _ll-only proj_ra2ll region rounding), ZERO ra-domain regressions. align_tops wiring proven bit-clean on Larsen_C+COVE+TOPS_LA (ra-domain all SUCCESS).
+- Landed grdsample -R<gridfile> wrapper fix + 5 bit-exact wirings (iono/merge/make_dem/align_tops/tide) + blockmedian_wrapper.py. Kept gmt for p2p_S1_TOPS_doublediff/calc_look_vector/correct_insar_with_gnss (Rule-15/13).
+- Invariant=0, edited execs 100755. DIRECTED PIPELINE-WIDE WIRING NOW COMPLETE (every ported+verified op wired at all bit-exact-safe sites; divergent sites documented on gmt).
+- NOT pushed (user holds push authority / will contribute upstream later). Strategic forks (publish / surface-GPU / filter-conv / wind-down) await user.
+- Open follow-up: py-vs-csh proj_ra2ll geocode-region west-edge rounding (5600 vs 5610), pre-existing, surface/grdsample-independent.
+
+## 2026-06-18 23:10 — v2.5.4 LANDING (proj_ra2ll geocode-region parity)
+- Root cause (corrected via clean re-test, Rule 13): gmt_surface_py ~1.5e-5deg edge roundoff flips the coarse-lattice region snap in proj_ra2ll → Greece/TOPS_LA geocoded _ll region 1 coarse cell (10 fine cells) off vs csh. My earlier "surface-independent" claim was from a CONTAMINATED test (reused stale raln.grd).
+- Fix: proj_ra2ll builds raln/ralt with gmt-C surface by default (opt-in port via GMTSAR_PROJ_SURFACE_PY=1; independent of global GMTSAR_SURFACE_INPROC).
+- Validation: 6-case sweep ALL CLEAN — Greece+TOPS_LA fixed, Larsen_C+COVE+ALOS_Baja+ERS no-regression. Greece corr_ll rms vs csh 1.2e-6.
+- Matrix now 20/21 (Ridgecrest no-DEM harmless per user; ALOS_haiti separate corr-parity issue).
