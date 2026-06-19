@@ -90,7 +90,14 @@ def _ensure_raln_ralt_inproc(trans_dat: str, region: str, V: str) -> None:
       gmt_surface_py vs gmt surface -i0,1,3 -bi5d -R0/3424/0/5760 -I16/32 -T.50:
       interior RMS = 1.4e-7 degrees, max|d| = 1.5e-5 degrees -- float-roundoff identical.
     """
-    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+    # raln/ralt feed the geocode region, which `gmt gmtinfo` snaps to the coarse
+    # (10x) lattice. gmt_surface_py's ~1.5e-5deg edge roundoff can flip min-lon
+    # across one coarse lattice cell, shifting the geocoded region by a full cell
+    # vs csh (root-caused on S1A_SLC_TOPS_Greece/LA, 2026-06-18: port -> 5600 cols
+    # / W=19.85556, gmt surface -> 5610 / W=19.85000 matching csh). So this path
+    # DEFAULTS to gmt-C surface for byte-parity; opt into the port with
+    # GMTSAR_PROJ_SURFACE_PY=1.
+    inproc = (os.environ.get("GMTSAR_PROJ_SURFACE_PY", "0") == "1"
               and _HAVE_SURFACE_PY)
     if not os.path.isfile("raln.grd"):
         if inproc:
