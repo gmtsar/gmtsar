@@ -227,12 +227,15 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
         done
 
         HDF5_INFIX=
-        case "$HDF5_LIBS" in
+        for lib in $HDF5_LIBS; do
+          case "$lib" in
             -lhdf5_*)
-                HDF5_INFIX="${HDF5_LIBS#-lhdf5_}"
+                HDF5_INFIX="${lib#-lhdf5_}"
                 HDF5_INFIX="_${HDF5_INFIX%%_*}"
+                break
                 ;;
-        esac
+          esac
+        done
         HDF5_LIBS="$HDF5_LIBS -lhdf5$HDF5_INFIX"
         AC_MSG_RESULT([yes (version $[HDF5_VERSION])])
 
