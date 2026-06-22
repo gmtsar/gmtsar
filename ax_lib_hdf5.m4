@@ -226,14 +226,7 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
           esac
         done
 
-        HDF5_INFIX=
-        case "$HDF5_LIBS" in
-            -lhdf5_*)
-                HDF5_INFIX="${HDF5_LIBS#-lhdf5_}"
-                HDF5_INFIX="_${HDF5_INFIX%%_*}"
-                ;;
-        esac
-        HDF5_LIBS="$HDF5_LIBS -lhdf5$HDF5_INFIX"
+        HDF5_LIBS="$HDF5_LIBS -lhdf5"
         AC_MSG_RESULT([yes (version $[HDF5_VERSION])])
 
         dnl See if we can compile
@@ -252,7 +245,7 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
           AC_MSG_WARN([Unable to compile HDF5 test program])
         fi
         dnl Look for HDF5's high level library
-        AC_CHECK_LIB([hdf5${HDF5_INFIX}_hl], [H5TBread_table], [HDF5_LIBS="$HDF5_LIBS -lhdf5${HDF5_INFIX}_hl"], [], [])
+        AC_CHECK_LIB([hdf5_hl], [H5TBread_table], [HDF5_LIBS="$HDF5_LIBS -lhdf5_hl"], [], [])
 
         CC=$ax_lib_hdf5_save_CC
         CPPFLAGS=$ax_lib_hdf5_save_CPPFLAGS
@@ -288,9 +281,9 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
             for arg in $HDF5_LIBS
             do
               case "$arg" in #(
-                -lhdf5${HDF5_INFIX}_hl) HDF5_FLIBS="$HDF5_FLIBS -lhdf5${HDF5_INFIX}_hl_fortran $arg"
+                -lhdf5_hl) HDF5_FLIBS="$HDF5_FLIBS -lhdf5hl_fortran $arg"
                   ;; #(
-                -lhdf5${HDF5_INFIX})    HDF5_FLIBS="$HDF5_FLIBS -lhdf5${HDF5_INFIX}_fortran $arg"
+                -lhdf5)    HDF5_FLIBS="$HDF5_FLIBS -lhdf5_fortran $arg"
                   ;; #(
                 *) HDF5_FLIBS="$HDF5_FLIBS $arg"
                   ;;
