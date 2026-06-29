@@ -28,3 +28,7 @@ utils/build/
 bin_py/snaphu_py/_snaphu_solver_kernel*.so
 bin_py/snaphu_py/_snaphu_solver_kernel.c
 bin_py/snaphu_py/build/
+
+# generated test profiling output
+gmtsar/python/bin_py/tests/phase_profile_py.json
+bin_py/tests/phase_profile_py.json

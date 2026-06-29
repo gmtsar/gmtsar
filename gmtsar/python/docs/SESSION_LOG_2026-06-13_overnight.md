@@ -1039,3 +1039,42 @@ Banked per-operator wiring plans for A2/A3/A4 (use before each round; A/B the ed
 - Fix: proj_ra2ll builds raln/ralt with gmt-C surface by default (opt-in port via GMTSAR_PROJ_SURFACE_PY=1; independent of global GMTSAR_SURFACE_INPROC).
 - Validation: 6-case sweep ALL CLEAN — Greece+TOPS_LA fixed, Larsen_C+COVE+ALOS_Baja+ERS no-regression. Greece corr_ll rms vs csh 1.2e-6.
 - Matrix now 20/21 (Ridgecrest no-DEM harmless per user; ALOS_haiti separate corr-parity issue).
+
+## 2026-06-18 23:35 — Phase B0 profile (in-memory go/no-go) → SHELVE
+- ALOS_haiti task2: root-caused (NOT fixable cleanly). conv is the C binary + deterministic (re-ran 2x, diff=0). corr=conv(amp/sqrt(amp1*amp2)); all inputs bit-clean ~1e-9; the amp/sqrt(tmp) division at near-zero amplitude amplifies the unavoidable py-vs-csh ~1e-9 upstream roundoff (phasediff/resamp are float-faithful, not bit-identical) into 0.037 corr diff in one low-amp patch → flips ~181 px at GE 0.14 geocode mask → phasefilt_mask_ll extent/ssim differ. Same structural class as Ridgecrest (roundoff at hard threshold in unstable regime). Options: (1) document like Ridgecrest [recommended]; (2) bit-exact phasediff [large/risky, not autonomous-safe]. AWAITING USER.
+- Phase B0 (static + size + bandwidth, no re-run): fusible py-kernel segments are short (<=3 consecutive grdmath in filter/geocode), broken by gmt forks (grdinfo/viz) + C conv. Intermediates: TOPS Greece ~258MB, ALOS_Baja ~234MB. NFS write 671MB/s; reads PAGE-CACHED 7.6GB/s. Fusible savings ~1-2s/case vs wall 3349s(Greece)/1011s(ALOS_Baja) = <0.1%. VERDICT: SHELVE Phase B — .grd I/O is not the bottleneck (cache absorbs reads); surface+conv compute dominates. Confirms earlier audit.
+
+## 2026-06-19 ~02:30 — instrumented I/O profile + surface-parallel prototype launched
+- I/O profile (real, on 123MB/232MB TOPS grids): NFS-vs-tmpfs grdmath round-trip delta = 0.22s (raw disk negligible, cache+fast NFS). Python netCDF cost = read 1.17s + write 0.17s = ~1.34s per fusible intermediate; ~3-6/case → ~4-8s vs Greece wall 3349s = <0.3%. PHASE B DEFINITIVELY SHELVED. Bottleneck = compute (surface GS-SOR dominant), not I/O.
+- Launched mira-volkov (bg a183854f6038f4e70): ISOLATED prototype of numba-parallel multi-color SOR surface (red-black on the WIDE biharmonic stencil needs proper coloring, not naive 2-color) + benchmark speedup-vs-threads + parity delta (RMS/max vs gmt C) on real RS2 + TOPS grids. Report → docs/PROTO_surface_redblack.md. UNWIRED, no commit. This informs strategic fork (b): parallel surface = real speedup but breaks bit-parity (tolerance-based).
+
+## 2026-06-19 ~03:10 — surface speedup: prize measured, domain-decomposition prototype launched
+- PRIZE MEASURED (Rule 13): gmt surface (C, single-thread) on real 39M-node pixel.grd = 268.6s = ~27% of ALOS_Baja ~1000s wall (bigger for Greece 75M/~2700s). Worth parallelizing. gmt surface is single-threaded.
+- Prior red-black prototype (PROTO_surface_redblack.md): per-color numba prange = ~0% scaling (barrier/sweep, tiny grids) + Jacobi fixed-point drift. DEAD approach.
+- Constraint: dem2topo_ra pixel.grd is gmt-C in production because gmt_surface_py diverges 0.46m on this large pixel_reg terrain (Mira #72) → broke a sweep threshold. Parallel solver must converge to gmt-C within sweep tolerance (full pipeline stays green = user acceptance).
+- Launched mira-volkov bg ab5c1e4233b26e2df: COARSE-GRAINED domain-decomposition block-SOR (prange over big blocks, halo exchange every K sweeps) on real 39M grid; measure scaling 1/2/4/8/16 vs 268.6s + parity rms/max vs gmt-C ref. Report → docs/PROTO_surface_parallel_domain.md. UNWIRED.
+
+## 2026-06-19 ~04:25 — surface multi-core: NO-GO (memory-bandwidth-bound), goal infeasible on CPU
+- Domain-decomp block-SOR (mira ab5c1e4233b26e2df, PROTO_surface_parallel_domain.md): 0.98-0.99x at 2-16 threads on real 39M grid = ZERO scaling. Bandwidth 3.8→4.4 GB/s 1→2thr (+16%) = saturation; 12-pt stencil scatter offsets defeat prefetch on 156MB set. Parity 0.30m RMS vs gmt-C (=production port, no regression). DD bit-identical across strip counts (correct decomp).
+- gmt-C surface 269s FASTER than numba port 414s (1.54x); gmt-C wouldn't thread-scale either.
+- CONCLUSION: "speed up surface with more cores" is INFEASIBLE on CPU (memory-bound). Memory written: project_surface_memory_bound. Real levers: (1) fewer iters via -S search-radius/multigrid [single-core, algorithmic], (2) GPU [~10x bandwidth, big effort], (3) accept gmt-C. AWAITING USER redirect.
+
+## 2026-06-21 02:45 — CAMPAIGN CLOSE (48h supervisor loop ended)
+Span 2026-06-13 → 06-21. All landings on master (NOT pushed; user holds push + will contribute upstream later). Invariant (upstream untouched outside gmtsar/python/) = 0 throughout.
+
+LANDED:
+- v2.4.0 milestone: every compute kernel Python-default at primary sites; 20/21 sweep.
+- v2.5.0 grdmath wired pipeline-wide (bit-exact); v2.5.1 proj_ra2ll surface; v2.5.2 landmask grdsample.
+- v2.5.3 (ccb516f^.. a4bd328): grdsample -R<gridfile> wrapper fix + completed bit-exact grdsample/blockmedian wiring (iono/merge/make_dem/align_tops/tide) + blockmedian_wrapper.py; Rule-13 catch kept correct_insar_with_gnss on gmt. Directed pipeline-wide wiring COMPLETE.
+- v2.5.4 (ccb516f): proj_ra2ll builds raln/ralt with gmt-C surface → geocode-region parity; fixed S1A_SLC_TOPS_Greece + _LA. Matrix now 20/21.
+
+CLOSED/SHELVED:
+- snaphu: C binary in production; numba port = audit reference (chapter closed).
+- Phase B (in-memory): SHELVED — instrumented profile showed .grd I/O <0.3%/case (NFS-vs-tmpfs 0.22s; netCDF ~1.34s/intermediate; reads page-cached 7.6GB/s).
+- Surface multi-core: PROVEN INFEASIBLE — memory-bandwidth-bound (2 prototypes ~0 scaling on real 39M-node grid; 3.8→4.4GB/s 1→2thr). gmt-C 269s already fastest CPU. Memory: project_surface_memory_bound.
+
+OPEN FOR USER (no autonomous-safe path; await decision):
+- ALOS_haiti (the 21st): corr.grd differs from csh ~0.037 via amp/sqrt(amp1·amp2) ÷≈0 amplifying ~1e-9 upstream roundoff → flips ~181px at GE0.14 mask → geocode-extent/ssim. Same class as Ridgecrest no-DEM. Options: document / bit-exact phasediff (risky).
+- Surface speed: iteration-reduction (-S/multigrid, single-core, parity-safe) / GPU (~10x bandwidth) / accept gmt-C.
+- Publish/contribute upstream (recommended; fork clean+tagged).
+STATE AT CLOSE: HEAD ccb516f, invariant=0, no running jobs, working tree clean except intentional uncommitted scratch (_proto_surface_*.py, PROTO_*.md, perf_snapshots/, NOTES_*.md).

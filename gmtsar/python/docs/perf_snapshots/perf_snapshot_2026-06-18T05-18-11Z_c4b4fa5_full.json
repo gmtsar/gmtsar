@@ -1,0 +1,1549 @@
+{
+  "generated_utc": "2026-06-18T05-18-11Z",
+  "commit": {
+    "sha": "c4b4fa5",
+    "dirty": true
+  },
+  "label": "full",
+  "env": {
+    "NUMBA_NUM_THREADS": "(not constrained)",
+    "XCORR_PY_WORKERS": "(not constrained)",
+    "OMP_NUM_THREADS": "(not constrained)",
+    "MKL_NUM_THREADS": "(not constrained)",
+    "OPENBLAS_NUM_THREADS": "(not constrained)",
+    "BLIS_NUM_THREADS": "(not constrained)",
+    "VECLIB_MAXIMUM_THREADS": "(not constrained)",
+    "NUMEXPR_NUM_THREADS": "(not constrained)",
+    "MAX_PARALLEL": "(not constrained)",
+    "SWEEP_FORCE": "py"
+  },
+  "hardware": {
+    "host": "theo2",
+    "cpu_model": "AMD EPYC 7F72 24-Core Processor",
+    "cpu_cores_logical": "48",
+    "ram_total": "",
+    "workdir_fs": "nfs (/home/staff/dliu/gmtsar/gmtsar/python/work)",
+    "workdir_mount": "utig5.ig.utexas.edu:/bigpool/home",
+    "kernel": "Linux 6.8.0-110-generic x86_64",
+    "python": "Python 3.11.0",
+    "gmt": "6.4.0",
+    "gmtsar_bin": "/home/staff/dliu/gmtsar/bin/gmtsar",
+    "git_sha": "c4b4fa5",
+    "git_branch": "master",
+    "git_dirty": "yes",
+    "started": "2026-06-17 21:19:37",
+    "cases": "RS2_SLC_Hawaii NISAR_Ethiopia ALOS_SLC_L1.1 S1_Ridgecrest_EQ S1A_SLC_TOPS_LA S1_Larsen_C ALOS2_SCAN_SSAF S1A_SLC_TOPS_Greece ALOS2_Brazil ENVI_Baja_EQ ALOS_haiti ALOS4_Pinon TSX_SLC_Hawaii ENVI_Baja_EQ_SLC ERS_Hector_EQ ALOS_Baja_EQ ALOS_ERSDAC_L1.0 CSK_SLC_Italy CSK_RAW_Hawaii ALOS2_Japan_Fugi_left S1A_SLC_TOPS_COVE",
+    "max_parallel": "12"
+  },
+  "sweep_wall_sec": 125.0,
+  "n_cases": 21,
+  "n_pass": 0,
+  "n_fail": 21,
+  "per_case": {
+    "ALOS2_Brazil": {
+      "csh_sec": 944.0,
+      "py_sec": 775.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 690.704,
+        "geocode": 0.008,
+        "intf": 18.501,
+        "pre_proc": 11.327,
+        "resamp_py": 33.21,
+        "xcorr_py": 17.009
+      },
+      "profile_total_sec": 772.544,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS2_Japan_Fugi_left": {
+      "csh_sec": 1383.0,
+      "py_sec": 1115.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 902.659,
+        "geocode": 0.004,
+        "intf": 39.957,
+        "pre_proc": 41.146,
+        "resamp_py": 99.806,
+        "xcorr_py": 28.449
+      },
+      "profile_total_sec": 1114.796,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS2_SCAN_SSAF": {
+      "csh_sec": 8864.0,
+      "py_sec": 0.0,
+      "score": {
+        "success": 0,
+        "fail": 14,
+        "comparisons": 14
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS4_Pinon": {
+      "csh_sec": 1209.0,
+      "py_sec": 997.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 873.016,
+        "geocode": 0.002,
+        "intf": 19.746,
+        "pre_proc": 25.072,
+        "resamp_py": 37.446,
+        "xcorr_py": 17.118
+      },
+      "profile_total_sec": 996.271,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS_Baja_EQ": {
+      "csh_sec": 1046.0,
+      "py_sec": 826.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 401.736,
+        "geocode": 0.002,
+        "intf": 52.881,
+        "pre_proc": 38.379,
+        "resamp_py": 48.339,
+        "xcorr_py": 20.537
+      },
+      "profile_total_sec": 825.063,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS_ERSDAC_L1.0": {
+      "csh_sec": 904.0,
+      "py_sec": 650.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 436.564,
+        "geocode": 0.002,
+        "intf": 16.064,
+        "pre_proc": 13.682,
+        "resamp_py": 24.829,
+        "xcorr_py": 20.31
+      },
+      "profile_total_sec": 649.134,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS_SLC_L1.1": {
+      "csh_sec": 431.0,
+      "py_sec": 213.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 118.728,
+        "geocode": 0.002,
+        "intf": 15.16,
+        "pre_proc": 19.398,
+        "resamp_py": 28.021,
+        "xcorr_py": 17.164
+      },
+      "profile_total_sec": 212.667,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ALOS_haiti": {
+      "csh_sec": 1713.0,
+      "py_sec": 1313.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "CSK_RAW_Hawaii": {
+      "csh_sec": 726.0,
+      "py_sec": 526.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 78.959,
+        "geocode": 0.045,
+        "intf": 36.566,
+        "pre_proc": 11.775,
+        "resamp_py": 79.916,
+        "xcorr_py": 50.421
+      },
+      "profile_total_sec": 525.749,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "CSK_SLC_Italy": {
+      "csh_sec": 791.0,
+      "py_sec": 600.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 439.099,
+        "geocode": 0.002,
+        "intf": 38.047,
+        "pre_proc": 18.442,
+        "resamp_py": 74.396,
+        "xcorr_py": 28.07
+      },
+      "profile_total_sec": 599.38,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ENVI_Baja_EQ": {
+      "csh_sec": 1735.0,
+      "py_sec": 1288.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 999.862,
+        "geocode": 0.002,
+        "intf": 27.648,
+        "pre_proc": 6.609,
+        "resamp_py": 51.207,
+        "xcorr_py": 20.11
+      },
+      "profile_total_sec": 1287.934,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ENVI_Baja_EQ_SLC": {
+      "csh_sec": 1427.0,
+      "py_sec": 1210.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 1120.38,
+        "geocode": 0.002,
+        "intf": 15.388,
+        "pre_proc": 21.678,
+        "resamp_py": 26.212,
+        "xcorr_py": 21.574
+      },
+      "profile_total_sec": 1207.998,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "ERS_Hector_EQ": {
+      "csh_sec": 1212.0,
+      "py_sec": 1000.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 797.316,
+        "geocode": 0.002,
+        "intf": 16.642,
+        "pre_proc": 2.704,
+        "resamp_py": 30.753,
+        "xcorr_py": 19.557
+      },
+      "profile_total_sec": 996.351,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "NISAR_Ethiopia": {
+      "csh_sec": 454.0,
+      "py_sec": 176.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "RS2_SLC_Hawaii": {
+      "csh_sec": 182.0,
+      "py_sec": 71.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 38.071,
+        "geocode": 0.003,
+        "intf": 3.836,
+        "pre_proc": 0.612,
+        "resamp_py": 3.576,
+        "xcorr_py": 23.414
+      },
+      "profile_total_sec": 70.778,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "S1A_SLC_TOPS_COVE": {
+      "csh_sec": 5494.0,
+      "py_sec": 5042.0,
+      "score": {
+        "success": 0,
+        "fail": 10,
+        "comparisons": 10
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "S1A_SLC_TOPS_Greece": {
+      "csh_sec": 3010.0,
+      "py_sec": 2432.0,
+      "score": {
+        "success": 0,
+        "fail": 10,
+        "comparisons": 10
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "S1A_SLC_TOPS_LA": {
+      "csh_sec": 6667.0,
+      "py_sec": 5334.0,
+      "score": {
+        "success": 0,
+        "fail": 10,
+        "comparisons": 10
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "S1_Larsen_C": {
+      "csh_sec": 4940.0,
+      "py_sec": 4289.0,
+      "score": {
+        "success": 0,
+        "fail": 10,
+        "comparisons": 10
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "S1_Ridgecrest_EQ": {
+      "csh_sec": 9107.0,
+      "py_sec": 3013.0,
+      "score": {
+        "success": 0,
+        "fail": 16,
+        "comparisons": 16
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    },
+    "TSX_SLC_Hawaii": {
+      "csh_sec": 782.0,
+      "py_sec": 531.0,
+      "score": {
+        "success": 0,
+        "fail": 6,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 343.038,
+        "geocode": 0.002,
+        "intf": 38.625,
+        "pre_proc": 34.329,
+        "resamp_py": 84.008,
+        "xcorr_py": 27.531
+      },
+      "profile_total_sec": 530.854,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        },
+        {
+          "file": "filtcorr.grd",
+          "status": "FAIL",
+          "metric": null,
+          "threshold": null,
+          "metric_name": null
+        }
+      ]
+    }
+  }
+}
