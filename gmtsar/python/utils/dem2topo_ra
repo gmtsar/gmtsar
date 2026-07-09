@@ -106,6 +106,32 @@ def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
         _grdfill_py_file(in_grd, out_grd, algorithm='g', donor_path=donor_grd)
     else:
         run(f"gmt grdfill {in_grd} -Ag{donor_grd} -G{out_grd}")
+    _fill_remaining_holes(out_grd)
+
+
+def _fill_remaining_holes(grd: str) -> None:
+    """Safety net after the donor-grid grdfill pass: nearest-neighbor-fill
+    any NaN/masked cells still present.
+
+    Root cause (found 2026-07, real ALOS_Baja_EQ mode=1 run): a domain
+    corner can fall outside BOTH the triangulation's convex hull AND the
+    coarse donor grid's convex hull (its blockmean-binned points can also
+    fall just short of the same corner), so -Ag<donor> has nothing to
+    donate there and leaves a handful of masked cells (6 pixels in one
+    corner, observed). Downstream C `phasediff` (long-baseline fallback
+    path, baseline > 1000 m) segfaults on any masked cell in topo_shift.grd
+    -- cascades into filter/geocode FileNotFoundError, no final product.
+    Nearest-neighbor fill of a few edge pixels is numerically inconsequential
+    (this is a never-ship-a-hole invariant, not an accuracy fix).
+    """
+    tmp = grd + ".holefill_tmp.grd"
+    run(f"gmt grdfill {grd} -An -G{tmp}")
+    if not check_file_report(tmp):
+        sys.exit(f"DEM2TOPO_RA: FATAL: hole-fill safety net failed to produce "
+                  f"{tmp} from {grd} -- refusing to silently ship a grid that "
+                  f"may still contain masked cells (would segfault downstream "
+                  f"phasediff on this project's no-silent-fallback rule).")
+    file_shuttle(tmp, grd, 'mv')
 
 
 def _advise_sequential(arr):
