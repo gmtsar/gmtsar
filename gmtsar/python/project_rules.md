@@ -3,21 +3,16 @@
 Authoritative rules for this fork. Apply to every change, every test recipe,
 every script. Violations are bugs.
 
-## 0. Pass all the tests
+## 1. No silent fallbacks, swallowed errors, or placeholder data
 
-The Python pipeline must reproduce the csh pipeline's outputs for every
-enabled case in `cases.py`. A change is not done until the relevant test
-case(s) report `SUCCESS / 0 FAIL` (or the diff is below the metric threshold).
-"Probably fine" is not an acceptance criterion — only running the test is.
+If an expected file, binary, or config is missing, **fail loudly and
+immediately**. Do not substitute a default, do not skip the step, do not
+"best-effort try and continue," do not emit stub/sentinel data that looks
+valid. A missing input or swallowed error means the assumption underlying
+the workflow is wrong, and downstream products will look superficially OK
+while being meaningless.
 
-## 1. No silent fallbacks
-
-If an expected file, binary, or config is missing, **fail loudly and immediately**.
-Do not substitute a default, do not skip the step, do not "best-effort try and
-continue." A missing input means the assumption underlying the workflow is wrong,
-and downstream products will look superficially OK while being meaningless.
-
-Concrete:
+**No silent fallbacks:**
 - `gmtsar_lib.run()` raises on rc=127 (command not found). Do not weaken this.
 - `case_runner.sh` stages `config.py` from `tests/configs/<case>.py`. If a case
   ships a bundled `config*.txt` and no matching staged `config.py` exists, the
@@ -27,13 +22,57 @@ Concrete:
 - Python's `pre_proc` must error if SAT isn't in its dispatch table. Do not
   print "FINISHED" with no work done.
 
-## 2. No placeholder data
+**No placeholder data:** Empty PRMs, zero-byte SLCs, "-999" where a real
+value is required — all forbidden. Either produce the right value, or error
+out so the caller knows the pipeline is broken.
 
-Do not emit stub / sentinel data that looks valid. Empty PRMs, zero-byte SLCs,
-"-999" where a real value is required — all forbidden. Either produce the right
-value, or error out so the caller knows the pipeline is broken.
+**Errors are signal — do not swallow them.** When something fails, surface
+the actual error message. Do not:
+- catch + log + continue (unless the error is genuinely benign, like a gmt
+  binary's INFORMATION-level non-zero return)
+- redirect stderr to /dev/null
+- print "WARN: ..." and march on for anything that produces empty downstream output
+- use `|| true` to mask exit codes (the legacy filter1→filter_wavelength patch
+  is OK because it's a known-safe data fixup, not error masking)
 
-## 3. Mirror the bundled README + config exactly
+**No catch-and-retry-via-subprocess fallbacks in dispatchers.** A
+`GMTSAR_*_PY` dispatcher selects between an in-process Python port and a
+`gmt`/csh subprocess. The selection MUST happen via a pre-flight env check
+(and, where relevant, a capability/shape check on the inputs) **before**
+calling the in-process path. Once the in-process path is called, it must run
+to completion or raise — its exception must NOT be caught and silently
+retried via the subprocess.
+
+Why this specific case matters: a `try: _inproc(...) except Exception:
+run(subprocess_args)` pattern looks like a safety net but actively hides
+incomplete ports and wastes compute. 2026-06-13, `dem2topo_ra::_surface_or_run`
+(pixel.grd call, `GMTSAR_SURFACE_INPROC=1`): `gmt_surface_py` ran a full ~26s
+multigrid solve on RS2_SLC_Hawaii's pixel.grd grid, then raised
+`NotImplementedError` at the pixel_reg crop-back step (a genuinely
+unimplemented Mira #68 case). The except-fallback caught this, threw away the
+26s of work, and re-ran via the `gmt` subprocess (~12s). Total wall time (38s)
+was reported in code comments as "gmt_surface_py is 3.2x slower" — a
+real-sounding performance number that was actually *zero seconds* of
+gmt_surface_py output plus 26s of wasted compute. The fallback hid both the
+missing feature AND the true cost.
+
+How to apply:
+- Gate selection on `os.environ.get("GMTSAR_X_PY", default) == "1"` (and
+  import success) ONLY. Do not add a second layer of `try/except` around
+  the in-process call that falls through to the subprocess on failure.
+- If the in-process port has a known-unsupported input shape/regime,
+  check for it BEFORE calling the port (cheap shape/parameter check,
+  not "try it and see") and either (a) raise immediately with a message
+  naming the unsupported case, or (b) route to the subprocess via the
+  pre-flight check — never via a post-hoc except.
+- This does not weaken the merge-gate rollback story: `GMTSAR_X_PY=0` remains
+  the instant, zero-cost rollback to the subprocess. What's forbidden is
+  *automatic*, *silent*, *post-compute* fallback when `=1` is set.
+- Applies to new dispatchers and is the target for auditing existing
+  ones (m2s_py, grdfill, blockmedian, surface_inproc x2) opportunistically
+  as they're touched — not a mandate to retrofit all of them in one pass.
+
+## 2. Mirror the bundled README + config exactly
 
 For every test tarball under `gmtsar/python/work/dataset/`:
 
@@ -47,17 +86,7 @@ For every test tarball under `gmtsar/python/work/dataset/`:
 Diverging from the bundled ground truth means the Python pipeline isn't
 testing the same thing the csh side is — comparisons become noise.
 
-## 4. Errors are signal — do not swallow them
-
-When something fails, surface the actual error message. Do not:
-- catch + log + continue (unless the error is genuinely benign, like a gmt
-  binary's INFORMATION-level non-zero return)
-- redirect stderr to /dev/null
-- print "WARN: ..." and march on for anything that produces empty downstream output
-- use `|| true` to mask exit codes (the legacy filter1→filter_wavelength patch
-  is OK because it's a known-safe data fixup, not error masking)
-
-## 5. Dev confined to `gmtsar/python/`
+## 3. Dev confined to `gmtsar/python/`
 
 Per CLAUDE.md: all dev in this fork lives under `gmtsar/python/`. Never edit
 upstream `gmtsar/csh/`, `gmtsar/preproc/`, `gmtsar/gmtsar/`, etc. — those are
@@ -65,7 +94,7 @@ upstream-tracked. If an upstream fix is needed, work around it in `python/`
 (e.g. the filter1 → filter_wavelength patch lives in `tests/case_runner.sh`,
 not in upstream `pop_config.csh`).
 
-## 6. Testing collects performance + hardware specs
+## 4. Testing captures performance, hardware, and provenance
 
 Every test run must record, alongside the SUCCESS/FAIL scorecard:
 
@@ -84,11 +113,10 @@ Every test run must record, alongside the SUCCESS/FAIL scorecard:
 
 The framework refuses to ship a scorecard without these fields.
 
-## 7. Every full sweep produces a faithfully-recorded snapshot
-
-Every `bash tests/sweep.sh --full ...` run (whether passing or not, whether
-3-case or 20-case) MUST emit a snapshot file before any performance claim
-is made publicly (README, release notes, slides, papers). The snapshot:
+**Every full sweep additionally produces a faithfully-recorded snapshot
+file** before any performance claim is made publicly (README, release notes,
+slides, papers) — whether the sweep passed or not, whether 3-case or
+20-case:
 
 - Lives at `docs/perf_snapshots/perf_snapshot_<UTC-iso8601>_<git-sha>.md`
   (and optionally `.json` alongside), named so it sorts chronologically and
@@ -105,9 +133,8 @@ is made publicly (README, release notes, slides, papers). The snapshot:
   - **per-case**: score (S/F), py total seconds, csh total seconds,
     speedup ratio, per-binary breakdown from `phase_profile_py.json`
     (all binaries reported by `time_run`).
-  - **environment**: same fields as rule 6's `perf_*.txt` (CPU model,
-    core count, RAM, disk type, GMT/Python/Numba versions, framework
-    git short SHA, dirty/clean working tree flag).
+  - **environment**: CPU model, core count, RAM, disk type, GMT/Python/Numba
+    versions, framework git short SHA, dirty/clean working tree flag.
   - **failures**: for any case scored ≠ all-SUCCESS, the failing-file
     list + reason text (from the scorecard's `comparisons` array).
 
@@ -133,11 +160,20 @@ time (NFS I/O variance dominant); larger deviations are a signal the
 underlying code or environment has drifted and must be investigated, not
 papered over.
 
-## 8. Merge only after a feature passes ALL tests
+## 5. Pass all tests, and merge only after a feature passes ALL of them
 
-No feature, optimization, or refactor merges into `master` until the full
-21-case sweep (or the relevant subset of cases the feature touches)
-produces **all-PASS** scorecards.
+The Python pipeline must reproduce the csh pipeline's outputs for every
+enabled case in `cases.py`. A change is not done until the relevant test
+case(s) report `SUCCESS / 0 FAIL` (or the diff is below the metric
+threshold). "Probably fine" is not an acceptance criterion — only running
+the test is.
+
+This scopes directly into the merge decision: no feature, optimization, or
+refactor merges into `master` until the full 21-case sweep (or the relevant
+subset of cases the feature touches) produces **all-PASS** scorecards.
+Pre-merge passing is the gate, not post-merge debugging — we do not merge
+with the intent of "I'll fix the regression in a follow-up commit," that's
+how cascading bugs land in master.
 
 Concretely:
 
@@ -168,51 +204,60 @@ Concretely:
   `98758b9`. Lesson logged in
   `docs/SESSION_LOG_2026-05-21_night.md`.
 
-This rule sits on top of rule 0 (pass all tests) but specifically scopes
-the merge decision: pre-merge passing is the gate, not post-merge
-debugging. We do not merge with the intent of "I'll fix the regression
-in a follow-up commit" — that's how cascading bugs land in master.
-
-## 9. py side MUST NOT modify the csh oracle
+## 6. Golden/oracle test dirs are read-only ground truth — never write through them
 
 The csh oracle at `work/csh_test/<case>/` is the immutable ground-truth
-reference. The py side (anything under `work/python_test/<case>/`) is the
-unit under test. They are isolated trees.
+reference, and any completed case dir under `work/python_test/<case>/`
+(once verified) serves the same role for ad hoc re-comparisons. Anything
+that writes through to one of these, directly or via symlink, breaks the
+parity test they exist to provide.
 
-**Forbidden — every one of these breaks the parity test:**
+**Sweep-framework scope (`work/csh_test/<case>/` vs `work/python_test/<case>/`):**
 
-- Any py recipe writing to `work/csh_test/...` (directly or via symlink).
+- Any py recipe writing to `work/csh_test/...` (directly or via symlink) is forbidden.
 - Any sweep that wipes `work/python_test/<case>/` but leaves intermediate
   files (PRM, r.grd, SLC) inside `work/csh_test/<case>/` partially
-  refreshed from a different code version. The "stale oracle" failure
-  Mira #18 root-caused on NISAR was a real instance of this — somewhere
+  refreshed from a different code version is forbidden. The "stale oracle"
+  failure Mira #18 root-caused on NISAR was a real instance of this — somewhere
   during xcorr_py iteration, a partial step touched csh_test's
   intermediates without re-running the full csh recipe to re-derive the
   downstream `.SLCresamp` files.
 - Manual debugging that runs C binaries (xcorr, fitoffset, resamp) inside
-  `csh_test/<case>/raw/` or `csh_test/<case>/SLC/`. That partially refreshes
-  the oracle and leaves it internally inconsistent.
+  `csh_test/<case>/raw/` or `csh_test/<case>/SLC/` is forbidden — that
+  partially refreshes the oracle and leaves it internally inconsistent.
 
-**Enforcement:**
-
-- Rule 8's sentinel (`.oracle_built` with `tarball_md5 + fwk_sha`) catches
-  the case where the tarball or framework changed since oracle build, but
-  it does NOT catch a partial mid-run write that leaves the same tarball
-  and intermediate files but inconsistent downstream outputs.
-- All py work must live under `work/python_test/...`. The py recipes that
-  ship in `gmtsar/python/utils/` and `gmtsar/python/bin_py/` only ever
-  reference paths under `python_test/<case>/`. If a future Mira mission
-  needs to read from csh_test (e.g., for comparison), it must be a
-  READ-ONLY access — no writes.
-- The sweep harness `tests/sweep.sh` and `tests/case_runner.sh` must not
-  pass `csh_test/<case>` paths as output args to py recipes. The py side
-  is `pyDir`; the csh side is `cshDir`; they never alias.
+Enforcement: Rule 5's sentinel (`.oracle_built` with `tarball_md5 + fwk_sha`)
+catches the case where the tarball or framework changed since oracle build,
+but it does NOT catch a partial mid-run write that leaves the same tarball
+and intermediate files but inconsistent downstream outputs. All py work must
+live under `work/python_test/...`. The py recipes that ship in
+`gmtsar/python/utils/` and `gmtsar/python/bin_py/` only ever reference paths
+under `python_test/<case>/`. If a future Mira mission needs to read from
+csh_test (e.g., for comparison), it must be a READ-ONLY access — no writes.
+`tests/sweep.sh` and `tests/case_runner.sh` must not pass `csh_test/<case>`
+paths as output args to py recipes — the py side is `pyDir`, the csh side is
+`cshDir`, they never alias.
 
 **When in doubt: delete the affected `csh_test/<case>/` and let
-`case_runner.sh` rebuild from scratch.** Rule 8's sentinel will then
+`case_runner.sh` rebuild from scratch.** Rule 5's sentinel will then
 record a fresh `.oracle_built` and future invocations will trust it.
 
-## 10. Don't reinvent the wheel — port the C algorithm verbatim FIRST
+**Ad hoc driver script scope (same invariant, different mechanism):**
+never symlink a scratch/test workdir's `raw/`/`SLC/` into a completed
+`work/python_test/<case>/` dir either, even for read-only reuse via
+`skip_1`/`skip_2`. `p2p_processing` called without an explicit 4th
+`config.py` arg always regenerates a fresh default config via `pop_config`,
+silently resetting skip flags — a scratch run can turn into a write through
+the symlink into the golden dir with no warning. Incident (2026-07): exactly
+this happened while setting up a `topo_interp_mode=1` re-run reusing an
+already-focused SLC — the first launch attempt silently reset skip flags,
+began real SAR focusing, and wrote through the symlinks into the golden
+case's `raw/`/`SLC/` before it was caught (~90s window), corrupting the
+regression baseline (recovered by purging + re-extracting from the cached
+tarball). Always pass `config.py` explicitly as the 4th positional arg, and
+always use an independent tarball extraction for scratch/test work.
+
+## 7. Don't reinvent the wheel — port the C algorithm verbatim FIRST
 
 For any port of an upstream C/csh tool that has a public source reference
 (GMT's `surface.c`, gmtsar's `xcorr.c`, etc.), the FIRST implementation
@@ -253,16 +298,7 @@ If the C source is genuinely opaque (closed-source binary), document
 what could be observed (CLI args, file formats, timing) and port from
 behavior — but flag the gap explicitly.
 
-**Mira's existing Rule #1 ("bit-faithful first, optimize later")
-already implied this — but it didn't catch the Mira #20 prototype
-shortcut. Rule 10 makes the algorithm-choice constraint explicit.**
-
-**Side benefit:** porting the C algorithm verbatim makes the parity
-oracle natural — diff our Python output against the C reference on the
-same input, byte-by-byte. No "I think this should give the same answer
-within tolerance" hand-waving.
-
-**10a. The parity test MUST use real, FULL-SCALE input.** (Lesson: Mira #72,
+**7a. The parity test MUST use real, FULL-SCALE input.** (Lesson: Mira #72,
 2026-06-13.) `gmt_surface_py` passed every 64×64 synthetic parity test yet
 diverged 0.458m RMS from `gmt surface` on the real CSK grid (6144×12600,
 3.3M pts). Small/smooth grids hide algorithm-detail divergences (BC handling,
@@ -271,7 +307,7 @@ port is NOT "bit-faithful" until it matches the C binary on a real, full-size
 case from the actual pipeline. Toy-grid tests are necessary but never
 sufficient — they give false confidence.
 
-**10b. When a "verbatim" port still diverges, instrument BOTH sides and
+**7b. When a "verbatim" port still diverges, instrument BOTH sides and
 binary-search to the first divergence.** Don't conclude "the solver is
 inaccurate" — that's never the answer for deterministic visible C. Instead:
 build a debug C binary that dumps intermediate state (per-stride node values,
@@ -280,7 +316,7 @@ from the Python on the SAME input, and diff to find the FIRST checkpoint where
 they differ. Fix that one deviation to match C exactly; repeat until the final
 output is byte-identical. Bit-identical is always achievable for deterministic
 open-source C — the only question is finding which line you didn't duplicate.
-THEN vectorize / numba-optimize (Rule 10 step 4).
+THEN vectorize / numba-optimize (step 4 above).
 
 When in doubt: read the C source. The C author already solved the
 hard problem. Don't re-derive it.
@@ -335,9 +371,9 @@ A port qualifies for keep-as-is if BOTH:
 2. Equal or faster than gmt C single-thread on the same hardware
 
 If both hold and a Mira's audit says GREEN, accept the port. Otherwise
-follow Rule 10's verbatim-port discipline.
+follow this rule's verbatim-port discipline.
 
-## 11. Every bug found → a regression test must guard against it shipping again
+## 8. Every bug found → a regression test must guard against it shipping again
 
 When investigation surfaces a real bug (algorithmic, edge case, or
 silent-divergence), the fix-Mira's deliverable MUST include a unit or
@@ -404,48 +440,7 @@ investigation + ~3 hours Mira #68 fix mission. Total ~6 hours could
 have been ~30 min if a gcd=1 fixture had been in the test suite from
 day 1.
 
-## 12. No catch-and-retry-via-subprocess fallbacks in dispatchers
-
-A `GMTSAR_*_PY` dispatcher selects between an in-process Python port and
-a `gmt`/csh subprocess. The selection MUST happen via a pre-flight env
-check (and, where relevant, a capability/shape check on the inputs)
-**before** calling the in-process path. Once the in-process path is
-called, it must run to completion or raise — its exception must NOT be
-caught and silently retried via the subprocess.
-
-**Why:** a `try: _inproc(...) except Exception: run(subprocess_args)`
-pattern looks like a safety net but actively hides incomplete ports and
-wastes compute:
-
-- 2026-06-13, `dem2topo_ra::_surface_or_run` (pixel.grd call,
-  `GMTSAR_SURFACE_INPROC=1`): `gmt_surface_py` ran a full ~26s multigrid
-  solve on RS2_SLC_Hawaii's pixel.grd grid, then raised
-  `NotImplementedError` at the pixel_reg crop-back step (a genuinely
-  unimplemented Mira #68 case). The except-fallback caught this, threw
-  away the 26s of work, and re-ran via the `gmt` subprocess (~12s).
-  Total wall time (38s) was reported in code comments as "gmt_surface_py
-  is 3.2x slower" — a real-sounding performance number that was actually
-  *zero seconds of gmt_surface_py output* plus 26s of wasted compute.
-  The fallback hid both the missing feature AND the true cost.
-
-**How to apply:**
-
-- Gate selection on `os.environ.get("GMTSAR_X_PY", default) == "1"` (and
-  import success) ONLY. Do not add a second layer of `try/except` around
-  the in-process call that falls through to the subprocess on failure.
-- If the in-process port has a known-unsupported input shape/regime,
-  check for it BEFORE calling the port (cheap shape/parameter check,
-  not "try it and see") and either (a) raise immediately with a message
-  naming the unsupported case, or (b) route to the subprocess via the
-  pre-flight check — never via a post-hoc except.
-- This does not weaken Rule 8's rollback story: `GMTSAR_X_PY=0` remains
-  the instant, zero-cost rollback to the subprocess. What's forbidden is
-  *automatic*, *silent*, *post-compute* fallback when `=1` is set.
-- Applies to new dispatchers and is the target for auditing existing
-  ones (m2s_py, grdfill, blockmedian, surface_inproc x2) opportunistically
-  as they're touched — not a mandate to retrofit all of them in one pass.
-
-## 13. Don't trust past conclusions — only fresh-run outputs are evidence
+## 9. Don't trust past conclusions — only fresh-run outputs are evidence
 
 A prior session's (or prior agent's) *conclusion* is a hypothesis, not a fact.
 Re-derive it with critical thinking before acting on it; if it matters, confirm
@@ -466,12 +461,12 @@ only reach statistical parity" (a 30×30 fresh run showed float32-EXACT).
 2. Prefer measuring over believing: when a claim gates a decision, re-run it on
    real, full-scale data and read the actual numbers.
 3. Tests/conclusions that passed on small or synthetic inputs do NOT certify real
-   behavior (see Rule 10a). A fresh real-data run is the only trustworthy oracle.
+   behavior (see Rule 7a). A fresh real-data run is the only trustworthy oracle.
 4. Be especially skeptical of "can't / impossible / inherent" conclusions — they
    end investigation prematurely. Demand file:line + reproduced evidence.
 5. When you cite a past result, say whether it was freshly verified or inherited.
 
-## 14. Sweep tripwire — verify every case as it completes; stop on failure
+## 10. Sweep tripwire — verify every case as it completes; stop on failure
 
 Do NOT wait for a full sweep to finish to learn it failed. Each case writes
 its scorecard (`work/results/<case>.json`) the moment it completes. As cases
@@ -495,7 +490,7 @@ Mechanism: arm an event Monitor on `work/results/*.json` (or the sweep log
 `chmod +x` the WORKING COPY (not just `git update-index`) and confirm
 `test -x` BEFORE launching the sweep.
 
-## 15. Edge-case A/B BEFORE wiring a port at a new site (don't discover divergence via a 3h sweep)
+## 11. Edge-case A/B BEFORE wiring a port at a new site (don't discover divergence via a 3h sweep)
 
 When wiring a Python port (`gmt_*_py`) into a new call site, FIRST A/B-verify the
 operator on the real grid that STRESSES its known edge cases — BEFORE wiring and
@@ -509,8 +504,64 @@ BEFORE the full-sweep gate:
    smoke MISSED the ALOS_haiti GE-0.14 edge — that cost a 3h sweep abort.
 2. **Wire only sites that A/B bit-exact.** Edge sites that diverge keep the gmt
    fallback — do not wire them.
-3. **Then one full-sweep gate** (Rule 14 tripwire).
+3. **Then one full-sweep gate** (Rule 10 tripwire).
 
 This converts "wire-blind → 3h sweep → maybe abort" into "minutes of targeted A/B
 → wire-only-safe → one clean sweep." Edge risks are enumerated per round by a
 read-only scoping pass (parallel agents) before wiring begins.
+
+## 12. Case-comparison sweeps: fixed report table, and "pass" means compare.py's own criteria
+
+Any multi-case A/B comparison sweep (a baseline config vs a variant config, run
+case-by-case — e.g. `topo_interp_mode=0` vs `=1`, or any future flag/algorithm
+A/B) must:
+
+1. **Reuse `tests/compare.py`'s own comparison logic for pass/fail** —
+   `compare_files()`, `fileNameList`, `GRD_RMS_THRESHOLD`, `OPTIONAL_FILES`,
+   `DEFAULT_GRD_RMS`, `DEFAULT_PNG_SSIM` — not a new ad hoc metric. "Pass" has
+   one calibrated definition in this project; a second, uncalibrated one (even a
+   well-reasoned RMS/percentile check) is not the same thing and must not be
+   reported as "pass."
+   - `compare.py` has an **unguarded top-level `for caseName in caseNameList:`
+     loop** (no `if __name__ == '__main__':` guard) — importing it as a module
+     runs the entire existing py-vs-csh sweep as a side effect. Do not
+     `import compare`. Load its definitions by reading the source and
+     `exec()`-ing everything up to (not including) that loop in an isolated
+     namespace, or refactor `compare.py` to guard the loop.
+2. **Report results in this exact table**, one row per case:
+
+   | Case | Setup | Baseline (s) | Variant (s) | Speedup | Result |
+   |---|---|---:|---:|---:|---|
+
+   `Setup` states the actual config/flag difference (not a generic label).
+   `Result` is PASS/FAIL plus the single worst-margin metric inline (e.g.
+   `complex-rms 0.011/0.15`) so the reader sees the headroom without opening
+   the raw JSON.
+3. **Disk safety for multi-case sweeps**: run cases sequentially with cleanup
+   between cases (or bound concurrency) when case data can be large relative to
+   free disk — do not extract every case's baseline+variant simultaneously
+   without checking headroom first. Prefer NFS-backed scratch over small local
+   `/tmp` for anything that might unpack to hundreds of GB (e.g. `S1_Ridgecrest_EQ`,
+   `ALOS2_SCAN_SSAF`).
+
+4. **Detect pass/fail by output file existence, not a recipe-specific log
+   string.** A single-pair recipe's completion marker (e.g. `p2p_processing`'s
+   `P2P 7: p2p_processing FINISHED`) does not appear in multi-subswath Frame
+   orchestrator recipes (`S1_TOPS_Frame`, `ALOS2_SCAN_Frame`), which end with
+   their own marker instead. Log-string matching misreported 5 real,
+   successful heavy-case runs as failures during the 2026-07-09
+   `topo_interp_mode` sweep. Check for the actual expected output file
+   (e.g. `phasefilt_mask_ll.grd`, recursive glob across the whole workdir —
+   Frame recipes put the merged product under `merge/`/`F<n>/`, not
+   `intf/<pair>/`) instead.
+5. **Archive every file `compare.py` verifies for every case, pass or
+   fail, before cleanup.** Disk-safety cleanup (point 3) must not run before
+   copying out the files the pass/fail verdict was actually computed from.
+   The same 2026-07-09 sweep's first 5 genuine FAILs had nothing left to
+   inspect afterward — cleanup ran unconditionally — and had to be rerun a
+   second time just to get artifacts `compare.py` had already scored.
+   Archive to a persistent location (e.g. `work/mode_sweep/product_archive/
+   <case>_<mode>_<file>`) unconditionally, then clean up.
+
+See Rule 6 for golden/oracle-dir protection, which also applies to the
+scratch workdirs these sweeps create.
