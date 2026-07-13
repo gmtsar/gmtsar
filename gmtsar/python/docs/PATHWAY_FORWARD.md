@@ -13,21 +13,29 @@
   launching without the PATH export). Cheap fix: fail loud (raise/log a
   clear error) instead of silently substituting a garbage path.
 - **`install.sh --python`'s `pip install --upgrade -r requirements.txt`
-  is unsafe against a live/shared conda env.** Discovered 2026-07-13
-  during a from-scratch new-user onboarding test: running `install.sh
-  --conda --python --build` against the same `gmtsar` conda env that
-  other processes had open (background test sweeps using numba-JIT
-  kernels) caused a partial package upgrade — `llvmlite` got bumped to
-  an incompatible version while `numba` didn't finish reinstalling
-  (NFS "device or resource busy" mid-swap), breaking numba JIT
-  compilation for every kernel in the env until fixed. This corrupted
-  one in-flight sweep (`ALOS_haiti`, a real crash + correctly-reported
-  failure — not a code bug, pure env fallout, do not chase this as if
-  it were one). Real fix needed: either don't use `--upgrade` (prefer
-  `pip install -r requirements.txt` without forcing version bumps of
-  already-satisfied packages), or document loudly that `install.sh`
-  must not be run against an env with other live processes attached.
-  Not yet fixed as of this writing.
+  is unsafe against a live/shared conda env — incident, found AND
+  recovered 2026-07-13.** During a from-scratch new-user onboarding
+  test, running `install.sh --conda --python --build` against the same
+  `gmtsar` conda env that other processes had open (background test
+  sweeps using numba-JIT kernels) caused a partial package upgrade —
+  `llvmlite` got bumped to an incompatible version while `numba` didn't
+  finish reinstalling (NFS "device or resource busy" mid-swap), breaking
+  numba JIT compilation for every kernel in the env. This correctly
+  crashed one in-flight sweep (`ALOS_haiti`) — a real, honestly-reported
+  failure caused by env fallout, not a code bug; it was not chased as
+  one. **Recovered** with a targeted, minimal fix once no other process
+  had the env open: `pip install 'numba==0.65.1'` (no `--upgrade`, no
+  blanket `-r requirements.txt`), which let pip's resolver pull the one
+  correct matching `llvmlite` (0.47.0, satisfying numba 0.65.1's
+  `<0.48,>=0.47.0dev0` constraint) without touching any other package.
+  Verified via `bin_py/tests/test_gmt_blockmean_py.py` +
+  `test_vector.py` (40/40 pass) and a fresh `ALOS_haiti` re-run.
+  **Root-cause fix still open**: `install.sh --python` itself still uses
+  `--upgrade`, which can repeat this exact failure mode against any
+  live/shared env. Fix candidates: drop `--upgrade` (only install
+  missing packages, don't touch already-satisfied ones), or add an
+  explicit warning/check that the target env has no other attached
+  processes before installing.
 
 Living roadmap. Read this before re-deriving "what's left to port" from
 scratch — this survey (2026-07, HEAD v2.5.6) already did that work and
@@ -55,7 +63,7 @@ below is tagged with exactly one:
 
 | Module | State | Evidence | Dispatcher |
 |---|---|---|---|
-| `xcorr_py` | [1-ON] | ~30x faster (2026-07-12 fresh measurement) | `p2p_stages.py`, unconditional |
+| `xcorr_py` | [1-ON] | ~30x faster (2026-07-12); **flagged 2026-07-13 for re-check under a quiet system, see Rule 12c and "Tried, kept on C" below** — real pipeline's own C-binary timer shows a much smaller gap on RS2 | `p2p_stages.py`, unconditional |
 | `resamp_py` | [1-ON] | ~1.3x faster, byte-identical (re-wired 2026-07-12, was OFF-lost as v2) | `p2p_stages.py`, unconditional |
 | `SAT_llt2rat_py_v2` | [1-ON] | +7.6% vs v1, ties C, no NFS instability (verified 2026-07-12) | `install.sh` symlink, unconditional |
 | `gmt_surface_py` | [1-ON, correctness only] | C 269s vs py 412s — C faster; wired for bit-parity, not speed | `dem2topo_ra`/`align_tops`/`proj_ll2ra`/`tide_correction` |
@@ -121,12 +129,26 @@ below is tagged with exactly one:
 
 ## Tried, kept on C — documented, not a gap
 
-- **`resamp_py` / `xcorr_py`, resolved 2026-07-12** (fresh, isolated,
-  single-core-pinned, real RS2_SLC_Hawaii data, parity-checked
-  byte-identical to C for both): `xcorr_py` is genuinely **~30x faster**
-  — C's `xcorr.c` re-builds a GMT FFT plan on every one of 1000 calls
-  (91% CPU but 409s of *system* time out of 651s user — plan/malloc
-  churn, not compute). Solid, reproducible, safe to cite.
+- **`resamp_py` / `xcorr_py`, resolved 2026-07-12, `xcorr_py` re-flagged
+  2026-07-13** (fresh, isolated, single-core-pinned, real RS2_SLC_Hawaii
+  data, parity-checked byte-identical to C for both): `xcorr_py` is
+  genuinely faster — C's `xcorr.c` re-builds a GMT FFT plan on every one
+  of 1000 calls (91% CPU but 409s of *system* time out of 651s user —
+  plan/malloc churn, not compute), a real, reproducible architectural
+  difference. **But the exact ~30x figure is not yet trustworthy as a
+  clean number**: a 2026-07-13 re-measurement under `load average: 21`
+  (contended by two orphaned processes from an earlier, already-
+  completed Mira agent that never got cleaned up, plus another user's
+  job) gave C `xcorr` 1054s — while the SAME C binary's own internal
+  timer, from a real pipeline sweep run minutes earlier on the identical
+  case/parameters, printed `elapsed time: 121.5s`. That's a >8x
+  discrepancy on the C side alone, meaning both the original 2026-07-12
+  measurement and the 2026-07-13 re-check may be contaminated by system
+  load, not a clean single-thread number. Per Rule 12c: **a from-scratch
+  re-measurement under a quiet system (check `uptime` first) is needed
+  before citing a specific multiplier again.** What's solid: the
+  architectural reason (FFT plan rebuild per call) and the direction
+  (faster) — not yet the exact number.
   This was a split story at first: `bin/resamp_py` had been symlinked to
   a since-archived alternate implementation (the de facto wired default
   at the time, contradicting the old rc2 note which had benchmarked the

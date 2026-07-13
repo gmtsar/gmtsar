@@ -28,6 +28,10 @@ every script. Violations are bugs.
 12b. Case-comparison (A/B) sweeps specifically: report in the fixed
     table format; "pass" means `compare.py`'s own thresholds, not an
     invented metric.
+12c. Isolated microbenchmarks: check `uptime` first, cross-check
+    against the same binary's own internal timer from a real pipeline
+    run when one exists, clean up your own leftover processes before
+    benchmarking, and never kill an unidentified PID to "fix" load.
 13. "Ported" and "wired ON by default" are different states — track
     both in `docs/PATHWAY_FORWARD.md`, and losing to C is a valid,
     documented outcome, not a gap to hide. (13a: deployment-simplicity
@@ -574,6 +578,48 @@ three:**
    structural difference a human would catch instantly by eye — this is
    what actually caught the 2026-07-13 `SAT_llt2rat_py` regression being
    real, not just "the JSON says 0 failures."
+
+## 12c. Isolated microbenchmarks: check system load, cross-check against a real pipeline run
+
+Found 2026-07-13: a "fresh" isolated re-measurement of `xcorr_py`'s
+speedup claim reported C `xcorr` taking 1054s — but the SAME C binary's
+own internal timer, from a real full-pipeline sweep run minutes earlier
+on the identical case, printed `elapsed time: 121.5s` for the identical
+parameters. The isolated benchmark was run under `load average: 21` on a
+48-core box — two orphaned processes from an earlier, already-completed
+Mira agent (never cleaned up) plus another user's job were consuming
+real CPU/memory-bandwidth the whole time. The ~30x claim (C 1060s vs
+`xcorr_py` 36s from an earlier isolated run) may be contaminated the
+same way and needs a from-scratch re-check under a quiet system before
+being cited again as gospel — do not treat the current number as final
+until that's done.
+
+**Before trusting or reporting any isolated (non-sweep) microbenchmark
+number:**
+
+1. **Check system load first** (`uptime`, `ps aux --sort=-%cpu`). On a
+   shared host, note the load average in the report. If load is
+   significantly above idle baseline (rule of thumb: load average
+   greater than ~2x the core count actually available to you), the
+   number is suspect — don't cite it as a clean result.
+2. **Cross-check against the same binary's own internal timer from a
+   real pipeline run**, when one exists (many GMTSAR C binaries print
+   their own `elapsed time: ...`) — this is a free, zero-setup sanity
+   check that catches contamination immediately, as it did here. A
+   >2x mismatch between an isolated benchmark and the same binary's
+   real-pipeline timing means the isolated number is wrong, not that
+   the pipeline is somehow faster.
+3. **Clean up your own background processes before benchmarking** —
+   if you dispatched agents/investigations earlier in the session,
+   confirm their worktree/child processes have actually exited, not
+   just that the agent "returned." An agent returning a report does
+   not guarantee its spawned subprocesses were reaped.
+4. **Do not kill unidentified processes to "fix" contention** — only
+   kill PIDs you have confirmed you spawned this session. On a shared
+   host, an unfamiliar high-CPU process might be another user's real
+   work; killing on suspicion is a Rule-of-its-own violation of "match
+   the scope of your actions to what was actually requested." Ask the
+   user, or wait for load to drop, instead.
 
 This was codified after reporting a sweep as fixed based on the JSON
 scorecard alone, then being asked to also produce a perf table and the
