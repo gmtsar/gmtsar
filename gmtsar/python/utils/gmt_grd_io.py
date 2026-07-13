@@ -1,8 +1,8 @@
 """gmt_grd_io — write GMT-compatible netCDF `.grd` files in pure Python.
 
-The Tier-1 GMT-port roadmap in PLAN.md §9 is blocked on a single thing:
-xarray's default `to_netcdf()` writer produces a netCDF file that **GMT 6
-can technically open** but with degraded behavior:
+The full attribute spec is in docs/GMT_NETCDF_ATTR_SPEC.md. This writer
+exists because xarray's default `to_netcdf()` writer produces a netCDF
+file that **GMT 6 can technically open** but with degraded behavior:
 
     /tmp/xarray.grd: v_min: 0 v_max: 0  name: z
 

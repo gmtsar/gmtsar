@@ -12,7 +12,7 @@ documented Ridgecrest no-DEM corner).
 projection, and visualization are never ported; most invocations of even the
 *ported* operators still call `gmt`) and at build time (gmtsar's C binaries
 link `libgmt`). The C/Fortran SAR preprocessors and snaphu (phase unwrapping)
-also remain C. See `docs/release_notes_v2.4.0.md` → *Scope & dependencies*.
+also remain C. See `docs/release_notes/release_notes_v2.4.0.md` → *Scope & dependencies*, and `docs/PATHWAY_FORWARD.md` for the current, up-to-date porting status.
 
 ## Installation
 
@@ -81,17 +81,14 @@ For each case, `tests/runner.py`:
 4. In `python_test/<caseName>/`: copies `recipes/README_<caseName>.txt` (your Python recipe) and runs it with `./README_<caseName>.txt > log.txt 2>&1`.
 5. After all cases finish, `tests/compare.py` diffs the `.grd`/`.png` outputs and writes both human lines on stdout and per-case JSON to `<workdir>/results/<case>.json`.
 
-Run sweep (full / tiered):
+Run sweep (full / fast / single case):
 ```
-bash gmtsar/python/tests/sweep.sh             # full sweep (~3 h cached / ~8 h first run; Ridgecrest-bound)
-bash gmtsar/python/tests/sweep.sh --smoke     # 1 case  (~4 min — pipeline alive?)
-bash gmtsar/python/tests/sweep.sh --fast      # 4 cases (~25 min — ALOS/RS2/ERS/CSK paths)
+bash gmtsar/python/tests/sweep.sh             # full sweep, all 21 cases (~3 h cached / ~8 h first run; Ridgecrest-bound)
+bash gmtsar/python/tests/sweep.sh --fast      # 9 SAT families (~30-40 min)
+TEST_CASES=RS2_SLC_Hawaii bash gmtsar/python/tests/sweep.sh --fast   # single case (works with --full too)
 ```
 
-Run a custom subset:
-```
-TEST_CASES=ERS_Hector_EQ,ALOS_Baja_EQ python3 gmtsar/python/tests/runner.py
-```
+Force a re-run of an already-passing (cached) case: `SWEEP_FORCE=1`.
 
 Inside one sweep: each case runs in its own background bash (`subprocess.Popen` with `start_new_session=True`); within a case, csh and python recipes run in parallel via `tests/case_runner.sh`. Up to `MAX_PARALLEL=4` cases concurrent. `compare.py` is invoked in-process via `runpy` after all cases finish.
 
@@ -117,7 +114,7 @@ A frozen-csh reference can be optionally produced via `tests/freeze_reference.py
 3. `tests/report.py` aggregates `results/*.json` and emits `<workdir>/sweep_summary.md`.
 4. The case manifest, tier membership, and `enabled` flags live in `tests/cases.py` (`CASES` dict).
 
-Version history: see [`release_notes_v<latest>.md`](.) at this directory's root for the current release notes, and [`docs/release_notes_v*.md`](docs/) for prior releases.
+Version history: see [`docs/release_notes/`](docs/release_notes/) for all release notes (one file per version).
 
 ## Acknowledgments
 

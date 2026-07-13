@@ -1018,7 +1018,7 @@ class TestGmtSurfacePyAnisotropicConvergence(unittest.TestCase):
     """Mira #72 — anisotropic 1001x251 grid: per-stride iteration-count
     parity vs C, plus a wall-time regression guard.
 
-    Root cause (see AUDIT_surface_aniso_mira72.md): the benchmark fixture
+    Root cause (see docs/audits/AUDIT_surface_aniso_mira72.md): the benchmark fixture
     passed ``omega=0.6`` to gmt_surface_py, but C's default over-relaxation
     is ``SURFACE_OVERRELAXATION = 1.4`` (surface.c:135).  omega=0.6 is
     UNDER-relaxed GS, which needs 2-5x more sweeps per stride to hit the

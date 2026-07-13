@@ -299,6 +299,47 @@ Original speculative framing (below) is superseded by this table for the
   (FFT library used, per-line vs. batched processing unread as of this
   writing).
 
+## Open questions carried over from PLAN.md (2026-07-13)
+
+`PLAN.md` (the pre-2026-05-14 roadmap this file supersedes — see below)
+had every Phase 1/2/4 utility it planned confirmed already shipped
+(`baseline_table`, `make_dem`, `select_pairs`, `pre_proc_batch`,
+`align_batch`, `intf_batch`, `batch_processing`, `unwrap_parallel`,
+`prep_sbas`, `stack`, `stack_corr`, `stack_coherence_mask`,
+`extract_one_time_series` all exist in `utils/`) — but 3 genuinely open
+questions from its §8 never got answered and aren't tracked anywhere
+else:
+
+- **SBAS test fixture**: no multi-pair time-series tarball is in the
+  regression sweep. `prep_sbas`/`stack`/`stack_corr` exist and presumably
+  work, but have no case-level parity coverage against csh — unlike
+  every single-pair P2P utility. Does `topex.ucsd.edu/gmtsar/tar/` host
+  one, or does this need curating?
+- **Parallelism budget**: should `*_parallel` utilities (`unwrap_parallel`,
+  etc.) share the test sweep's `MAX_PARALLEL` env var, or manage their
+  own? Unresolved — check for resource contention before running both
+  concurrently on the same host.
+- **csh deprecation horizon**: is the long-term goal to remove the
+  remaining csh shell-out shims entirely, or keep them as an intentional
+  fallback? Affects how aggressively future ports should touch internals
+  vs. leave working shell-outs alone.
+
+Also carried over: `docs/audits/AUDIT_stage_cache_mira57.md` documents
+`tests/stage_cache.py` as "architecturally broken," needing a redesign
+(fingerprint post-stage outputs instead of raw/mutate-restore) rather
+than a bugfix — still `GMTSAR_STAGE_CACHE=0` by default, unclear if the
+redesign was ever done. Worth a fresh look before trusting it.
+
+`PLAN.md`'s full mission-log history (every dated status snapshot,
+Mira-by-Mira roadmap, and the now-superseded `gmt_surface_py` perf
+numbers — a *third*, independently stale figure for a story this file
+already had to reconcile from two others) is archived unedited at
+`docs/reports/PLAN_archived_2026-05-14_to_2026-06-13.md`. Its
+still-relevant technical content (the GMT netCDF attribute spec) was
+extracted to `docs/GMT_NETCDF_ATTR_SPEC.md`, which live code
+(`utils/gmt_grd_io.py`, `utils_pygmt/gmt_compat.py`, `utils/gmt_inproc.py`)
+now points to instead.
+
 ## How to keep this coherent
 
 When any of the above changes, update this file **and** grep the talk

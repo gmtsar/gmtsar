@@ -139,19 +139,13 @@ if [[ $DO_BUILD -eq 1 ]]; then
 
   # Symlink the bin_py/ ports that utils/p2p_stages.py invokes by bare name
   # via subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
-  # _v2 entries map a PATH name to its JIT-cache-optimized source file.
-  chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py "$REPO_ROOT/gmtsar/python/bin_py/"*_py_v2
-  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py; do
+  # One production copy per tool, no version suffixes (project_rules.md
+  # Rule 13) -- see gmtsar/python/bin_py/archive/README.md for the
+  # superseded variants (resamp_py_v2, SAT_llt2rat_py's old v1) kept there
+  # for reference only, never on PATH.
+  chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py
+  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py SAT_llt2rat_py; do
     ln -sf "$REPO_ROOT/gmtsar/python/bin_py/$name" "$REPO_ROOT/bin/$name"
-  done
-  # resamp_py wires to v1, not v2: fresh 2026-07-12 measurement found v2's
-  # numba JIT-cache defaults to bin_py/__pycache__ on NFS, causing unstable
-  # 10-58s wall time from synchronous cache-validation stat/open round-trips.
-  # v1 is byte-identical to C and a consistent ~1.3x faster -- see
-  # gmtsar/python/docs/PATHWAY_FORWARD.md "resamp_py / xcorr_py, resolved
-  # 2026-07-12" for the measurement.
-  for name in SAT_llt2rat_py; do
-    ln -sf "$REPO_ROOT/gmtsar/python/bin_py/${name}_v2" "$REPO_ROOT/bin/$name"
   done
 
   # Symlink the canonical csh scripts (pop_config.csh, p2p_processing.csh, ...) so

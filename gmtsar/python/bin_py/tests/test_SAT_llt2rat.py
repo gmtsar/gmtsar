@@ -12,14 +12,12 @@ from pathlib import Path
 import numpy as np
 
 _HERE = Path(__file__).resolve().parent
-# Points at the live-wired production script (SAT_llt2rat_py_v2, symlinked
-# onto PATH as SAT_llt2rat_py by install.sh — see project_rules.md Rule 13).
-# Was previously hardcoded to the unwired v1, which meant TestEndToEndCParity
-# below never actually exercised the binary users run (found 2026-07-12).
-# v1 is archived at bin_py/archive/SAT_llt2rat_py; algorithm confirmed
-# identical to v2 by a fresh isolated measurement the same day, so this
-# module-load swap changes nothing for the checkpoint unit tests below.
-_MOD = _HERE.parent / "SAT_llt2rat_py_v2"
+# Points at the single production script (bin_py/SAT_llt2rat_py, symlinked
+# onto PATH by install.sh — see project_rules.md Rule 13: one tested copy
+# per tool, no version suffixes). An older, slower variant was archived
+# to bin_py/archive/ 2026-07-12/13 after a fresh measurement confirmed
+# this one wins on speed+stability with identical algorithm/output.
+_MOD = _HERE.parent / "SAT_llt2rat_py"
 # Load via importlib so the module is registered in sys.modules — Numba's
 # JIT functions need to be able to find the module they live in by name
 # when re-entered. Without sys.modules registration, `from numba import njit`

@@ -226,7 +226,7 @@ Concretely:
   shipped, --fast later showed CSK_RAW (square cells) hit the new
   path which was 13× slower (numba absent on prod env). Revert at
   `98758b9`. Lesson logged in
-  `docs/SESSION_LOG_2026-05-21_night.md`.
+  `docs/reports/SESSION_LOG_2026-05-21_night.md`.
 
 ## 6. Golden/oracle test dirs are read-only ground truth — never write through them
 
@@ -411,7 +411,7 @@ parity test that:
    regressions:
    - Numerical kernel bugs → `bin_py/tests/test_<module>.py`
    - Pipeline-stage drift → enable the relevant case in the proper
-     `--smoke`/`--smart_fast`/`--fast`/`--full` tier
+     `--fast`/`--full` tier (`sweep.sh`)
    - Configuration / env-gate bugs → tests/test_env_gate_*.py
 
 The commit message references the bug + the test that guards it.
