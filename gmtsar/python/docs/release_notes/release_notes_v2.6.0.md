@@ -81,6 +81,34 @@ worst-case pixel (float32 FFTW roundoff on a low-amplitude pixel,
 the investigation documented inline; `rms_diff`/`complex_rms` were
 already ~1e-5, far inside tolerance throughout. 25/25 tests pass.
 
+## Fixed: dem2topo_ra topo_interp_mode=1 crashed at the default gate
+
+Found by the same full-suite run: `_triangulate_dispatch()`'s `gmt
+triangulate` subprocess fallback branch (the DEFAULT branch, since
+`GMTSAR_TRIANGULATE_PY=0` by default) referenced a free variable `V`
+that was never in its scope — a `NameError` on every single
+`topo_interp_mode=1` run with the default gate. `topo_interp_mode=1` is
+opt-in per-case (default is `mode=0`), which is why this had gone
+unnoticed. Fixed by passing the caller's resolved `-V`/`''` verbosity
+flag explicitly (`v_flag` parameter) instead of relying on the enclosing
+function's local. `bin_py/tests/test_dem2topo_ra.py::
+TestMode1ArgRegression::test_mode1_produces_topo_ra_grd` now passes.
+
+## Known, documented, non-blocking: proj_ra2ll_fast NaN-mask boundary drift
+
+The same full-suite run also surfaced `test_proj_ra2ll_fast.py::
+TestProjRa2llFastVsSubprocess::test_all_files_bit_exact` failing — a
+real but negligible pre-existing issue (since at least v2.5.4, unrelated
+to this release): ~8 pixels out of 1.29M (0.0006%) have their NaN-mask
+boundary shifted by one column between `proj_ra2ll_fast` (the in-process
+path `geocode` actually uses in production) and a fresh `proj_ra2ll`
+subprocess call. Same class of issue as the already-documented
+proj_ra2ll region-rounding divergence. Explains why the real 21-case
+sweep — which exercises this exact code path — still passes SSIM/RMS
+cleanly: the magnitude is far below any `compare.py` threshold. Not
+fixed this release (unrelated in scope, no impact on any real pass/fail
+outcome); tracked in `docs/PATHWAY_FORWARD.md`'s Known-bug section.
+
 ## README: added a Performance section
 
 `gmtsar/python/README.md` previously had no perf numbers at all — just
@@ -97,9 +125,9 @@ sweep output via `tools/py_vs_csh_figure.py`), anchored to this release.
 ## Test evidence
 
 Full 21-case sweep: 155/161 pass (see above). `bin_py/tests/` full
-suite: 424/424 pass (25 in `test_phasefilt.py`, the rest unaffected by
-this release's changes). `ALOS_haiti` re-validated standalone
-post-fix: 7/7.
+suite: 570/571 executed pass, 17 skipped (the 1 remaining failure is the
+documented, non-blocking `proj_ra2ll_fast` boundary drift above — not a
+regression). `ALOS_haiti` re-validated standalone post-fix: 7/7.
 
 Commits: `d4c3807` (blockmean flip), `566566e` (write_gmt_grd fix),
 `fe953d2` (logging hardening + phasefilt test fix + v2.6.0 blessing).
