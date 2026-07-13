@@ -1,6 +1,6 @@
 """gmt_inproc — Tier-1 in-process replacements for cheap `gmt` subprocesses.
 
-Targets the easy numpy/xarray drop-ins from PLAN.md section 9 (Tier 1):
+Targets the easy numpy/xarray drop-ins (see docs/GMT_NETCDF_ATTR_SPEC.md):
 `gmt grd2xyz -s`, `gmt gmtconvert -bi/-bo -o`. No numba, no GPU; just
 numpy + netCDF4 doing what GMT does on the side.
 
@@ -17,7 +17,7 @@ What this module does NOT do
   arrays) are safe; helpers that produce `.grd` are deferred until a
   GMT-compatible netCDF writer lands.
 - It does NOT replace `gmt grdmath` operations on `.grd` files for the
-  same reason. The Tier-1 list in PLAN.md §9 originally included
+  same reason. The original Tier-1 list included
   grdmath FLIPUD / MUL / ADD; those have to stay on the `clib.Session`
   fast path (see gmt_compat.grdmath) until the writer is fixed.
 - It does NOT replace `gmt grdcut` (produces `.grd`).

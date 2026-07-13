@@ -21,3 +21,14 @@ xcorr_py, resolved 2026-07-12" for the full measurement.
 
 **Do not symlink this back onto PATH as `resamp_py` without re-verifying
 the NFS-cache fix first.**
+
+## `SAT_llt2rat_py`
+
+Archived 2026-07-12/13. Same filename as the current production script
+(`gmtsar/python/bin_py/SAT_llt2rat_py`) — differentiated only by
+directory. This archived copy is the older, slower variant (no numba
+JIT cache, `cache=False`); a fresh 2026-07-12 measurement confirmed the
+production copy is ~7.6% faster with no NFS-cache instability and
+identical algorithm/output (both bit-identical to C within Rule 7's
+documented tolerance). No known reason to revisit this one, unlike
+`resamp_py_v2` above — kept for reference only.

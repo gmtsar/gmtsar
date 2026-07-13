@@ -2,37 +2,26 @@
 # sweep.sh — download + run + compare every case in cases.caseNameList.
 # Designed for an unattended multi-hour run.
 #
-# Tier control (sets TEST_TIER, picked up by cases.py):
-#   bash sweep.sh                 # full sweep (~3 h)
-#   bash sweep.sh --smoke         # 1 case (~3 min, pipeline alive check)
+# Modes (project_rules.md Rule 13: simple > many options — 2026-07-13
+# trimmed from 6 modes down to these; see docs/reports/ for the archived
+# --smoke/--unit/--sample/--smart_fast history if ever needed again):
+#   bash sweep.sh                 # full sweep, all 21 cases (~3 h)
+#   bash sweep.sh --full          # same as above, explicit
 #   bash sweep.sh --fast          # 9 SAT families (~30-40 min)
-#   bash sweep.sh --unit          # pytest unit tests only (~3-5 min, no data needed)
-#   bash sweep.sh --sample [N]    # N random cases seeded from HEAD SHA (default 3)
-#   bash sweep.sh --smart_fast    # change-aware: run only cases touched by HEAD~1..HEAD
+#   TEST_CASES=<name> bash sweep.sh --fast   # single case (works with --full too)
+#
+# Force a re-run of an already-passing (cached) case: SWEEP_FORCE=1.
 #
 # Logs: gmtsar/python/work/sweep.log + per-case work/{python,csh}_test/<case>/log.txt
 
 set -u
 
-_SAMPLE_N=3   # default for --sample when N not supplied
-_MODE=''      # set by --unit / --sample / --smart_fast; empty = normal sweep
-
 case ${1:-} in
-    --smoke|smoke)       export TEST_TIER=smoke ;;
     --fast|fast)         export TEST_TIER=fast  ;;
-    --full|full|'')      export TEST_TIER=full  ;;
-    --unit|unit)         _MODE=unit ;;
-    --sample|sample)
-        _MODE=sample
-        # Optional second arg is N
-        if [ -n "${2:-}" ] && echo "${2}" | grep -qE '^[0-9]+$'; then
-            _SAMPLE_N="${2}"
-        fi
-        ;;
-    --smart_fast|smart_fast) _MODE=smart_fast ;;
+    --full|full|'')       export TEST_TIER=full  ;;
     -h|--help)
         sed -n '2,14p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $1 (try --smoke / --fast / --full / --unit / --sample [N] / --smart_fast / --help)" >&2; exit 2 ;;
+    *) echo "unknown arg: $1 (try --fast / --full / --help; for a single case set TEST_CASES=<name>)" >&2; exit 2 ;;
 esac
 
 # Derive GMTSAR from this script's location: sweep.sh lives at
@@ -54,124 +43,6 @@ WORK=$GMTSAR/gmtsar/python/work
 LOG=$WORK/sweep.log
 TESTSYS=$GMTSAR/gmtsar/python/tests
 mkdir -p "$DATASET_DIR" "$WORK"
-
-# ── Tier 0: --unit ────────────────────────────────────────────────────────────
-# Runs pytest over bin_py/tests/ without any SAR data downloads.
-# Uses whatever python3 is on PATH (set by caller's conda env or system).
-_PYTEST="$(command -v python3 2>/dev/null)" \
-    || { echo "sweep.sh: python3 not on PATH — cannot run unit tests" >&2; exit 1; }
-_UNIT_TESTS=$GMTSAR/gmtsar/python/bin_py/tests
-
-if [ "${_MODE:-}" = "unit" ]; then
-    mkdir -p "$WORK"
-    SUMMARY_UNIT="$WORK/sweep_summary_unit.md"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === unit test run started ===" | tee -a "$LOG"
-    t0=$SECONDS
-    # Run pytest; capture output; tee to log so the unit run is auditable.
-    UNIT_LOG="$WORK/sweep_unit.log"
-    "$_PYTEST" -m pytest "$_UNIT_TESTS" -x --tb=short -q 2>&1 | tee "$UNIT_LOG"
-    pytest_rc=${PIPESTATUS[0]}
-    wall=$((SECONDS - t0))
-    # Parse pass/fail/skip counts from the last summary line ("X passed, Y skipped...").
-    summary_line=$(grep -E '^[0-9]+ (passed|failed)' "$UNIT_LOG" | tail -1)
-    passed=$(echo "$summary_line" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo 0)
-    failed=$(echo "$summary_line" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo 0)
-    skipped=$(echo "$summary_line" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo 0)
-    {
-        echo "# Unit test summary"
-        echo ""
-        echo "_generated $(date)_"
-        echo ""
-        echo "| Metric | Value |"
-        echo "|---|---|"
-        echo "| wall time (s) | $wall |"
-        echo "| passed | ${passed:-0} |"
-        echo "| failed | ${failed:-0} |"
-        echo "| skipped | ${skipped:-0} |"
-        echo "| exit code | $pytest_rc |"
-        echo ""
-        echo "## pytest invocation"
-        echo ""
-        echo "\`\`\`"
-        echo "$_PYTEST -m pytest $_UNIT_TESTS -x --tb=short -q"
-        echo "\`\`\`"
-        echo ""
-        echo "## Full output"
-        echo ""
-        echo "\`\`\`"
-        cat "$UNIT_LOG"
-        echo "\`\`\`"
-    } > "$SUMMARY_UNIT"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] unit summary → $SUMMARY_UNIT (${wall}s, rc=$pytest_rc)" | tee -a "$LOG"
-    exit $pytest_rc
-fi
-
-# ── Tier 5: --sample N ────────────────────────────────────────────────────────
-# Pick _SAMPLE_N cases at random, seeded deterministically from HEAD SHA so the
-# selection is reproducible (same commit → same N cases every run).
-if [ "${_MODE:-}" = "sample" ]; then
-    HEAD_SHA=$(cd "$TESTSYS" && git rev-parse HEAD 2>/dev/null || echo "deadbeef")
-    export TEST_TIER=full   # let cases.py build the full 21-case pool first
-    # Ask cases.py for the full enabled list, then sample deterministically.
-    all_cases=$( cd "$TESTSYS" && "$PY" -c "
-from cases import caseNameList
-print(' '.join(caseNameList))
-" )
-    # Convert to array for indexed access.
-    read -ra _ALL_ARR <<< "$all_cases"
-    total=${#_ALL_ARR[@]}
-    if [ "$_SAMPLE_N" -ge "$total" ]; then
-        # Requesting more than available — just run all.
-        export TEST_CASES=$(echo "$all_cases" | tr ' ' ',')
-    else
-        # Deterministic Fisher-Yates using SHA-seeded arithmetic.
-        # Seed: take first 8 hex chars of SHA → decimal.
-        seed_hex="${HEAD_SHA:0:8}"
-        seed_dec=$(( 16#$seed_hex ))
-        # Pure-bash LCG (Numerical Recipes parameters): enough for N≤21.
-        lcg_state=$seed_dec
-        lcg_next() { lcg_state=$(( (lcg_state * 1664525 + 1013904223) & 0xFFFFFFFF )); echo $lcg_state; }
-        # Partial Fisher-Yates: pick _SAMPLE_N indices.
-        indices=( $(seq 0 $((total - 1))) )
-        picked=()
-        for i in $(seq 0 $((_SAMPLE_N - 1))); do
-            r=$(lcg_next)
-            rem=$(( total - i ))
-            j=$(( r % rem + i ))
-            # swap indices[i] and indices[j]
-            tmp=${indices[$i]}
-            indices[$i]=${indices[$j]}
-            indices[$j]=$tmp
-            picked+=( "${_ALL_ARR[${indices[$i]}]}" )
-        done
-        export TEST_CASES=$(IFS=,; echo "${picked[*]}")
-    fi
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] --sample $_SAMPLE_N seed=$HEAD_SHA → cases: $TEST_CASES" | tee -a "$LOG"
-    # Fall through to the main sweep logic with TEST_CASES set.
-    unset _MODE
-fi
-
-# ── Tier 2: --smart_fast ─────────────────────────────────────────────────────
-# Map files changed in HEAD~1..HEAD to a case subset via touched_to_cases.py.
-if [ "${_MODE:-}" = "smart_fast" ]; then
-    export TEST_TIER=full   # pool for cases.py
-    changed_files=$(cd "$TESTSYS/.." && git diff HEAD~1..HEAD --name-only 2>/dev/null || echo "")
-    if [ -z "$changed_files" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: no diff HEAD~1..HEAD (initial commit?); running smoke tier" | tee -a "$LOG"
-        export TEST_TIER=smoke
-        unset _MODE
-    else
-        # stderr carries warnings (unrecognised paths etc.); only stdout is case list.
-        selected=$(cd "$TESTSYS/.." && "$PY" "$TESTSYS/touched_to_cases.py" <<< "$changed_files" 2>>"$LOG")
-        if [ -z "$selected" ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: changed files map to 0 cases (docs/config only) — no pipeline run needed" | tee -a "$LOG"
-            exit 0
-        fi
-        export TEST_CASES="$selected"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] --smart_fast: changed files → cases: $TEST_CASES" | tee -a "$LOG"
-        unset _MODE
-    fi
-fi
 
 # Derive case list + per-case (path, url) from cases.py in one shot — single
 # source of truth for archive extension (.tar.gz vs .tgz) and URL.
@@ -200,7 +71,7 @@ PERF_FILE="$WORK/perf_$(date +%Y%m%d_%H%M%S).txt"
     echo "host: $(hostname)"
     echo "cpu_model: $(awk -F: '/^model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ *//')"
     echo "cpu_cores_logical: $(nproc)"
-    echo "ram_total: $(awk '/^MemTotal:/ {printf \"%.1fG\\n\", $2/1024/1024}' /proc/meminfo)"
+    echo "ram_total: $(awk '/^MemTotal:/ {printf "%.1fG\n", $2/1024/1024}' /proc/meminfo)"
     echo "workdir_fs: $(stat -f -c '%T (%n)' "$WORK" 2>/dev/null || stat --file-system -c '%T' "$WORK")"
     echo "workdir_mount: $(df "$WORK" | awk 'NR==2 {print $1}')"
     echo ""

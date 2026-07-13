@@ -200,7 +200,7 @@ def grdmath(args: str) -> int:
     simple-RPN grdmath ops (FLIPUD, MUL, ADD, SUB, DIV) can use that
     writer to emit downstream-compatible .grd files. The fast-path in
     `_try_xarray_grdmath` below is the natural place to wire it in.
-    See PLAN.md §9 "GMT netCDF attribute spec".
+    See docs/GMT_NETCDF_ATTR_SPEC.md.
     """
     return _clib_call("grdmath", args)
 
