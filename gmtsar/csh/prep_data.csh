@@ -9,19 +9,28 @@
 #
 # set a local directory that stores S1A and S1B orbits. e.g. orb_dir/S1A and orb_dir/S1B
 #
+
+set mode = 0
+# mode = 0 is precise, mode = 1 is restituted
+if ($#argv == 1) then
+  set mode = $1
+endif
+
 set orb_dir = "/geosat2/InSAR_Processing/Sentinel_Orbits"
 
-rm data.in
+rm data.in orbits.list
 ls *.xml > text.dat
 set mstem = `awk 'NR==1 {print $0}' text.dat | awk '{print substr($1,16,8)}'`
 set mname = `awk 'NR==1 {print $0}' text.dat | awk '{print substr($1,1,64)}'`
 set rec = 0
 
-if (! -f orbits.list) then
+if (! -f orbits.list && $mode == 0) then
   set url_root = "https://s1qc.asf.alaska.edu/aux_poeorb/"
   wget $url_root -O orbits.html
   grep EOF orbits.html | awk -F'"' '{print $2}' > orbits.list
   rm orbits.html
+else
+  ls *EOF* > orbits.list
 endif
 
 echo "Looping over all the lines"
@@ -33,19 +42,23 @@ foreach line ( ` awk '{ print $0 }' < text.dat ` )
     #set n1 = `echo $mstem | awk '{print $1-1}'`
     #set n2 = `echo $mstem | awk '{print $1+1}'`
 
-    # uses date for time manipulation -ben
-    set n1 = `date -v-1d -jf "%Y%m%d" $mstem +%Y%m%d`
-    set n2 = `date -v+1d -jf "%Y%m%d" $mstem +%Y%m%d`
-    set SAT = `echo $mname | awk '{print toupper(substr($1,1,3))}'`
+    if ($mode == 0) then
+      # uses date for time manipulation -ben
+      set n1 = `date -v-1d -jf "%Y%m%d" $mstem +%Y%m%d`
+      set n2 = `date -v+1d -jf "%Y%m%d" $mstem +%Y%m%d`
+      set SAT = `echo $mname | awk '{print toupper(substr($1,1,3))}'`
 
-    #cp ../../../../orbit/*$n1*$n2* .
-    set orb = `grep $SAT orbits.list | grep $n1 | grep $n2 | tail -1`
-    if (! -f $orb) then
-      if (-f $orb_dir/$SAT/$orb) then 
-        cp $orb_dir/$SAT/$orb .
-      else
-        wgetasf $url_root/$orb
+      #cp ../../../../orbit/*$n1*$n2* .
+      set orb = `grep $SAT orbits.list | grep $n1 | grep $n2 | tail -1`
+      if (! -f $orb) then
+        if (-f $orb_dir/$SAT/$orb) then 
+          cp $orb_dir/$SAT/$orb .
+        else
+          wgetasf $url_root/$orb
+        endif
       endif
+    else
+      set orb = `grep $mstem orbits.list`
     endif
     #if (! -f $orb) wget $url_root"/"$orb
     #set orb = `ls *$n1*$n2*`
@@ -66,18 +79,22 @@ foreach line ( ` awk '{ print $0 }' < text.dat ` )
   endif
 end
 
-set n1 = `date -v-1d -jf "%Y%m%d" $mstem +%Y%m%d`
-set n2 = `date -v+1d -jf "%Y%m%d" $mstem +%Y%m%d`
-set SAT = `echo $mname | awk '{print toupper(substr($1,1,3))}'`
 echo "Writing record $mstem"
-#set orb = `ls *$n1*$n2*`
-set orb = `grep $SAT orbits.list | grep $n1 | grep $n2 | tail -1`
-if (! -f $orb) then
-  if (-f $orb_dir/$SAT/$orb) then
-    cp $orb_dir/$SAT/$orb .
-  else
-    wgetasf $url_root/$orb
+if ($mode == 0) then
+  set n1 = `date -v-1d -jf "%Y%m%d" $mstem +%Y%m%d`
+  set n2 = `date -v+1d -jf "%Y%m%d" $mstem +%Y%m%d`
+  set SAT = `echo $mname | awk '{print toupper(substr($1,1,3))}'`
+  #set orb = `ls *$n1*$n2*`
+  set orb = `grep $SAT orbits.list | grep $n1 | grep $n2 | tail -1`
+  if (! -f $orb) then
+    if (-f $orb_dir/$SAT/$orb) then
+      cp $orb_dir/$SAT/$orb .
+    else
+      wgetasf $url_root/$orb
+    endif
   endif
+else
+  set orb = `grep $mstem orbits.list`
 endif
 #if (! -f $orb)  wget $url_root"/"$orb
 #set orb = `ls *$mstem*EOF`

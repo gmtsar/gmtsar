@@ -153,7 +153,7 @@ dnl ------------------------------------------------------------------
 dnl Set the HDF5 include and lib stuff
 dnl ------------------------------------------------------------------
 AX_LIB_HDF5()
-HDF5_LIBS="$HDF5_LIBS -lhdf5_cpp"	# Add the C++ library
+HDF5_LIBS="$HDF5_LIBS -lhdf5${HDF5_INFIX}_cpp"	# Add the C++ library
 AC_MSG_CHECKING(for HDF5 include)
 AC_MSG_RESULT($HDF5_CPPFLAGS)
 AC_MSG_CHECKING(for HDF5 libs)
