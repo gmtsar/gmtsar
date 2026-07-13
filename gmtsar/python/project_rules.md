@@ -556,6 +556,14 @@ three:**
    that run (`GMTSAR_*_PY`, printed at the top of the sweep log or
    readable from the run's environment) — don't assume the ledger's
    "default" state matches what this particular run actually used.
+   **Every number in this table must come from a real run's output
+   (`docs/perf_snapshots/*.json`, `work/results/*.json`) generated in
+   this session, never copied from a release note, a prior session's
+   report, or this doc's own text** — this is Rule 9 applied specifically
+   to perf numbers. If a fresh number isn't available, run the sweep (or
+   the isolated microbenchmark, per the `xcorr_py`/`resamp_py` 2026-07-12
+   measurements) before reporting, or say plainly "no fresh number,
+   pending a run" instead of citing an old one.
 3. **A visual comparison plot** — `tools/py_vs_csh_figure.py <case>
    <intf_pair>` (frozen 2026-07-13). Run it and show the result; don't
    just cite the SSIM/RMS numbers. A number can look fine while hiding a
