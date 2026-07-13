@@ -620,6 +620,15 @@ number:**
    work; killing on suspicion is a Rule-of-its-own violation of "match
    the scope of your actions to what was actually requested." Ask the
    user, or wait for load to drop, instead.
+   - **Confirmed in practice 2026-07-13**: even explicit user
+     authorization ("kill them", naming the exact PIDs) did not get a
+     `kill` past the environment's own auto-mode safety classifier once
+     it had been told those PIDs might include another user's job — it
+     re-blocked on every retry, including a plain read-only `ps -o
+     user` ownership check on the same PIDs. Don't spend turns retrying
+     variations once this happens — it's a held boundary, not a fluky
+     block. Report the exact PIDs/command to the user and let them run
+     it directly from their own terminal instead.
 
 This was codified after reporting a sweep as fixed based on the JSON
 scorecard alone, then being asked to also produce a perf table and the
