@@ -21,8 +21,13 @@ every script. Violations are bugs.
     on the first real failure, don't run the whole sweep blind.
 11. A/B test an edge case BEFORE wiring a port at a new call site — don't
     discover a divergence via a multi-hour sweep.
-12. Case-comparison sweeps: report in the fixed table format; "pass"
-    means `compare.py`'s own thresholds, not an invented metric.
+12. Every sweep report — including a plain `--fast`/`--full` run — must
+    include all three: pass/fail, a perf table (with a Backend
+    C/Python column per stage), and a `tools/py_vs_csh_figure.py`
+    visual comparison plot. Don't cite the SSIM/RMS number alone.
+12b. Case-comparison (A/B) sweeps specifically: report in the fixed
+    table format; "pass" means `compare.py`'s own thresholds, not an
+    invented metric.
 13. "Ported" and "wired ON by default" are different states — track
     both in `docs/PATHWAY_FORWARD.md`, and losing to C is a valid,
     documented outcome, not a gap to hide.
@@ -534,7 +539,36 @@ This converts "wire-blind → 3h sweep → maybe abort" into "minutes of targete
 → wire-only-safe → one clean sweep." Edge risks are enumerated per round by a
 read-only scoping pass (parallel agents) before wiring begins.
 
-## 12. Case-comparison sweeps: fixed report table, and "pass" means compare.py's own criteria
+## 12. Every sweep report: pass/fail + perf table (with backend) + a visual comparison plot
+
+**Any `sweep.sh` run (not just A/B comparisons — this includes a plain
+`--fast`/`--full` py-vs-csh run), when reported back, must include all
+three:**
+
+1. **Pass/fail** — from `work/results/<case>.json` (`compare.py`'s own
+   criteria, see point 1 below). State the actual comparison count
+   (e.g. "6/6 SUCCESS"), not just "passed."
+2. **Perf table** — case-level (csh_sec/py_sec/speedup) and, when a
+   per-stage `binaries` breakdown exists in the `docs/perf_snapshots/`
+   JSON for that run, the stage-level table too. **Add a Backend column
+   (C or Python) per stage** — cross-reference `docs/PATHWAY_FORWARD.md`'s
+   wiring-status ledger against the actual env-gate values in effect for
+   that run (`GMTSAR_*_PY`, printed at the top of the sweep log or
+   readable from the run's environment) — don't assume the ledger's
+   "default" state matches what this particular run actually used.
+3. **A visual comparison plot** — `tools/py_vs_csh_figure.py <case>
+   <intf_pair>` (frozen 2026-07-13). Run it and show the result; don't
+   just cite the SSIM/RMS numbers. A number can look fine while hiding a
+   structural difference a human would catch instantly by eye — this is
+   what actually caught the 2026-07-13 `SAT_llt2rat_py` regression being
+   real, not just "the JSON says 0 failures."
+
+This was codified after reporting a sweep as fixed based on the JSON
+scorecard alone, then being asked to also produce a perf table and the
+visual comparison — both should be automatic, not something requested
+after the fact.
+
+## 12b. Case-comparison sweeps: fixed report table, and "pass" means compare.py's own criteria
 
 Any multi-case A/B comparison sweep (a baseline config vs a variant config, run
 case-by-case — e.g. `topo_interp_mode=0` vs `=1`, or any future flag/algorithm
