@@ -11,8 +11,11 @@ and `GMTSAR_TSX_PREPROC_PY` (deployment-simplicity rationale — see
 project_rules.md Rule 13a: uniformly-ON preprocessor defaults simplify
 install/deploy even where an individual module is measurably slower).
 
-**Result: 155/161 comparisons pass across all 21 cases.** The 6
-failures are two known, non-regression cases — not new bugs:
+**Result: 156/161 comparisons pass across all 21 cases** (post-fix
+state, after `ALOS_haiti`'s re-validation below; the sweep as originally
+launched — before the write_gmt_grd fix landed mid-sweep — was 155/161).
+The 5 remaining failures are the one known, non-regression case, not a
+new bug:
 
 - `S1_Ridgecrest_EQ` (5 failures, all `H_res/intf/2019184_2019196`):
   the documented no-DEM corner (phasefilt complex-rms 0.3516, matching
@@ -124,7 +127,7 @@ sweep output via `tools/py_vs_csh_figure.py`), anchored to this release.
 
 ## Test evidence
 
-Full 21-case sweep: 155/161 pass (see above). `bin_py/tests/` full
+Full 21-case sweep: 156/161 pass post-fix (see above). `bin_py/tests/` full
 suite: 570/571 executed pass, 17 skipped (the 1 remaining failure is the
 documented, non-blocking `proj_ra2ll_fast` boundary drift above — not a
 regression). `ALOS_haiti` re-validated standalone post-fix: 7/7.

@@ -16,7 +16,7 @@ also remain C. See `docs/release_notes/release_notes_v2.4.0.md` → *Scope & dep
 
 ## Performance (v2.6.0, full 21-case sweep, 2026-07-13)
 
-Real, single-threaded, same-host measurements — csh (legacy C/csh pipeline) vs. this Python framework — from the sweep tooling under `tests/`, not an isolated microbenchmark (see `docs/PATHWAY_FORWARD.md` and `project_rules.md` Rule 12c for why that distinction matters). **155/161 file comparisons pass**; the remaining 6 are two known, documented exceptions (a no-DEM corner in `S1_Ridgecrest_EQ`, and one case caught mid-fix that has since been confirmed resolved) — not new regressions.
+Real, single-threaded, same-host measurements — csh (legacy C/csh pipeline) vs. this Python framework — from the sweep tooling under `tests/`, not an isolated microbenchmark (see `docs/PATHWAY_FORWARD.md` and `project_rules.md` Rule 12c for why that distinction matters). **156/161 file comparisons pass**; the remaining 5 are the one documented exception (a no-DEM corner in `S1_Ridgecrest_EQ`) — not a regression.
 
 | Case | csh | py | Speedup |
 |---|---:|---:|---:|
