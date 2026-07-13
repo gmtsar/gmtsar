@@ -319,12 +319,15 @@ def preprocOthers(SAT, master, aligned, skip_master, RAD):
         if skip_master==0 or skip_master==1:
             run('make_slc_lt1 '+aligned+'.xml '+aligned+'.tiff '+aligned) 
     else:
-        # GMTSAR_S1A_PREPROC_PY=1 opts into the Python port of make_slc_s1a
-        # (utils/s1a_preproc_lib.py, wrapped by bin_py/make_slc_s1a_py).
-        # Verified byte-identical PRM/LED/SLC vs the C binary on two real
-        # Sentinel-1 TOPS scenes (bin_py/tests/test_make_slc_s1a_py.py).
-        # Default OFF -- instant rollback by leaving the env var unset.
-        make_slc_s1a_cmd = ('make_slc_s1a_py' if os.environ.get('GMTSAR_S1A_PREPROC_PY', '0') == '1'
+        # GMTSAR_S1A_PREPROC_PY default ON since 2026-07-13. Python port of
+        # make_slc_s1a (utils/s1a_preproc_lib.py, wrapped by
+        # bin_py/make_slc_s1a_py). Verified byte-identical PRM/LED/SLC vs
+        # the C binary on two real Sentinel-1 TOPS scenes
+        # (bin_py/tests/test_make_slc_s1a_py.py), +1.4-1.8x faster
+        # (memmap bulk read replaces per-scanline TIFF calls), AND
+        # confirmed end-to-end on a real S1A_SLC_TOPS_Greece sweep
+        # (10/10 SUCCESS). Instant rollback: set GMTSAR_S1A_PREPROC_PY=0.
+        make_slc_s1a_cmd = ('make_slc_s1a_py' if os.environ.get('GMTSAR_S1A_PREPROC_PY', '1') == '1'
                              else 'make_slc_s1a')
         if skip_master==0 or skip_master==2:
             run(make_slc_s1a_cmd+' '+master+'.xml '+master+'.tif '+master)
