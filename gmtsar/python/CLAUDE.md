@@ -33,7 +33,7 @@ This rule applies to **every consilium-driven artifact** too: audit reports (`AU
 Layout under `gmtsar/python/`:
 - `utils/` — Python CLI tools (`p2p_processing`, `pre_proc`, `geocode`, `intf`, `filter`, …) and libraries (`gmtsar_lib.py`, `snaphu.py`)
 - `utils/tkGUI.gmtsar` — Tk GUI front-end
-- `tests/` — regression-test framework (`runner.py`, `sweep.sh`, `case_runner.sh`, `compare.py`, `cases.py`, `run_one.sh`) plus `tests/configs/<case>.py` (staged Python configs translated from bundled csh `config*.txt`) and `tests/recipes/README_<case>.txt` (per-case recipes)
+- `tests/` — regression-test framework (`sweep.py`, `case_runner.py`, `compare.py`, `cases.py`, `run_one.sh`) plus `tests/configs/<case>.py` (staged Python configs translated from bundled csh `config*.txt`) and `tests/recipes/README_<case>.txt` (per-case recipes). The old `sweep.sh`/`case_runner.sh`/`runner.py` bash implementation is archived at `tests/archive/` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `tests/archive/README.md`).
 - `docs/` — release notes archive (`release_notes_v*.md`)
 - Install scripts: `install.sh`, `install.gmtsar.ubuntu.sh`, `install.packages.for.python.testing.sh`, `fetch-orbits.sh`
 
@@ -66,16 +66,16 @@ export PATH=$GMTSAR/bin:$PATH
 
 ## Testing system
 
-Test orchestrator: `gmtsar/python/tests/sweep.sh` (parallel sweep with download cache, integrity check, and per-case timing) wrapping `runner.py` (Python orchestrator) wrapping `case_runner.sh` (per-case csh+py recipe runner). Workdir defaults to `gmtsar/python/work/` (override with `$SCRATCH`). Per case:
+Test orchestrator: `gmtsar/python/tests/sweep.py` (parallel sweep with download cache, integrity check, and per-case timing) dispatching `case_runner.py` (per-case csh+py recipe runner, one subprocess per case for process-group isolation). Workdir defaults to `gmtsar/python/work/` (override with `$SCRATCH`). Per case:
 
 1. Sweep checks if a cached tarball is present in `work/dataset/<case>.tar.gz`; otherwise fetches from `topex.ucsd.edu/gmtsar/tar/` via `wget -c`.
-2. `gzip -t` integrity check (rc≥128 = killed by signal → preserve tarball for retry; rc=1 = truly corrupt → delete and re-download).
-3. `case_runner.sh` extracts the tarball into both `work/csh_test/<case>/` and `work/python_test/<case>/`.
+2. gzip integrity check (killed-by-signal → preserve tarball for retry; truly corrupt → delete and re-download).
+3. `case_runner.py` extracts the tarball into both `work/csh_test/<case>/` and `work/python_test/<case>/`.
 4. Stages `tests/configs/<case>.py` into py side as `config.py` (if a staged config exists). Config-drift guard rejects mismatched py vs csh config values up front.
 5. Runs `csh README.txt` (bundled tarball recipe) on csh side and `tests/recipes/README_<case>.txt` on py side **in parallel**.
 6. `compare.py` performs three-way comparison (py-vs-csh, py-vs-frozen, csh-vs-frozen) and writes a per-case JSON scorecard to `work/results/<case>.json`.
 
-Use `TEST_CASES=case1,case2 bash gmtsar/python/tests/sweep.sh` to run a subset.
+Use `python3 gmtsar/python/tests/sweep.py --cases case1 case2` to run a subset (or `TEST_CASES=case1,case2` env var, still honored). `--topo-mode-ab` reuses the same csh_test/python_test tree-pair machinery to run py(topo_interp_mode=0) vs py(topo_interp_mode=1) instead of csh-vs-py (folders renamed `ref_test`/`new_test` in that mode so they aren't mislabeled "csh").
 
 Test cases are declared in `gmtsar/python/tests/cases.py` (single source of truth, with tiers: `smoke`/`fast`/`full`/`sbas` and per-case `enabled` flag). Disabled cases must document the reason in a comment above the entry.
 

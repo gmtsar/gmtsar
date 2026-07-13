@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_one.sh — run a single Python-side test for one case.
 #
-# Different from sweep.sh: this is for *new* tests, not regression.
+# Different from sweep.py: this is for *new* tests, not regression.
 # - No csh-side run.
 # - No cross-framework compare.py.
 # - Just: download (cached) → extract → run the Python recipe → show outputs.
@@ -46,7 +46,7 @@ if [ ! -f "$TAR" ]; then
     fi
 fi
 
-# Stage the python recipe (case_runner.sh expects this exact path).
+# Stage the python recipe (case_runner.py expects this exact path).
 RECIPE_SRC="$TESTS/recipes/README_$case.txt"
 [ -f "$RECIPE_SRC" ] || { echo "[run_one] missing recipe: $RECIPE_SRC"; exit 2; }
 cp "$RECIPE_SRC" "$WORK/recipes/"
