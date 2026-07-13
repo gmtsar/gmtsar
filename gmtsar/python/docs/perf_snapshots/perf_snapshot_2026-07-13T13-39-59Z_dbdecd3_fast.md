@@ -1,0 +1,107 @@
+# Perf snapshot — fast, 2026-07-13T13-39-59Z
+
+**Commit:** `dbdecd3` (dirty)  
+**Config:** `NUMBA_NUM_THREADS=(not constrained) XCORR_PY_WORKERS=(not constrained) OMP_NUM_THREADS=(not constrained) MKL_NUM_THREADS=(not constrained) OPENBLAS_NUM_THREADS=(not constrained) BLIS_NUM_THREADS=(not constrained) VECLIB_MAXIMUM_THREADS=(not constrained) NUMEXPR_NUM_THREADS=(not constrained) MAX_PARALLEL=(not constrained) SWEEP_FORCE=(not constrained)`  
+**Hardware:** AMD EPYC 7F72 24-Core Processor, 48 cores, 1007.6G RAM, nfs workdir (theo2)  
+**Software:** GMT 6.4.0, Python 3.11.0  
+**Sweep wall:** 0h 28m (1738s)  
+
+**Coverage:** 21 cases with scorecards. **20 pass / 1 fail**.
+
+---
+
+## Table 1 — Per-case (csh vs py, score)
+
+| Case | csh | py | Δ | speedup | score |
+|------|----:|---:|--:|--------:|:------|
+| ✓ NISAR_Ethiopia | 543s | 200s | +343s | 2.71× | 6/0 |
+| ✓ RS2_SLC_Hawaii | 195s | 93s | +102s | 2.10× | 6/0 |
+| ✓ ALOS_SLC_L1.1 | 448s | 357s | +91s | 1.25× | 6/0 |
+| ✓ TSX_SLC_Hawaii | 852s | 693s | +159s | 1.23× | 6/0 |
+| ✓ CSK_RAW_Hawaii | 822s | 719s | +103s | 1.14× | 6/0 |
+| ✗ S1_Ridgecrest_EQ | 9472s | 8328s | +1144s | 1.14× | 11/5 |
+| ✓ ALOS2_SCAN_SSAF | 9080s | 8079s | +1001s | 1.12× | 14/0 |
+| ✓ ALOS2_Brazil | 999s | 940s | +59s | 1.06× | 6/0 |
+| ✓ ALOS_haiti | 1669s | 1579s | +90s | 1.06× | 7/0 |
+| ✓ ENVI_Baja_EQ | 1767s | 1683s | +84s | 1.05× | 6/0 |
+| ✓ S1A_SLC_TOPS_LA | 6842s | 6535s | +307s | 1.05× | 10/0 |
+| ✓ ALOS4_Pinon | 1267s | 1214s | +53s | 1.04× | 6/0 |
+| ✓ ALOS_ERSDAC_L1.0 | 965s | 925s | +40s | 1.04× | 6/0 |
+| ✓ ALOS2_Japan_Fugi_left | 1427s | 1381s | +46s | 1.03× | 6/0 |
+| ✓ ERS_Hector_EQ | 1276s | 1270s | +6s | 1.00× | 6/0 |
+| ✓ ALOS_Baja_EQ | 1117s | 1120s | -3s | 1.00× | 6/0 |
+| ✓ ENVI_Baja_EQ_SLC | 1461s | 1467s | -6s | 1.00× | 6/0 |
+| ✓ S1A_SLC_TOPS_Greece | 3087s | 3106s | -19s | 0.99× | 10/0 |
+| ✓ S1_Larsen_C | 5120s | 5223s | -103s | 0.98× | 10/0 |
+| ✓ CSK_SLC_Italy | 843s | 887s | -44s | 0.95× | 6/0 |
+| ✓ S1A_SLC_TOPS_COVE | 5584s | 6107s | -523s | 0.91× | 10/0 |
+
+## Table 2 — Per-binary timing (single-pair cases only)
+
+_Cases without profile (csh-side recipes or wiped mid-sweep): ALOS2_SCAN_SSAF_
+
+| Case | total | dem2topo | resamp_py | xcorr_py | geocode | intf | pre_proc |
+|------|------:|---------:|---------:|---------:|---------:|---------:|---------:|
+| S1A_SLC_TOPS_LA | **9028s** | 4814s | - | - | - | 80s | 572s |
+| S1A_SLC_TOPS_COVE | **8556s** | 4505s | - | - | - | 73s | 538s |
+| S1_Larsen_C | **7341s** | 3646s | - | - | - | 73s | 666s |
+| S1A_SLC_TOPS_Greece | **5795s** | 5982s | - | - | - | 84s | 629s |
+| S1_Ridgecrest_EQ | **4111s** | 3721s | - | - | - | 84s | 658s |
+| ENVI_Baja_EQ | **1683s** | 1013s | 54s | 32s | 191s | 38s | 9s |
+| ALOS_haiti | **1579s** | 874s | 50s | 23s | 70s | 51s | 13s |
+| ENVI_Baja_EQ_SLC | **1463s** | 1141s | 28s | 38s | 128s | 19s | 27s |
+| ALOS2_Japan_Fugi_left | **1380s** | 907s | 103s | 48s | 84s | 41s | 82s |
+| ERS_Hector_EQ | **1268s** | 817s | 29s | 34s | 139s | 19s | 13s |
+| ALOS4_Pinon | **1212s** | 884s | 39s | 31s | 92s | 24s | 38s |
+| ALOS_Baja_EQ | **1119s** | 424s | 55s | 60s | 89s | 64s | 42s |
+| ALOS2_Brazil | **939s** | 702s | 34s | 26s | 65s | 22s | 27s |
+| ALOS_ERSDAC_L1.0 | **924s** | 464s | 29s | 57s | 107s | 24s | 11s |
+| CSK_SLC_Italy | **885s** | 452s | 83s | 85s | 46s | 46s | 111s |
+| CSK_RAW_Hawaii | **718s** | 84s | 88s | 83s | 36s | 40s | 28s |
+| TSX_SLC_Hawaii | **692s** | 352s | 83s | 43s | 65s | 44s | 21s |
+| ALOS_SLC_L1.1 | **356s** | 119s | 28s | 25s | 62s | 16s | 27s |
+| NISAR_Ethiopia | **195s** | 32s | 7s | 50s | 51s | 6s | - |
+| RS2_SLC_Hawaii | **92s** | 38s | 4s | 23s | 12s | 4s | 1s |
+
+## Table 3 — Aggregate cost by stage (across 20 profiled cases)
+
+| Stage | Total | % of pipeline | Class |
+|-------|------:|--------------:|-------|
+| dem2topo_ra | 30971s | 76.8% | gmt-wrapper |
+| pre_proc | 3513s | 8.7% | C bin |
+| merge_unwrap_geocode_tops | 2256s | 5.6% | ? |
+| geocode | 1239s | 3.1% | gmt-subprocess |
+| intf | 849s | 2.1% | C bin |
+| resamp_py | 715s | 1.8% | Numba py |
+| xcorr_py | 656s | 1.6% | scipy.fft py |
+| snaphu | 110s | 0.3% | C bin |
+| fitoffset_ra | 2s | 0.0% | gmt-subprocess |
+
+## Table 4 — Failures (cases not all-SUCCESS)
+
+### S1_Ridgecrest_EQ — score 11/5, py=8328s
+
+| File | Status | Reason |
+|------|--------|--------|
+| corr_ll.png | ✗ FAIL | — |
+| corr_ll.png | ✓ SUCCESS | — |
+| display_amp_ll.png | ✗ FAIL | — |
+| phasefilt_mask_ll.png | ✗ FAIL | — |
+| phasefilt_mask_ll.png | ✓ SUCCESS | — |
+| corr_ll.grd | ✗ FAIL | — |
+| corr_ll.grd | ✓ SUCCESS | — |
+| phasefilt.grd | ✓ SUCCESS | — |
+| phasefilt.grd | ✓ SUCCESS | — |
+| phasefilt.grd | ✓ SUCCESS | — |
+| phasefilt.grd | ✗ FAIL | — |
+| phasefilt.grd | ✓ SUCCESS | — |
+| filtcorr.grd | ✓ SUCCESS | — |
+| filtcorr.grd | ✓ SUCCESS | — |
+| filtcorr.grd | ✓ SUCCESS | — |
+| filtcorr.grd | ✓ SUCCESS | — |
+
+---
+
+_Snapshot generated: 2026-07-13T13-39-59Z_  
+_Source: sweep.log_  
+_Tool: gmtsar/python/tools/perf_snapshot.py_
