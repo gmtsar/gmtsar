@@ -30,7 +30,9 @@ every script. Violations are bugs.
     invented metric.
 13. "Ported" and "wired ON by default" are different states — track
     both in `docs/PATHWAY_FORWARD.md`, and losing to C is a valid,
-    documented outcome, not a gap to hide.
+    documented outcome, not a gap to hide. (13a: deployment-simplicity
+    — no compiler/build toolchain needed — is a valid reason to wire ON
+    a slower-but-small-impact module, if measured and stated honestly.)
 
 ## 1. No silent fallbacks, swallowed errors, or placeholder data
 
@@ -672,6 +674,26 @@ evidence, and the file:line of its dispatcher — in the same edit that
 lands the code, not as a follow-up. This is what let a same-day audit
 catch two stale "done" claims (`SAT_look`, `iono_gauss`) that had
 drifted from the code; skipping this step is how those claims happened
+
+**13a. Deployment simplicity is a valid secondary criterion for state 3
+modules** (2026-07-13). A module that loses gate 2 (speed) is not
+automatically stuck in state 3 forever: if (a) the stage it replaces is
+a small fraction of total case wall time (e.g. `pre_proc` at ~7.8%, so
+even a multi-x slowdown on that stage is a small aggregate cost), and
+(b) the C original requires a compiler/build toolchain the Python port
+doesn't (no `gcc`, no `make`, no linked libraries — pure Python +
+numpy/h5py), it may still be promoted to state 1 (wired ON) for
+deployment-simplicity reasons, provided:
+- The aggregate wall-time impact is actually measured on a real sweep
+  before promoting, not assumed from the per-stage number alone (Rule
+  12's "fresh numbers only" applies here too).
+- The honest tradeoff is stated in both the dispatcher's docstring and
+  `docs/PATHWAY_FORWARD.md` — "wired ON despite being slower, because
+  X" is a different, equally valid claim from "wired ON because
+  faster," and must not be conflated with it.
+- This does not apply to state 4 modules (no dispatcher at all,
+  parity incomplete) or state 5 (never attempted) — only to state-3
+  modules that already have full, proven parity.
 in the first place.
 
 See Rule 6 for golden/oracle-dir protection, which also applies to the
