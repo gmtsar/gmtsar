@@ -141,10 +141,16 @@ if [[ $DO_BUILD -eq 1 ]]; then
   # via subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
   # _v2 entries map a PATH name to its JIT-cache-optimized source file.
   chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py "$REPO_ROOT/gmtsar/python/bin_py/"*_py_v2
-  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py; do
+  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py; do
     ln -sf "$REPO_ROOT/gmtsar/python/bin_py/$name" "$REPO_ROOT/bin/$name"
   done
-  for name in resamp_py SAT_llt2rat_py; do
+  # resamp_py wires to v1, not v2: fresh 2026-07-12 measurement found v2's
+  # numba JIT-cache defaults to bin_py/__pycache__ on NFS, causing unstable
+  # 10-58s wall time from synchronous cache-validation stat/open round-trips.
+  # v1 is byte-identical to C and a consistent ~1.3x faster -- see
+  # gmtsar/python/docs/PATHWAY_FORWARD.md "resamp_py / xcorr_py, resolved
+  # 2026-07-12" for the measurement.
+  for name in SAT_llt2rat_py; do
     ln -sf "$REPO_ROOT/gmtsar/python/bin_py/${name}_v2" "$REPO_ROOT/bin/$name"
   done
 

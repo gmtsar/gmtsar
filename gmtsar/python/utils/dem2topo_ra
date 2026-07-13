@@ -92,6 +92,51 @@ except ImportError as _e:
           "using gmt subprocess.", file=sys.stderr)
     _HAVE_GRDFILL_PY = False
 
+# Mira (2026-07-12): in-process gmt_triangulate_py wrapper (Delaunay +
+# linear grid interpolation, mirrors `gmt triangulate -G` with NO other
+# flags -- the only invocation used at these two call sites).
+#
+# PROVEN bit-identical on real data (RS2_SLC_Hawaii, 964,812 pts: 0
+# mismatches out of 2,452,688 grid nodes) but has a documented rare
+# Delaunay-tie divergence on larger inputs (ALOS4_Pinon, 6.16M pts: 10
+# of 29,315,664 nodes differ, up to |diff|=12.2 -- see
+# gmt_triangulate_py.py docstring). It is ALSO measured SLOWER than the
+# `gmt triangulate` C binary single-threaded (~1.4x-6.5x depending on
+# system load; C uses Shewchuk's Triangle, scipy uses Qhull with a
+# larger constant factor -- see module docstring "Performance verdict").
+#
+# Per project_rules.md Rule 7, BOTH gates (bit-identical AND
+# equal-or-faster single-threaded) are required to default this ON.
+# It fails the speed gate. **Default OFF** (GMTSAR_TRIANGULATE_PY=0).
+# Set GMTSAR_TRIANGULATE_PY=1 only for A/B parity debugging.
+try:
+    from gmt_triangulate_py import gmt_triangulate_py_file as _triangulate_py_file
+    _HAVE_TRIANGULATE_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_triangulate_py import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_TRIANGULATE_PY = False
+
+
+def _triangulate_dispatch(xyz_path: str, out_grd: str, region_str: str,
+                          xinc: float, yinc: float) -> None:
+    """Dispatch `gmt triangulate <xyz> -R<region> -I<xinc>/<yinc> -bi3d
+    -G<out> -r` to the py port or gmt subprocess.
+
+    Env gate: GMTSAR_TRIANGULATE_PY=1 (opt-in, NOT default -- see the
+              module-level comment above) -> in-process scipy.spatial
+              Delaunay port. GMTSAR_TRIANGULATE_PY=0 (default) -> `gmt
+              triangulate` subprocess.
+    """
+    use_py = os.environ.get("GMTSAR_TRIANGULATE_PY", "0") == "1"
+    if use_py and _HAVE_TRIANGULATE_PY:
+        w, e, s, n = (float(v) for v in region_str.split("/"))
+        _triangulate_py_file(xyz_path, out_grd, region=(w, e, s, n),
+                             xinc=xinc, yinc=yinc, pixel_reg=True)
+    else:
+        run(f"gmt triangulate {xyz_path} -R{region_str} -I{xinc}/{yinc} "
+            f"-bi3d -G{out_grd} -r {V}")
+
 
 def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
     """Dispatch `gmt grdfill <in> -Ag<donor> -G<out>` to py port or gmt.
@@ -226,6 +271,77 @@ except ImportError as _e:
           "using gmt blockmedian subprocess.", file=sys.stderr)
     _HAVE_GMT_BLOCKMEDIAN_PY = False
     _py_blockmedian = None  # type: ignore
+
+# Mira (2026-07-12): in-process blockmean for the topo_interp_mode=1
+# (triangulation fast-path) `gmt blockmean` calls at dem2topo_ra:773,841.
+# gmt_blockmean_py.blockmean shares gmt_blockmedian_py's bin/index/
+# region-adjust geometry but reduces each bin with an UNWEIGHTED MEAN
+# (np.add.reduceat sum / count) instead of a median. This matches the
+# call sites exactly: no -C/-W/-S flags, so `gmt blockmean` here writes
+# plain (mean_x, mean_y, mean_z) per bin.
+#
+# UNLIKE blockmedian, this is NOT byte-identical to the C binary: GMT's
+# per-bin accumulation order (its own bin sort is not guaranteed stable)
+# differs from our np.argsort(kind="stable") order, so float64 summation
+# picks up different roundoff. Measured on real RS2_SLC_Hawaii temp.rat
+# (964812 rows, -R0/3416/0/5744 -I32/16, 38413 output bins):
+#     max abs diff vs `gmt blockmean`: 4.5e-12  (atol=1e-9 gate, doubles)
+#     max rel diff: 9.6e-16 (~1 ULP)
+# Timing on the same real input: py 0.078s vs gmt subprocess 0.288s
+# (~3.7x faster, single-threaded, includes subprocess exec overhead).
+#
+# Default OFF (GMTSAR_BLOCKMEAN_PY unset or "0") pending a full sweep
+# review — see bin_py/tests/test_gmt_blockmean_py.py for the parity
+# suite. Set GMTSAR_BLOCKMEAN_PY=1 to opt in.
+try:
+    from gmt_blockmean_py import blockmean as _py_blockmean
+    _HAVE_GMT_BLOCKMEAN_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_blockmean_py import failed ({_e}); "
+          "using gmt blockmean subprocess.", file=sys.stderr)
+    _HAVE_GMT_BLOCKMEAN_PY = False
+    _py_blockmean = None  # type: ignore
+
+
+def _blockmean_to_meanrat(temp_rat: str, region: str, rng2_step: int,
+                          az_step: int, out_path: str) -> None:
+    """Replacement for:
+
+        gmt blockmean <temp_rat> -R<region> -I<rng2_step>/<az_step> \
+                      -bi3d -bo3d -r > <out_path>
+
+    Used only by the topo_interp_mode=1 (triangulation) branches at
+    dem2topo_ra:773,841. Gated by GMTSAR_BLOCKMEAN_PY (default "0" —
+    OFF; falls back to the `gmt blockmean` subprocess). See the
+    import-site note above for parity/timing evidence.
+    """
+    use_blockmean_py = (_HAVE_GMT_BLOCKMEAN_PY
+                         and os.environ.get("GMTSAR_BLOCKMEAN_PY", "0") == "1")
+    if use_blockmean_py:
+        try:
+            rg = [float(s) for s in str(region).split("/")]
+        except ValueError as exc:
+            raise ValueError(
+                f"_blockmean_to_meanrat: bad region '{region}' "
+                f"(want 'xmin/xmax/ymin/ymax'): {exc}")
+        if len(rg) != 4:
+            raise ValueError(
+                f"_blockmean_to_meanrat: region must have 4 numbers, "
+                f"got {rg}")
+        raw = _np.fromfile(temp_rat, dtype=_np.float64)
+        if raw.size % 3 != 0:
+            raise ValueError(
+                f"_blockmean_to_meanrat: {temp_rat} size not a multiple "
+                f"of 3 doubles ({raw.size})")
+        xyz = raw.reshape(-1, 3)
+        out = _py_blockmean(xyz,
+                            region=(rg[0], rg[1], rg[2], rg[3]),
+                            inc=(float(rng2_step), float(az_step)),
+                            pixel_reg=True)
+        out.astype(_np.float64, copy=False).tofile(out_path)
+        return
+    run(f"gmt blockmean {temp_rat} -R{region} -I{rng2_step}/{az_step} "
+        f"-bi3d -bo3d -r > {out_path}")
 
 # Mira #30 (2026-05-21): Tier-1 grdmath FLIPUD replacement via
 # gmt_grd_io.{read,write}_gmt_grd. The dem2topo_ra `gmt grdmath
@@ -769,8 +885,10 @@ def dem2topo_ra():
         elif mode == 1:
             rng2 = rng*8
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
-            run("gmt triangulate temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -Gtopo_ra_tmp.grd -r "+str(V))
-            run("gmt blockmean temp.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -bo3d -r > mean.rat")
+            # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
+            # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 2)
+            _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 16, "mean.rat")
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
                 "mean.rat", str(region), int(rng2), 16, 0.1, "coarse.grd")
@@ -837,8 +955,10 @@ def dem2topo_ra():
         elif mode == 1:
             rng2 = rng*8
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
-            run("gmt triangulate temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -Gtopo_ra_tmp.grd -r "+str(V))
-            run("gmt blockmean temp.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -bo3d -r > mean.rat")
+            # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
+            # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 4)
+            _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 32, "mean.rat")
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
                 "mean.rat", str(region), int(rng2), 32, 0.1, "coarse.grd")
