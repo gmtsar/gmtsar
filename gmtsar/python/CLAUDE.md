@@ -16,9 +16,13 @@ Fork of upstream `gmtsar/gmtsar` (C/csh InSAR processor). This fork extends it w
 after a real incident (silent fallbacks, lost sweep artifacts, stale
 "done" claims, etc.). Read it at the start of any task involving:
 porting a C/GMT module, running or reporting on a test sweep, or wiring
-a new env-gate dispatcher. Rule 13 in particular: "ported" and "wired ON
-by default" are different states — track both in
-`gmtsar/python/docs/PATHWAY_FORWARD.md`, not just "ported: yes/no."
+a new env-gate dispatcher.
+
+**`gmtsar/python/docs/PATHWAY_FORWARD.md`** — the living ledger of what's
+ported, what's wired ON vs OFF and why, and what's never been attempted.
+Read it before re-deriving "what's left to port" from scratch, and update
+it (per Rule 13: "ported" and "wired ON by default" are different states
+— track both) in the same edit that lands any new port or wiring change.
 
 ## Where dev lives
 
