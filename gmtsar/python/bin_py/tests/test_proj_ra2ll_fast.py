@@ -43,7 +43,9 @@ try:
         _bilinear_lookup,
         _read_grd,
         _region_from_corr_extent,
+        _m2s,
     )
+    import proj_ra2ll_lib as _proj_ra2ll_lib_mod
     _HAVE_LIB = True
 except ImportError:
     _HAVE_LIB = False
@@ -262,6 +264,32 @@ class TestRegionFromCorrExtent(unittest.TestCase):
         r = _region_from_corr_extent(z, xc, yc)
         # nx*x_inc=40 → ceil(40/16)*16=48; ny*y_inc=320 → ceil(320/32)*32=320
         self.assertEqual(r, "-R0/48/0/320")
+
+
+@unittest.skipUnless(_HAVE_LIB, "proj_ra2ll_lib not importable")
+class TestM2sDispatchNoFallback(unittest.TestCase):
+    """Regression test for project_rules.md Rule 1: `_m2s` must select
+    in-process vs subprocess via a pre-flight env-gate check ONLY. It must
+    NOT catch an exception from `_m2s_py` and silently retry via the
+    `m2s.csh` subprocess (the exact anti-pattern the rule documents)."""
+
+    def test_m2s_py_failure_raises_not_falls_back(self):
+        def _boom(pix_m, llp_path):
+            raise ValueError("simulated m2s_py failure")
+
+        old_env = os.environ.get("GMTSAR_M2S_PY")
+        old_fn = _proj_ra2ll_lib_mod._m2s_py
+        os.environ["GMTSAR_M2S_PY"] = "1"
+        _proj_ra2ll_lib_mod._m2s_py = _boom
+        try:
+            with self.assertRaises(ValueError):
+                _m2s(1.0, "unused_llp_path")
+        finally:
+            _proj_ra2ll_lib_mod._m2s_py = old_fn
+            if old_env is None:
+                os.environ.pop("GMTSAR_M2S_PY", None)
+            else:
+                os.environ["GMTSAR_M2S_PY"] = old_env
 
 
 if __name__ == "__main__":

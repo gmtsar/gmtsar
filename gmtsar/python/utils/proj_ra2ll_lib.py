@@ -82,17 +82,14 @@ def _m2s(pix_m: float, llp_path: str) -> tuple[str, str]:
       real RS2_SLC_Hawaii data across pix in {0.01, 1, 7.5, 15, 60, 100}
       (bin_py/tests/test_m2s_py.py), and Rule-8 path-exercised end-to-end
       via ``geocode`` on RS2_SLC_Hawaii (all *_ll.grd byte-identical, no
-      fallback). On ANY exception, falls back to the subprocess (warn to
-      stderr), matching dem2topo_ra's ``_surface_or_run`` fallback style.
+      fallback). Runs to completion or raises — no post-compute fallback
+      to the subprocess (project_rules.md Rule 1; this used to catch-and-
+      retry, which is the exact anti-pattern the rule was written about).
     * ``GMTSAR_M2S_PY=0``: subprocess ``m2s.csh pix_m llp`` (legacy path,
-      kept for rollback).
+      kept for rollback -- the pre-flight gate, not a fallback).
     """
     if os.environ.get("GMTSAR_M2S_PY", "1") == "1":
-        try:
-            return _m2s_py(pix_m, llp_path)
-        except Exception as exc:
-            print(f"PROJ_RA2LL: WARN: m2s_py failed ({exc!r}); "
-                  "falling back to m2s.csh subprocess.", file=sys.stderr)
+        return _m2s_py(pix_m, llp_path)
     incs_line = subprocess.check_output(
         ["m2s.csh", str(pix_m), llp_path], text=True).strip().split()
     return incs_line[0], incs_line[1]
