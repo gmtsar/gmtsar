@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 """Walk <workdir>/results/<case>.json (written by compare.py) and
-<workdir>/timeSpentLog.txt (written by case_runner.sh) and emit
+<workdir>/timeSpentLog.txt (written by case_runner.py) and emit
 <workdir>/sweep_summary.md with per-case timings and SUCCESS/FAIL counts.
 
 Safe to run while a sweep is in progress.
@@ -43,7 +43,7 @@ def _vintage_section(results):
     """Build the 'Git vintage / mid-sweep SHA tracking' Markdown block.
 
     Aggregates the per-case git fields populated by compare.py (read from
-    case_runner.sh's sidecar). The summary shows:
+    case_runner.py's sidecar). The summary shows:
       * the sweep-start SHA (earliest 'launched_at' across cases)
       * the sweep-end SHA   (latest  'finished_at' across cases) — flagged
         'ADVANCED to <sha>' when it differs from the start SHA

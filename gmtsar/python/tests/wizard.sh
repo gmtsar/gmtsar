@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Quick test wizard — basic-function sanity for gmtsar/python/.
-# Designed to catch silent-failure modes BEFORE the 3-hour sweep.sh runs.
+# Designed to catch silent-failure modes BEFORE the 3-hour sweep.py runs.
 # Target wall time: < 30 seconds. Run before every commit / pre-push.
 #
-# What it catches that compare.py / sweep.sh would not:
+# What it catches that compare.py / sweep.py would not:
 #   - missing import (e.g. iono path's `shutil.rmtree` without `import shutil`)
 #   - SyntaxError / NameError-on-first-use in any util
 #   - shell-syntax bugs in tests/*.sh and csh_shims/*.csh (the sed delimiter
@@ -135,7 +135,7 @@ for stagedConfig in tests/configs/*.py; do
     done
 done
 if [ $n -eq 0 ]; then
-    ok "config drift: no extracted workdirs to compare (run sweep.sh first to populate)"
+    ok "config drift: no extracted workdirs to compare (run sweep.py first to populate)"
 elif [ $drift -eq 0 ]; then
     ok "$n cases have no config drift"
 fi

@@ -27,6 +27,26 @@ pyReadme=${5:?python recipe}
 timeLog=${6:?time log}
 preloadShim=${7:-}
 
+# TOPO_MODE_AB=1: repurpose the csh_test/python_test tree pair for a
+# topo_interp_mode=0-vs-1 A/B comparison instead of csh-vs-py. Both sides
+# run the SAME Python recipe (no csh at all) — cshDir gets mode=0, pyDir
+# gets mode=1 — so compare.py's existing pyRoot-vs-cshRoot diff (same
+# fileNameList/thresholds) becomes a mode0-vs-mode1 diff for free, no
+# changes needed there. See project_rules.md Rule 12 / the 2026-07-09
+# mode-sweep report for why this comparison matters.
+TOPO_MODE_AB="${TOPO_MODE_AB:-0}"
+
+# Force `topo_interp_mode = <mode>` in a staged/generated config.py.
+# Shared by both A/B branches below.
+_force_topo_interp_mode() {
+    local cfg=$1 mode=$2
+    if grep -qE '^\s*topo_interp_mode\s*=' "$cfg"; then
+        sed -i -E "s/^([[:space:]]*topo_interp_mode[[:space:]]*=[[:space:]]*)\S+/\1${mode}/" "$cfg"
+    else
+        echo "topo_interp_mode       = ${mode}" >> "$cfg"
+    fi
+}
+
 # ─── Git-SHA capture at case start (project_rules.md #6, #8) ─────────────────
 # Records the framework git state (SHA + dirty file list under gmtsar/python/)
 # at the moment this case starts, so compare.py can embed it in the per-case
@@ -222,7 +242,21 @@ if [ -n "$(find "$cshDir/intf" -name '*.grd' -o -name '*.png' 2>/dev/null | head
 fi
 
 (
-    if [ "$oracle_valid" = 0 ]; then
+    if [ "$TOPO_MODE_AB" = "1" ]; then
+        # Mode-AB "baseline" slot: run the Python recipe (not csh) into
+        # cshDir, forced to topo_interp_mode=0. Reuses the same stagedConfig
+        # resolution the normal python run uses below.
+        t0=$SECONDS
+        stagedConfigAB="$(cd "$(dirname "$pyReadme")/../configs" 2>/dev/null && pwd)/${case}.py"
+        ( cd "$cshDir" \
+          && cleanup all \
+          && cp "$pyReadme" . \
+          && chmod +x "README_${case}.txt" \
+          && { [ -f "$stagedConfigAB" ] && cp "$stagedConfigAB" config.py || pop_config "$(python3 -c "import sys; sys.path.insert(0,'$(dirname "$pyReadme")/..'); from cases import CASES; print(CASES['$case']['satellite'])")" > config.py; } \
+          && _force_topo_interp_mode config.py 0 \
+          && "./README_${case}.txt" > log.txt 2>&1 )
+        echo "$case mode0(ref) used $((SECONDS-t0)) s" >> "$timeLog"
+    elif [ "$oracle_valid" = 0 ]; then
         echo "[$case] no csh reference — running legacy csh recipe"
         t0=$SECONDS
         # Some tarballs (e.g. S1_Larsen_C) ship README_Frame.txt / README_proc.txt
@@ -309,8 +343,16 @@ fi
       && cp "$pyReadme" . \
       && chmod +x "README_${case}.txt" \
       && { [ -f "$stagedConfig" ] && cp "$stagedConfig" config.py || true; } \
+      && if [ "$TOPO_MODE_AB" = "1" ]; then
+             # Mode-AB "variant" slot: force topo_interp_mode=1. If no staged
+             # config exists, pre-generate one via pop_config ourselves
+             # (rather than letting the recipe's own p2p_processing do it
+             # internally) so the override lands before the recipe runs.
+             [ -f config.py ] || pop_config "$(python3 -c "import sys; sys.path.insert(0,'$(dirname "$pyReadme")/..'); from cases import CASES; print(CASES['$case']['satellite'])")" > config.py
+             _force_topo_interp_mode config.py 1
+         fi \
       && "./README_${case}.txt" > log.txt 2>&1 )
-    echo "$case python used $((SECONDS-t0)) s" >> "$timeLog"
+    echo "$case python(mode1/new) used $((SECONDS-t0)) s" >> "$timeLog"
 ) &
 pyPid=$!
 

@@ -18,8 +18,18 @@ else:
     workAbsoluteDir = os.path.join(_pythonDir, 'work') + os.sep
 
 # Per-case output trees inside workAbsoluteDir.
-pythonRunRoot = workAbsoluteDir + 'python_test/'   # Python-framework outputs
-cshRefRoot    = workAbsoluteDir + 'csh_test/'      # legacy csh reference outputs
+#
+# TOPO_MODE_AB=1 repurposes this same csh_test/python_test tree pair (and
+# therefore compare.py's existing pyRoot-vs-cshRoot diff, unchanged) for a
+# topo_interp_mode=0-vs-1 A/B comparison instead of csh-vs-py: both trees
+# get the Python recipe, no csh at all (see case_runner.sh). Named ref_test/
+# new_test in that mode so the folders aren't misleadingly labeled "csh".
+if os.environ.get('TOPO_MODE_AB') == '1':
+    cshRefRoot    = workAbsoluteDir + 'ref_test/'      # mode=0 (baseline)
+    pythonRunRoot = workAbsoluteDir + 'new_test/'       # mode=1 (variant)
+else:
+    pythonRunRoot = workAbsoluteDir + 'python_test/'   # Python-framework outputs
+    cshRefRoot    = workAbsoluteDir + 'csh_test/'      # legacy csh reference outputs
 datasetRoot   = workAbsoluteDir + 'dataset/'       # downloaded raw tarballs
 recipesDir    = workAbsoluteDir + 'recipes/'
 

@@ -3,7 +3,7 @@
 frozen reference, if present). Emits human-readable lines on stdout AND writes
 a machine-readable JSON sidecar per case at <workdir>/results/<case>.json so
 report.py can aggregate without log scraping."""
-import glob, json, os, re, time
+import glob, json, os, re, sys, time
 from datetime import datetime, timezone
 import numpy as np
 import xarray as xr
@@ -12,6 +12,23 @@ from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from cases import caseNameList, rawDir, SLCDir, \
     pythonRunRoot, cshRefRoot, referenceRoot, workAbsoluteDir
+
+# --case NAME [NAME2 ...]: compare only these cases instead of every case in
+# caseNameList. Runs at import time (this module has always been a top-level
+# script, not a function) so `python3 compare.py --case RS2_SLC_Hawaii`
+# checks ONE case in ~seconds instead of looping all 21 -- a single SSIM
+# call is genuinely fast (~1-3s); the full sweep only feels slow because it
+# does that dozens of times sequentially with no filter to skip the rest.
+if "--case" in sys.argv:
+    _idx = sys.argv.index("--case")
+    _requested = sys.argv[_idx + 1:]
+    if not _requested:
+        sys.exit("compare.py --case requires at least one case name")
+    _unknown = [c for c in _requested if c not in caseNameList]
+    if _unknown:
+        sys.exit(f"compare.py --case: unknown case(s) {_unknown}; "
+                  f"see cases.py CASES for the valid list")
+    caseNameList = _requested
 
 fileNameList = ['corr_ll.png','display_amp_ll.png','phasefilt_mask_ll.png',
         'corr_ll.grd', 'phasefilt.grd', 'filtcorr.grd',

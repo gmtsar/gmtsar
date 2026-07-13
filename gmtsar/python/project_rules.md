@@ -49,7 +49,7 @@ while being meaningless.
 
 **No silent fallbacks:**
 - `gmtsar_lib.run()` raises on rc=127 (command not found). Do not weaken this.
-- `case_runner.sh` stages `config.py` from `tests/configs/<case>.py`. If a case
+- `case_runner.py` stages `config.py` from `tests/configs/<case>.py`. If a case
   ships a bundled `config*.txt` and no matching staged `config.py` exists, the
   recipe must error — do not fall back to `pop_config` auto-generation.
 - A recipe must crash if its required input (bundled config, dem.grd, raw data
@@ -126,7 +126,7 @@ testing the same thing the csh side is — comparisons become noise.
 Per CLAUDE.md: all dev in this fork lives under `gmtsar/python/`. Never edit
 upstream `gmtsar/csh/`, `gmtsar/preproc/`, `gmtsar/gmtsar/`, etc. — those are
 upstream-tracked. If an upstream fix is needed, work around it in `python/`
-(e.g. the filter1 → filter_wavelength patch lives in `tests/case_runner.sh`,
+(e.g. the filter1 → filter_wavelength patch lives in `tests/case_runner.py`,
 not in upstream `pop_config.csh`).
 
 ## 4. Testing captures performance, hardware, and provenance
@@ -142,7 +142,7 @@ Every test run must record, alongside the SUCCESS/FAIL scorecard:
   different hosts or runs can't be compared and regressions can't be
   attributed to environment vs code.
 - **Per-case JSON scorecard embeds `git_sha`** of the framework HEAD at
-  comparison time, so `sweep.sh`'s skip-already-passed guard can detect
+  comparison time, so `sweep.py`'s skip-already-passed guard can detect
   when a previously-verified case needs re-running because the code
   changed.
 
@@ -162,9 +162,11 @@ slides, papers) — whether the sweep passed or not, whether 3-case or
 - Captures **every** of these fields, no exceptions:
   - **invocation**: full env (`NUMBA_NUM_THREADS`, `XCORR_PY_WORKERS`,
     `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
-    `BLIS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `NUMEXPR_NUM_THREADS`,
-    `MAX_PARALLEL`, `SWEEP_FORCE`), exact `TEST_CASES` list, sweep wall
-    time, scope of the run (cases set).
+    `BLIS_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `NUMEXPR_NUM_THREADS`)
+    plus `sweep.py`'s real CLI args (`--parallel`, `--force`; these were
+    `MAX_PARALLEL`/`SWEEP_FORCE` shell env vars before the 2026-07-13
+    bash->Python rewrite — `--cases`/`TEST_CASES` still both work), sweep
+    wall time, scope of the run (cases set).
   - **per-case**: score (S/F), py total seconds, csh total seconds,
     speedup ratio, per-binary breakdown from `phase_profile_py.json`
     (all binaries reported by `time_run`).
@@ -270,12 +272,12 @@ live under `work/python_test/...`. The py recipes that ship in
 `gmtsar/python/utils/` and `gmtsar/python/bin_py/` only ever reference paths
 under `python_test/<case>/`. If a future Mira mission needs to read from
 csh_test (e.g., for comparison), it must be a READ-ONLY access — no writes.
-`tests/sweep.sh` and `tests/case_runner.sh` must not pass `csh_test/<case>`
+`tests/sweep.py` and `tests/case_runner.py` must not pass `csh_test/<case>`
 paths as output args to py recipes — the py side is `pyDir`, the csh side is
 `cshDir`, they never alias.
 
 **When in doubt: delete the affected `csh_test/<case>/` and let
-`case_runner.sh` rebuild from scratch.** Rule 5's sentinel will then
+`case_runner.py` rebuild from scratch.** Rule 5's sentinel will then
 record a fresh `.oracle_built` and future invocations will trust it.
 
 **Ad hoc driver script scope (same invariant, different mechanism):**
@@ -423,7 +425,7 @@ parity test that:
    regressions:
    - Numerical kernel bugs → `bin_py/tests/test_<module>.py`
    - Pipeline-stage drift → enable the relevant case in the proper
-     `--fast`/`--full` tier (`sweep.sh`)
+     `--fast`/`--full` tier (`sweep.py`)
    - Configuration / env-gate bugs → tests/test_env_gate_*.py
 
 The commit message references the bug + the test that guards it.
@@ -549,7 +551,7 @@ read-only scoping pass (parallel agents) before wiring begins.
 
 ## 12. Every sweep report: pass/fail + perf table (with backend) + a visual comparison plot
 
-**Any `sweep.sh` run (not just A/B comparisons — this includes a plain
+**Any `sweep.py` run (not just A/B comparisons — this includes a plain
 `--fast`/`--full` py-vs-csh run), when reported back, must include all
 three:**
 
