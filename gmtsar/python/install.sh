@@ -89,18 +89,28 @@ fi
 
 # ---------------------------------------------------- Python packages ---
 if [[ $DO_PYTHON -eq 1 ]]; then
+  REQUIREMENTS_TXT="$REPO_ROOT/gmtsar/python/requirements.txt"
   if [[ $DO_CONDA -eq 1 ]]; then
-    echo "==> Installing Python packages into conda env $CONDA_PREFIX_GMTSAR ..."
-    # numpy<2: xarray/cftime in this env were built against numpy 1.x; numpy 2 breaks
-    # binary compatibility ("dtype size changed, ... Expected 96 ... got 88").
-    "$CONDA_PREFIX_GMTSAR/bin/pip" install --upgrade \
-      scikit-image matplotlib xarray netCDF4 'numpy<2'
+    echo "==> Installing Python packages into conda env $CONDA_PREFIX_GMTSAR from requirements.txt ..."
+    # requirements.txt is the single source of truth (2026-07-13: this used
+    # to hardcode a separate, shorter list here that had drifted out of sync
+    # -- missing scipy/numba/cython/h5py, which are required for the
+    # default-ON compute kernels (xcorr_py, resamp_py, SAT_llt2rat_py,
+    # gmt_surface_py) and make_slc_nsr_py. A fresh install via this path
+    # left the framework broken out of the box. Read from requirements.txt
+    # directly so the two lists can't diverge again.
+    "$CONDA_PREFIX_GMTSAR/bin/pip" install --upgrade -r "$REQUIREMENTS_TXT"
   else
     require_apt
     echo "==> Installing Python packages via apt..."
     $SUDO apt install -y \
       python3-skimage python3-matplotlib python3-xarray python3-netcdf4 \
-      python3-tk python3-numpy
+      python3-tk python3-numpy python3-scipy python3-h5py python3-pip
+    # numba and cython aren't reliably available as apt packages across
+    # Ubuntu releases -- pip install them (see requirements.txt comment on
+    # what's NOT apt-installable). Required for xcorr_py/resamp_py/
+    # SAT_llt2rat_py/gmt_surface_py, all wired ON by default.
+    $SUDO python3 -m pip install --upgrade 'numba>=0.56' 'cython>=3.0'
   fi
 fi
 

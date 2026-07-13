@@ -215,10 +215,11 @@ Concretely:
   Isolated kernel parity does not guarantee in-sweep parity — see the
   NISAR Mira #15 → #17 → #18 saga where each isolated fix verified but
   in-sweep behaviour kept diverging.
-- The merge candidate must pass at least the 3-case fast tier
-  (RS2_SLC_Hawaii + NISAR_Ethiopia + ALOS_SLC_L1.1) before any
-  optimization-targeted feature can be evaluated; for a refactor or
-  GMT-port change, all 21 cases must pass.
+- The merge candidate must pass at least the `--fast` tier (see
+  `tests/cases.py` for the current case list — it has drifted over time;
+  verify fresh, don't cite a specific case list from memory or an old
+  doc, per Rule 9) before any optimization-targeted feature can be
+  evaluated; for a refactor or GMT-port change, all 21 cases must pass.
 - If a merge candidate breaks even one case, it goes back to the
   consilium agent (or is reverted) — do not paper over with
   per-case threshold loosening.
@@ -466,10 +467,11 @@ send her back with the test as the next deliverable.
 **The cost of not following this rule:**
 
 The gcd=1 bug shipped to v2.1.10 (surface wire default-on) and required
-a full --fast 9 SAT to surface. Cost: ~30 min sweep + ~2 hours Mira #61
-investigation + ~3 hours Mira #68 fix mission. Total ~6 hours could
-have been ~30 min if a gcd=1 fixture had been in the test suite from
-day 1.
+a full `--fast` tier run to surface (the tier's case count/composition
+has changed since — don't cite a specific number here, see Rule 9).
+Cost: ~30 min sweep + ~2 hours Mira #61 investigation + ~3 hours Mira
+#68 fix mission. Total ~6 hours could have been ~30 min if a gcd=1
+fixture had been in the test suite from day 1.
 
 ## 9. Don't trust past conclusions — only fresh-run outputs are evidence
 
