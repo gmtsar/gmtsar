@@ -11,7 +11,7 @@ xarray>=2022.11
 netCDF4>=1.6
 numba>=0.56      # JIT kernels: xcorr_py, resamp_py, SAT JIT path, snaphu_py
 cython>=3.0      # builds utils/_surface_kernel (gmt_surface_py default-ON path)
-h5py>=3.0        # make_slc_nsr_py (GMTSAR_NSR_PREPROC_PY=1, default OFF) — reads NISAR RSLC HDF5
+h5py>=3.0        # make_slc_nsr_py (GMTSAR_NSR_PREPROC_PY, default ON since 2026-07-13) — reads NISAR RSLC HDF5
 #
 # NOT pip-installable — install via system package manager / install.sh:
 #   gmt>=6.4, csh, gfortran, gcc, autoconf, make, libtiff, libhdf5, liblapack

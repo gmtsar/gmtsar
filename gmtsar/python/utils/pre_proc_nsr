@@ -15,17 +15,22 @@ full NISAR_L1_PR_RSLC_... filename.
 Usage:  pre_proc_nsr file.h5 config.txt
 Output: <NSR_YYYYMMDD>A.{PRM,SLC,LED} and <NSR_YYYYMMDD>B.{PRM,SLC,LED}
 
-``GMTSAR_NSR_PREPROC_PY`` env-gate (default OFF, v2.3.9):
+``GMTSAR_NSR_PREPROC_PY`` env-gate (default ON since 2026-07-13):
 
-* default / ``GMTSAR_NSR_PREPROC_PY=0``: subprocess `make_slc_nsr` C binary
-  (unchanged behavior).
-* ``GMTSAR_NSR_PREPROC_PY=1``: in-process `make_slc_nsr_py` (Python port,
-  see utils/make_slc_nsr_py.py). Verified byte-for-byte identical .SLC/.PRM/
-  .LED output vs the C binary on real NISAR_Ethiopia data (both A and B
-  frequency paths) — see gmtsar/python/bin_py/tests/test_make_slc_nsr_py.py.
-  Requires h5py (gmtsar/python/requirements.txt). Default OFF until this
-  path has run through a full test-suite sweep; instant rollback by unsetting
-  the env var.
+* default / ``GMTSAR_NSR_PREPROC_PY=1``: in-process `make_slc_nsr_py`
+  (Python port, see utils/make_slc_nsr_py.py). Verified byte-for-byte
+  identical .SLC/.PRM/.LED output vs the C binary on real NISAR_Ethiopia
+  data (both A and B frequency paths) — see
+  gmtsar/python/bin_py/tests/test_make_slc_nsr_py.py — ~19x faster
+  (h5py sliced reads vs C mallocing the whole ~11GB array). Confirmed
+  end-to-end on a real, full NISAR_Ethiopia sweep (6/6 SUCCESS,
+  csh 431s -> py 152s). A real config-parsing bug (_get_config not
+  stripping quote characters from staged config.py values, silently
+  corrupting region_cut) was found via that sweep, fixed, and
+  regression-tested (bin_py/tests/test_pre_proc_nsr_config.py) before
+  this default flip. Requires h5py (gmtsar/python/requirements.txt).
+* ``GMTSAR_NSR_PREPROC_PY=0``: subprocess `make_slc_nsr` C binary
+  (instant rollback).
 """
 import os
 import sys
@@ -33,7 +38,7 @@ from gmtsar_lib import run
 
 
 def _use_nsr_preproc_py() -> bool:
-    return os.environ.get("GMTSAR_NSR_PREPROC_PY", "0") == "1"
+    return os.environ.get("GMTSAR_NSR_PREPROC_PY", "1") == "1"
 
 
 def _get_config(path, key, default=""):

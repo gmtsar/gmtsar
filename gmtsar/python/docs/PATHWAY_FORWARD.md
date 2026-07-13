@@ -12,6 +12,22 @@
   during a live GUI verification pass (not synthetic — reproduced by
   launching without the PATH export). Cheap fix: fail loud (raise/log a
   clear error) instead of silently substituting a garbage path.
+- **`install.sh --python`'s `pip install --upgrade -r requirements.txt`
+  is unsafe against a live/shared conda env.** Discovered 2026-07-13
+  during a from-scratch new-user onboarding test: running `install.sh
+  --conda --python --build` against the same `gmtsar` conda env that
+  other processes had open (background test sweeps using numba-JIT
+  kernels) caused a partial package upgrade — `llvmlite` got bumped to
+  an incompatible version while `numba` didn't finish reinstalling
+  (NFS "device or resource busy" mid-swap), breaking numba JIT
+  compilation for every kernel in the env until fixed. This corrupted
+  one in-flight sweep (`ALOS_haiti`, a real crash + correctly-reported
+  failure — not a code bug, pure env fallout, do not chase this as if
+  it were one). Real fix needed: either don't use `--upgrade` (prefer
+  `pip install -r requirements.txt` without forcing version bumps of
+  already-satisfied packages), or document loudly that `install.sh`
+  must not be run against an env with other live processes attached.
+  Not yet fixed as of this writing.
 
 Living roadmap. Read this before re-deriving "what's left to port" from
 scratch — this survey (2026-07, HEAD v2.5.6) already did that work and
@@ -47,12 +63,12 @@ below is tagged with exactly one:
 | `gmt_grdcut_py` | [1-ON] | 1.2-4.2x depending on call site | 19 sites |
 | `gmt_grdsample_py` | [1-ON] | parity per-call; 1.7x in warm multi-call reuse only | `grdsample_wrapper.py` |
 | `phasediff_py`, `phasefilt_py`, `gmt_grdfill_py`, `align_tops`, `make_los_py` | [1-ON, audit gap] | correctness evidence only, **no isolated gate-2 timing exists** | various, see "Tried, kept on C" below |
-| `make_slc_s1a_py` | [2-OFF-pending] | +1.4-1.8x, byte-identical | `pre_proc`, `GMTSAR_S1A_PREPROC_PY=0` |
-| `make_slc_nsr_py` | [2-OFF-pending] | +19x, byte-identical | `pre_proc_nsr`, `GMTSAR_NSR_PREPROC_PY=0` |
+| `make_slc_s1a_py` | [1-ON] | +1.4-1.8x, byte-identical; confirmed end-to-end on real S1A_SLC_TOPS_Greece sweep (10/10 SUCCESS, 2026-07-13) | `pre_proc`, `GMTSAR_S1A_PREPROC_PY=1` |
+| `make_slc_nsr_py` | [1-ON] | +19x, byte-identical; confirmed end-to-end on real NISAR_Ethiopia sweep (6/6 SUCCESS, csh 431s->py 152s, 2026-07-13) — found+fixed a real `_get_config` quote-stripping bug along the way, see below | `pre_proc_nsr`, `GMTSAR_NSR_PREPROC_PY=1` |
 | `gmt_blockmean_py` | [2-OFF-pending] | +3.7-19.3x, tolerance-equal (not byte-identical, see below) | `dem2topo_ra`, `GMTSAR_BLOCKMEAN_PY=0` |
-| `make_slc_rs2_py` | [3-OFF-lost] | ~1.3x slower, byte-identical | `pre_proc`, `GMTSAR_RS2_PREPROC_PY=0` |
-| `make_slc_tsx_py` | [3-OFF-lost] | ~slower (numpy import tax), byte-identical | `pre_proc`/`gmtsar_lib.py`, `GMTSAR_TSX_PREPROC_PY=0` |
-| `make_slc_csk_py` | [3-OFF-lost] | ~1.3-2x slower, byte-identical | `pre_proc`, `GMTSAR_CSK_MAKE_SLC_PY=0` |
+| `make_slc_rs2_py` | [1-ON, Rule 13a] | ~1.3x slower individually; wired anyway (deployment simplicity, pre_proc ~7.8% of total time); confirmed end-to-end (RS2_SLC_Hawaii 6/6 SUCCESS, 1.96x case-level, 2026-07-13) | `pre_proc`, `GMTSAR_RS2_PREPROC_PY=1` |
+| `make_slc_tsx_py` | [1-ON, Rule 13a] | slower individually (numpy import tax); wired anyway; confirmed end-to-end (TSX_SLC_Hawaii 6/6 SUCCESS, 1.19x case-level, 2026-07-13) | `pre_proc`/`gmtsar_lib.py`, `GMTSAR_TSX_PREPROC_PY=1` |
+| `make_slc_csk_py` | [1-ON, Rule 13a] | ~1.3-2x slower individually; wired anyway; confirmed end-to-end (CSK_SLC_Italy 6/6 SUCCESS, 1.04x case-level, 2026-07-13) | `pre_proc`, `GMTSAR_CSK_MAKE_SLC_PY=1` |
 | `make_slc_csk2_py` | [3-OFF-lost] | ~4-5x slower, byte-identical | `pre_proc`, `GMTSAR_CSK_PREPROC_PY=0` |
 | `gmt_triangulate_py` | [3-OFF-lost] | 1.4-9x slower (Qhull vs GMT's linked Shewchuk Triangle) | `dem2topo_ra`, `GMTSAR_TRIANGULATE_PY=0` |
 | `ALOS_pre_process_py` | [4-partial] | IMG-parsing subset byte-identical, +2.1x — LED/orbit/Doppler not ported | none — parity is partial |
@@ -290,14 +306,63 @@ Original speculative framing (below) is superseded by this table for the
   `epr_api-2.3` library, ERS has multiple format variants — both
   significantly more complex than the tested set, deferred to separate
   future scoping rather than assumed equally "easy."
-- **The actual focusing math is elsewhere and smaller**: SAR image
-  formation (range/azimuth compression) lives in `gmtsar/gmtsar/esarp.c`
-  (369 lines, one shared sensor-agnostic implementation) — in the main
-  source tree next to `xcorr.c`/`phasefilt.c`, not under `preproc/`. If
-  focusing speed is ever a real goal, `esarp.c` is a much smaller,
-  single-target port than the per-sensor parsers above — not yet scoped
-  (FFT library used, per-line vs. batched processing unread as of this
-  writing).
+- **`esarp.c` — scoped 2026-07-13, real range-Doppler SAR focuser, not a
+  quick win.** The actual focusing math (range/azimuth compression) lives
+  in `gmtsar/gmtsar/esarp.c` plus 10 linked files (~1150 total C lines:
+  `rng_ref.c`, `rng_cmp.c`, `trans_col.c`, `rmpatch.c`, `acpatch.c`,
+  `aastretch.c`, `shift.c`, `radopp.c`, `fft_bins.c`, `intp_coef.c`,
+  `spline.c`), sharing ~30 PRM-derived globals via `soi.h` (no clean
+  function signatures). Full findings:
+  - **FFT**: GMT's own `GMT_FFT_1D()` API, runtime-dispatched inside
+    libgmt — on this machine (`ldd bin/esarp`), that resolves to
+    single-precision FFTW3 + threads. The exact backend is an external
+    GMT-build detail, not fixed by this repo — any future port's "bit-
+    faithful" oracle is only as stable as the linked GMT build; pin and
+    document the GMT version before treating output as ground truth.
+  - **Structure**: almost entirely per-line/per-column, not batched — one
+    1-D FFT per range line (`rng_cmp.c`), one per range-bin column
+    (`trans_col.c`), one forward+inverse pair per range bin in azimuth
+    compression (`acpatch.c`). This is exactly a textbook batched-FFT
+    vectorization case (`scipy.fft.fft(..., axis=..., workers=-1)`) —
+    genuinely promising, 50-100x plausible, but batched vs. per-line FFTW3
+    calls are different call sequences and parity must be proven
+    empirically, not assumed.
+  - **Algorithm**: a real range-Doppler focuser with range cell migration
+    correction (`rmpatch.c`, 8-point sinc resampling — not
+    `scipy.signal.resample`), range-varying azimuth matched filtering with
+    a half-spectrum-split phase treatment (`acpatch.c`), and an optional
+    azimuth stretch using a custom 1970-Goddard-algorithm cubic spline
+    (`spline.c`) — explicitly NOT `scipy.interpolate.CubicSpline`'s
+    boundary conditions. `spline.c`'s own header admits an *unexplained*
+    Fortran-vs-C divergence at extrapolation boundaries, never resolved —
+    a live known-quirk any port must get explicit sign-off on reproducing.
+  - **Reference literature**: none in-tree (unlike `gmt_surface_py`, which
+    had a citable Smith & Wessel 1990 paper). Sourced "from Howard Zebker
+    ... Stanford interferometry package" (`esarp.c:7-8`) with ad hoc
+    1996-2011 modifications layered on — correctness must be inferred by
+    reading the C line-by-line, high risk of library-name-alike
+    substitution (e.g. reaching for `scipy.signal.resample` where the C
+    does something bespoke) on the RCMC and azimuth-compression stages.
+  - **Test data**: already on disk, no new download needed —
+    `work/csh_test/ALOS_Baja_EQ/raw/*.raw` + `.PRM` (esarp's exact input
+    pair, 747MB), with a regenerable C oracle (`esarp` binary present,
+    single CLI call, well under a minute to rerun fresh — existing `.SLC`
+    outputs there are stale, per Rule 9, and must be regenerated, not
+    reused as-is).
+  - **Effort**: calibrated against today's 7-preprocessor-in-one-session
+    baseline, this is NOT a one-session job — realistically **1-2 weeks**
+    end-to-end (3-5x a preprocessor's effort), with RCMC and azimuth
+    compression individually harder than any of the 7 preprocessors
+    combined, and exactly the "vectorize a branch-dependent algorithm"
+    trap Rule 7 warns about.
+  - **Verdict**: still worth doing eventually — the batched-FFT case is
+    real and test-data logistics are solved — but it needs to be staffed
+    as a dedicated 1-2 week project with explicit sign-off on the
+    `spline.c` extrapolation question and a pinned GMT/FFTW version for
+    the oracle, not slotted in as "the next quick preprocessor-style
+    port." The old "highest-leverage if focusing speed is ever
+    prioritized" framing undersold both the difficulty and the specific
+    two-checkpoint risk.
 
 ## Open questions carried over from PLAN.md (2026-07-13)
 
