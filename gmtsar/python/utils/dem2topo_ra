@@ -119,7 +119,7 @@ except ImportError as _e:
 
 
 def _triangulate_dispatch(xyz_path: str, out_grd: str, region_str: str,
-                          xinc: float, yinc: float) -> None:
+                          xinc: float, yinc: float, v_flag: str = '') -> None:
     """Dispatch `gmt triangulate <xyz> -R<region> -I<xinc>/<yinc> -bi3d
     -G<out> -r` to the py port or gmt subprocess.
 
@@ -127,6 +127,12 @@ def _triangulate_dispatch(xyz_path: str, out_grd: str, region_str: str,
               module-level comment above) -> in-process scipy.spatial
               Delaunay port. GMTSAR_TRIANGULATE_PY=0 (default) -> `gmt
               triangulate` subprocess.
+
+    v_flag: caller's resolved `-V`/`''` GMT verbosity flag (the
+            module-level `V` local in dem2topo_ra() is not visible here --
+            passing it explicitly avoids the NameError this function had
+            on its subprocess branch, the only branch exercised at the
+            default gate, until 2026-07-13).
     """
     use_py = os.environ.get("GMTSAR_TRIANGULATE_PY", "0") == "1"
     if use_py and _HAVE_TRIANGULATE_PY:
@@ -135,7 +141,7 @@ def _triangulate_dispatch(xyz_path: str, out_grd: str, region_str: str,
                              xinc=xinc, yinc=yinc, pixel_reg=True)
     else:
         run(f"gmt triangulate {xyz_path} -R{region_str} -I{xinc}/{yinc} "
-            f"-bi3d -G{out_grd} -r {V}")
+            f"-bi3d -G{out_grd} -r {v_flag}")
 
 
 def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
@@ -890,7 +896,7 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
             # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
             # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
-            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 2)
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 2, v_flag=V)
             _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 16, "mean.rat")
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
@@ -960,7 +966,7 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
             # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
             # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
-            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 4)
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 4, v_flag=V)
             _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 32, "mean.rat")
             _surface_or_run(
                 "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",

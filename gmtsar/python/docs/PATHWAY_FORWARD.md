@@ -35,6 +35,23 @@ that's the next real-world confirmation step.
 
 ## Known bug, not yet fixed
 
+- **`proj_ra2ll_fast`'s NaN mask boundary drifts by 1 pixel column vs.
+  the `proj_ra2ll` subprocess, on ~8 pixels out of 1.29M (0.0006%),
+  found 2026-07-13 by `bin_py/tests/test_proj_ra2ll_fast.py::
+  TestProjRa2llFastVsSubprocess::test_all_files_bit_exact` (a full
+  `bin_py/tests/` run, not touched by this session's changes — pre-
+  existing since at least v2.5.4, `ccb516f`). All 8 pixels sit at the
+  edge of the valid-data footprint (e.g. `(985,235)`: ref=0.846,
+  fast=NaN; `(985,236)`: ref=NaN, fast=0.846 — a single-column boundary
+  shift, not a value error). Same class of issue as the documented
+  proj_ra2ll region-rounding divergence (west-edge cell-count mismatch
+  on some TOPS scenes). Negligible in magnitude — explains why the real
+  21-case sweep (which uses this exact `geocode` -> `proj_ra2ll_fast`
+  path with a shared cache, same as the test) still passes SSIM/RMS
+  thresholds cleanly; not chased further this session since it's
+  unrelated to any of today's changes and doesn't move any real
+  pass/fail outcome. Worth a real fix if the boundary starts mattering
+  for a coverage-sensitive case.
 - **`utils/tkGUI.gmtsar:86,97`**: `self.gmtsarPath` silently defaults to
   the literal string `'python'` when `p2p_processing` isn't already on
   `$PATH` at GUI launch time, and that value gets prepended into
