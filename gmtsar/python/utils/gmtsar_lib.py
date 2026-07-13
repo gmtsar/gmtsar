@@ -172,10 +172,10 @@ def run(cmd):
 def run_make_slc_tsx(xml_path, image_path, output_prefix):
     """Env-gated dispatcher for make_slc_tsx (preproc/TSX_preproc).
 
-    GMTSAR_TSX_PREPROC_PY=1  -> in-process Python port (make_slc_tsx_py.py).
-    GMTSAR_TSX_PREPROC_PY unset/0 (DEFAULT) -> shells out to the C binary,
-        exactly as before this port existed. Instant rollback: unset the
-        env var or set it to 0.
+    GMTSAR_TSX_PREPROC_PY unset/1 (DEFAULT since 2026-07-13) -> in-process
+        Python port (make_slc_tsx_py.py).
+    GMTSAR_TSX_PREPROC_PY=0 -> shells out to the C binary. Instant
+        rollback: set the env var to 0.
 
     Parity: verified byte-for-byte (.PRM, .LED, .SLC) against the real C
     binary on two real TSX scenes (TSX_SLC_Hawaii dataset,
@@ -183,9 +183,11 @@ def run_make_slc_tsx(xml_path, image_path, output_prefix):
     gmtsar/python/bin_py/tests/test_make_slc_tsx.py. Performance: as a
     one-shot CLI call the Python port is slower than C (numpy import is a
     ~2.5s fixed tax); amortized (warm interpreter) it is roughly on par.
-    Default is OFF until this is proven a net win in a real pipeline run.
+    pre_proc is only ~7.8% of total case wall time, and a pure-Python
+    path removes the C-compiler dependency for this binary -- see
+    docs/PATHWAY_FORWARD.md for the measured aggregate impact.
     """
-    if os.environ.get("GMTSAR_TSX_PREPROC_PY", "0") == "1":
+    if os.environ.get("GMTSAR_TSX_PREPROC_PY", "1") == "1":
         print(" ")
         print(f"[make_slc_tsx_py] {xml_path} {image_path} {output_prefix}")
         import time as _t

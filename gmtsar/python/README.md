@@ -84,7 +84,7 @@ For each case, `tests/runner.py`:
 Run sweep (full / fast / single case):
 ```
 bash gmtsar/python/tests/sweep.sh             # full sweep, all 21 cases (~3 h cached / ~8 h first run; Ridgecrest-bound)
-bash gmtsar/python/tests/sweep.sh --fast      # 9 SAT families (~30-40 min)
+bash gmtsar/python/tests/sweep.sh --fast      # 12 cases (~27 min, bounded by ENVI_Baja_EQ)
 TEST_CASES=RS2_SLC_Hawaii bash gmtsar/python/tests/sweep.sh --fast   # single case (works with --full too)
 ```
 

@@ -7,7 +7,7 @@
 # --smoke/--unit/--sample/--smart_fast history if ever needed again):
 #   bash sweep.sh                     # full sweep, all 21 cases (~3 h)
 #   bash sweep.sh --full              # same as above, explicit
-#   bash sweep.sh --fast              # 9 SAT families (~30-40 min)
+#   bash sweep.sh --fast              # 12 cases (~27 min, bounded by ENVI_Baja_EQ)
 #   TEST_CASES=<name> bash sweep.sh --fast   # single case (works with --full too)
 #   bash sweep.sh --fast --parallel 6        # cap concurrent cases (default 12)
 #
@@ -18,6 +18,7 @@
 set -u
 
 _TIER_SET=''
+_PARALLEL=12
 while [ $# -gt 0 ]; do
     case "$1" in
         --fast|fast)         export TEST_TIER=fast; _TIER_SET=1; shift ;;
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
             if [ -z "${2:-}" ] || ! echo "${2}" | grep -qE '^[0-9]+$'; then
                 echo "sweep.sh: --parallel requires a numeric argument" >&2; exit 2
             fi
-            export MAX_PARALLEL="$2"; shift 2 ;;
+            _PARALLEL="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1 (try --fast / --full / --parallel N / --help; for a single case set TEST_CASES=<name>)" >&2; exit 2 ;;
@@ -103,7 +104,7 @@ PERF_FILE="$WORK/perf_$(date +%Y%m%d_%H%M%S).txt"
     echo "=== sweep ==="
     echo "started: $(ts)"
     echo "cases: $cases"
-    echo "max_parallel: ${MAX_PARALLEL:-12}"
+    echo "max_parallel: $_PARALLEL"
 } > "$PERF_FILE"
 log "hw+sw snapshot → $PERF_FILE"
 
@@ -239,13 +240,14 @@ for c in $cases; do
 done
 
 # Dynamic scheduling with bounded parallelism. Pick whichever case's wget has
-# finished first; launch up to MAX_PARALLEL case runs concurrently. Each case
-# run uses ~2 cores (csh + python pipelines in parallel within the case), so
-# MAX_PARALLEL=12 = ~24 cores busy on a 64-core box; FFTW shim keeps each FFT
+# finished first; launch up to _PARALLEL case runs concurrently (set via
+# --parallel N, default 12 — see arg parsing above; no env var, by design,
+# so a stray shell variable can't silently change behavior). Each case run
+# uses ~2 cores (csh + python pipelines in parallel within the case), so the
+# default of 12 = ~24 cores busy on a 64-core box; FFTW shim keeps each FFT
 # serial so this stays well under the core count. Watch swap if you push higher
 # — heavy cases (S1_Ridgecrest_EQ, ALOS2_SCAN_SSAF) can RAM-pressure the box.
-MAX_PARALLEL=${MAX_PARALLEL:-12}
-log "max parallel cases: $MAX_PARALLEL"
+log "max parallel cases: $_PARALLEL"
 
 run_case() {
     local c=$1
@@ -264,7 +266,7 @@ run_case() {
 remaining="$cases"
 while [ -n "$(echo "$remaining" | tr -d ' ')" ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
     # If we've hit the parallelism cap, wait for any case to finish.
-    if [ $(jobs -rp | wc -l) -ge "$MAX_PARALLEL" ]; then
+    if [ $(jobs -rp | wc -l) -ge "$_PARALLEL" ]; then
         wait -n 2>/dev/null || true
         continue
     fi
@@ -319,7 +321,7 @@ while [ -n "$(echo "$remaining" | tr -d ' ')" ] || [ $(jobs -rp | wc -l) -gt 0 ]
         continue
     fi
     log "DOWNLOAD OK $next ($(du -h "${TARBALL[$next]}" | cut -f1))"
-    # Launch this case in a background subshell — up to MAX_PARALLEL run at once.
+    # Launch this case in a background subshell — up to $_PARALLEL run at once.
     run_case "$next" &
 done
 

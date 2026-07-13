@@ -37,13 +37,26 @@ def _use_nsr_preproc_py() -> bool:
 
 
 def _get_config(path, key, default=""):
-    """grep <key> <path> | awk '{print $3}'."""
+    """grep <key> <path> | awk '{print $3}', with quote-stripping.
+
+    Found 2026-07-13: staged config.py values are Python string literals
+    (e.g. region_cut = '18000/23000/47000/53000'), so naive line.split()
+    returned the value WITH its surrounding quote characters intact. The
+    C dispatch path never noticed -- subprocess/shell quoting silently
+    stripped them before the C binary saw its argv. The in-process Python
+    path has no shell in between, so the literal leading quote broke
+    get_range()'s _atoi() (stops at the first non-digit, returns 0 for
+    the leading token) -- xl silently became 0 instead of 18000, corrupting
+    every downstream dimension. Caught by a real end-to-end sweep, not the
+    isolated make_slc_nsr_py.py parity test (which never exercises this
+    config-parsing code path at all).
+    """
     with open(path) as f:
         for line in f:
             if key in line:
                 parts = line.split()
                 if len(parts) >= 3:
-                    return parts[2]
+                    return parts[2].strip("'\"")
     return default
 
 
