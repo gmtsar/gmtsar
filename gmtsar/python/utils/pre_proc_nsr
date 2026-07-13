@@ -14,10 +14,26 @@ full NISAR_L1_PR_RSLC_... filename.
 
 Usage:  pre_proc_nsr file.h5 config.txt
 Output: <NSR_YYYYMMDD>A.{PRM,SLC,LED} and <NSR_YYYYMMDD>B.{PRM,SLC,LED}
+
+``GMTSAR_NSR_PREPROC_PY`` env-gate (default OFF, v2.3.9):
+
+* default / ``GMTSAR_NSR_PREPROC_PY=0``: subprocess `make_slc_nsr` C binary
+  (unchanged behavior).
+* ``GMTSAR_NSR_PREPROC_PY=1``: in-process `make_slc_nsr_py` (Python port,
+  see utils/make_slc_nsr_py.py). Verified byte-for-byte identical .SLC/.PRM/
+  .LED output vs the C binary on real NISAR_Ethiopia data (both A and B
+  frequency paths) — see gmtsar/python/bin_py/tests/test_make_slc_nsr_py.py.
+  Requires h5py (gmtsar/python/requirements.txt). Default OFF until this
+  path has run through a full test-suite sweep; instant rollback by unsetting
+  the env var.
 """
 import os
 import sys
 from gmtsar_lib import run
+
+
+def _use_nsr_preproc_py() -> bool:
+    return os.environ.get("GMTSAR_NSR_PREPROC_PY", "0") == "1"
 
 
 def _get_config(path, key, default=""):
@@ -29,6 +45,19 @@ def _get_config(path, key, default=""):
                 if len(parts) >= 3:
                     return parts[2]
     return default
+
+
+def _make_slc_nsr(h5_file, out_stem, mode, slc_factor, region_cut):
+    """Dispatch to the in-process Python port or the C-binary subprocess,
+    per GMTSAR_NSR_PREPROC_PY."""
+    if _use_nsr_preproc_py():
+        from make_slc_nsr_py import make_slc_nsr
+
+        print(" ")
+        print(f"make_slc_nsr_py {h5_file} {out_stem} {mode} {slc_factor} {region_cut}")
+        make_slc_nsr(h5_file, out_stem, mode, float(slc_factor), region_cut)
+    else:
+        run(f"make_slc_nsr {h5_file} {out_stem} {mode} {slc_factor} {region_cut}")
 
 
 def pre_proc_nsr():
@@ -52,14 +81,14 @@ def pre_proc_nsr():
 
     # A frequency
     print(f"{stem}.PRM")
-    run(f"make_slc_nsr {h5_file} {stem}A AHH {SLC_factor} {region_cut}")
+    _make_slc_nsr(h5_file, f"{stem}A", "AHH", SLC_factor, region_cut)
     run(f"calc_dop_orb {stem}A.PRM tmp 0 0")
     run(f"cat tmp >> {stem}A.PRM")
     run("rm -f tmp")
 
     # B frequency
     print(f"{stem}.PRM")
-    run(f"make_slc_nsr {h5_file} {stem}B BHH {SLC_factor} {region_cut}")
+    _make_slc_nsr(h5_file, f"{stem}B", "BHH", SLC_factor, region_cut)
     run(f"calc_dop_orb {stem}B.PRM tmp 0 0")
     run(f"cat tmp >> {stem}B.PRM")
     run("rm -f tmp")

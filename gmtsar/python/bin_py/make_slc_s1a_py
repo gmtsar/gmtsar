@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""make_slc_s1a_py -- CLI-compatible drop-in for the C binary
+preproc/S1A_preproc/src_swath/make_slc_s1a. All numerical/parsing work is
+delegated to utils.s1a_preproc_lib.make_slc_s1a, the byte-faithful port
+verified against the real C binary on real Sentinel-1 TOPS data (see
+bin_py/tests/test_make_slc_s1a_py.py).
+
+Usage matches the C binary exactly:
+    make_slc_s1a_py name_of_xml_file name_of_tiff_file name_output
+
+Output: <name_output>.SLC <name_output>.PRM <name_output>.LED
+
+Not wired in by default. Enable via GMTSAR_S1A_PREPROC_PY=1 at the
+pre_proc call site (utils/pre_proc); instant rollback by leaving the env
+var unset (falls back to the real make_slc_s1a C binary on PATH).
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils"))
+
+from s1a_preproc_lib import make_slc_s1a  # noqa: E402
+
+USAGE = (
+    "\n\nUsage: make_slc_s1a_py name_of_xml_file name_of_tiff_file name_output\n"
+    "\nExample: make_slc_s1a_py s1a-s1-slc-vv-20140807.xml "
+    "s1a-s1-slc-vv-20140807.tiff S1Avv_20140807\n"
+    "\nOutput: S1Avv_20140807.SLC S1Avv_20140807.PRM S1Avv_20140807.LED\n"
+)
+
+
+def main(argv):
+    if len(argv) < 4:
+        sys.stderr.write(USAGE)
+        return 1
+    xml_file, tiff_file, out_prefix = argv[1], argv[2], argv[3]
+    if not os.path.exists(xml_file):
+        raise FileNotFoundError(f"Couldn't open xml file: {xml_file}")
+    if not os.path.exists(tiff_file):
+        raise FileNotFoundError(f"Couldn't open tiff file: {tiff_file}")
+    make_slc_s1a(xml_file, tiff_file, out_prefix)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -10,7 +10,35 @@
 
 import sys, os, re, configparser
 import subprocess, glob
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+
+def _rs2_preproc_py_enabled():
+    """GMTSAR_RS2_PREPROC_PY controls make_slc_rs2 dispatch.
+
+    Default OFF (matches project_rules.md Rule 1's dispatcher
+    pattern): the C binary `make_slc_rs2` remains the default path
+    until this in-process port (utils/make_slc_rs2_py.py) has more
+    field mileage. Verified byte-identical to the C binary on
+    RS2_SLC_Hawaii (both scenes, .PRM/.LED/.SLC) but ~1.3x SLOWER
+    (I/O-bound; see make_slc_rs2_py.py module docstring). Set
+    GMTSAR_RS2_PREPROC_PY=1 to use the in-process port.
+    """
+    return os.environ.get('GMTSAR_RS2_PREPROC_PY', '0') == '1'
+
+
+def _make_slc_rs2(xml_file, tif_file, out_prefix):
+    """Dispatch make_slc_rs2: in-process py port (opt-in) or the
+    `make_slc_rs2` C binary subprocess (default). Selection happens
+    BEFORE the call — no post-hoc except-fallback (Rule 1)."""
+    if _rs2_preproc_py_enabled():
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from make_slc_rs2_py import make_slc_rs2
+        print(' ')
+        print(f'[make_slc_rs2_py] {xml_file} {tif_file} {out_prefix}')
+        make_slc_rs2(xml_file, tif_file, out_prefix)
+    else:
+        run('make_slc_rs2 ' + xml_file + ' ' + tif_file + ' ' + out_prefix)
 
 def preprocAlos(SAT, master, aligned, skip_master, cmdAppendix):
     print(' ')
@@ -233,28 +261,47 @@ def fdb2fbs(SAT, master, aligned, prefix=''):
         with open(f'ALOS_fbd2fbs_log_{imageName}','w') as f:
             f.write(f'{message}\n')
 
-def preprocOthers(SAT, master, aligned, skip_master, RAD): 
+def _run_make_slc_csk(h5_file, out_prefix):
+    """CSK_SLC make_slc_csk dispatcher.
+
+    Default OFF (C binary). Set GMTSAR_CSK_MAKE_SLC_PY=1 to route through
+    the Python port (gmtsar/python/utils/make_slc_csk_py.py), which is
+    byte-for-byte parity-verified against the real C `make_slc_csk` binary
+    on real CSKS2 SCS_B acquisitions -- see
+    gmtsar/python/bin_py/tests/test_make_slc_csk_parity.py. Instant
+    rollback: unset the env var (or set to 0) to go back to the C binary.
+    """
+    if os.environ.get("GMTSAR_CSK_MAKE_SLC_PY", "0") == "1":
+        print(' ')
+        print(f'make_slc_csk_py {h5_file} {out_prefix}  [GMTSAR_CSK_MAKE_SLC_PY=1]')
+        import make_slc_csk_py
+        make_slc_csk_py.run(h5_file, out_prefix)
+    else:
+        run('make_slc_csk '+h5_file+' '+out_prefix)
+
+
+def preprocOthers(SAT, master, aligned, skip_master, RAD):
     print(' ')
     print('PREPROC: processing CSK/TSX/RS2/S1_STRIP/GF3/LT1 SLC data - START ... ...')
     print(' ')
-    
+
     if SAT=='CSK_SLC':
         if skip_master==0 or skip_master==2:
-            run('make_slc_csk '+master+'.h5 '+master)
+            _run_make_slc_csk(master+'.h5', master)
         if skip_master==0 or skip_master==1:
-            run('make_slc_csk '+aligned+'.h5 '+aligned)
+            _run_make_slc_csk(aligned+'.h5', aligned)
     elif SAT=='TSX':
         if skip_master==0 or skip_master==2:
-            run('make_slc_tsx '+master+'.xml '+master+'.cos '+master)
+            run_make_slc_tsx(master+'.xml', master+'.cos', master)
         if skip_master==0 or skip_master==1:
-            run('make_slc_tsx '+aligned+'.xml '+aligned+'.cos '+aligned)
+            run_make_slc_tsx(aligned+'.xml', aligned+'.cos', aligned)
     elif SAT=='RS2':
         if skip_master==0 or skip_master==2:
-            run('make_slc_rs2 '+master+'.xml '+master+'.tif '+master)
+            _make_slc_rs2(master+'.xml', master+'.tif', master)
             file_shuttle(master+'.LED','save-'+master+'.LED','mv')
             run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
         if skip_master==0 or skip_master==1:
-            run('make_slc_rs2 '+aligned+'.xml '+aligned+'.tif '+aligned)
+            _make_slc_rs2(aligned+'.xml', aligned+'.tif', aligned)
             file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
             run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
     elif SAT=='GF3':
@@ -268,12 +315,19 @@ def preprocOthers(SAT, master, aligned, skip_master, RAD):
         if skip_master==0 or skip_master==1:
             run('make_slc_lt1 '+aligned+'.xml '+aligned+'.tiff '+aligned) 
     else:
+        # GMTSAR_S1A_PREPROC_PY=1 opts into the Python port of make_slc_s1a
+        # (utils/s1a_preproc_lib.py, wrapped by bin_py/make_slc_s1a_py).
+        # Verified byte-identical PRM/LED/SLC vs the C binary on two real
+        # Sentinel-1 TOPS scenes (bin_py/tests/test_make_slc_s1a_py.py).
+        # Default OFF -- instant rollback by leaving the env var unset.
+        make_slc_s1a_cmd = ('make_slc_s1a_py' if os.environ.get('GMTSAR_S1A_PREPROC_PY', '0') == '1'
+                             else 'make_slc_s1a')
         if skip_master==0 or skip_master==2:
-            run('make_slc_s1a '+master+'.xml '+master+'.tif '+master)
+            run(make_slc_s1a_cmd+' '+master+'.xml '+master+'.tif '+master)
             file_shuttle(master+'.LED','save-'+master+'.LED','mv')
             run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
         if skip_master==0 or skip_master==1:
-            run('make_slc_s1a '+aligned+'.xml '+aligned+'.tif '+aligned)
+            run(make_slc_s1a_cmd+' '+aligned+'.xml '+aligned+'.tif '+aligned)
             file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
             run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
     

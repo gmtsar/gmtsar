@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 
-from gmtsar_lib import run, grep_value, check_file_report
+from gmtsar_lib import run, run_make_slc_tsx, grep_value, check_file_report
 
 
 _SUPPORTED_SATS = {"ALOS", "ENVI", "ENVI_SLC", "ERS", "TSX"}
@@ -86,7 +86,7 @@ def _preprocess_master(SAT, master, commandline, earth_radius):
     elif SAT == "TSX":
         prm = f"{master}.PRM"
         if not (check_file_report(f"{master}.raw") and check_file_report(prm)):
-            run(f"make_slc_tsx {master}.xml {master}.cos {master}")
+            run_make_slc_tsx(f"{master}.xml", f"{master}.cos", master)
             run(f"cp {master}.PRM {master}.PRM0")
             run(f"calc_dop_orb {master}.PRM0 {master}.log 0 0")
             run(f"cat {master}.PRM0 {master}.log > {master}.PRM")
@@ -122,7 +122,7 @@ def _preprocess_aligned(SAT, master, aligned_token, NEAR, RAD, FD1, npatch, rsr_
     elif SAT == "TSX":
         aligned = aligned_token
         if not (check_file_report(f"{aligned}.SLC") and check_file_report(f"{aligned}.LED")):
-            run(f"make_slc_tsx {aligned}.xml {aligned}.cos {aligned}")
+            run_make_slc_tsx(f"{aligned}.xml", f"{aligned}.cos", aligned)
         rad_now = grep_value(f"{master}.PRM", "earth_radius", 3)
         run(f"cp {aligned}.PRM {aligned}.PRM0")
         run(f"calc_dop_orb {aligned}.PRM0 {aligned}.log {rad_now} 0")

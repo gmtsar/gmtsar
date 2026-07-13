@@ -169,6 +169,40 @@ def run(cmd):
     if rc != 0:
         print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
 
+def run_make_slc_tsx(xml_path, image_path, output_prefix):
+    """Env-gated dispatcher for make_slc_tsx (preproc/TSX_preproc).
+
+    GMTSAR_TSX_PREPROC_PY=1  -> in-process Python port (make_slc_tsx_py.py).
+    GMTSAR_TSX_PREPROC_PY unset/0 (DEFAULT) -> shells out to the C binary,
+        exactly as before this port existed. Instant rollback: unset the
+        env var or set it to 0.
+
+    Parity: verified byte-for-byte (.PRM, .LED, .SLC) against the real C
+    binary on two real TSX scenes (TSX_SLC_Hawaii dataset,
+    TSX20120615/TSX20121208). See
+    gmtsar/python/bin_py/tests/test_make_slc_tsx.py. Performance: as a
+    one-shot CLI call the Python port is slower than C (numpy import is a
+    ~2.5s fixed tax); amortized (warm interpreter) it is roughly on par.
+    Default is OFF until this is proven a net win in a real pipeline run.
+    """
+    if os.environ.get("GMTSAR_TSX_PREPROC_PY", "0") == "1":
+        print(" ")
+        print(f"[make_slc_tsx_py] {xml_path} {image_path} {output_prefix}")
+        import time as _t
+        _t0 = _t.time()
+        import make_slc_tsx_py
+        make_slc_tsx_py.make_slc_tsx(xml_path, image_path, output_prefix)
+        _dt = _t.time() - _t0
+        try:
+            from profiler import record as _prof_record  # type: ignore
+            _prof_record(f"make_slc_tsx_py {xml_path} {image_path} {output_prefix}",
+                         _dt, backend="py_inproc")
+        except ImportError:
+            pass
+    else:
+        run(f"make_slc_tsx {xml_path} {image_path} {output_prefix}")
+
+
 def renameMasterAlignedForS1tops(master0, aligned0):
     print('Renaming master and aligned for SAT==S1_TOPS')
     master = 'S1_'+master0[15:15+8]+'_'+master0[24:24+6]+'_F'+master0[6:7]

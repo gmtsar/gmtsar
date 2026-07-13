@@ -565,3 +565,48 @@ A/B) must:
 
 See Rule 6 for golden/oracle-dir protection, which also applies to the
 scratch workdirs these sweeps create.
+
+## 13. "Ported" and "wired ON by default" are different states — track both
+
+A module passing Rule 7's parity gate does not mean it's what actually
+runs. As of 2026-07-12, most freshly-ported modules — including real
+speed *wins* (`make_slc_s1a_py` +1.4-1.8x, `make_slc_nsr_py` +19x,
+`gmt_blockmean_py` +3.7-19.3x) — are still wired OFF by default, pending
+a full-sweep review beyond their isolated file-level parity+timing test.
+Only a module that's been through that sweep, or that 1:1-replaces an
+already-default port with proven superiority (e.g. the `resamp_py`
+re-wire), should be flipped to default ON.
+
+**Every module lives in exactly one of these states — record which one
+in `docs/PATHWAY_FORWARD.md`, not just "ported: yes/no":**
+
+1. **Wired ON by default** — passed both gates (bit-identical + equal-
+   or-faster) at its actual call site(s), promoted after review.
+2. **Ported, wired but OFF by default** — parity proven, gate-2 evidence
+   exists (win or tie), but not yet promoted (pending a full sweep, or a
+   deliberate "prove it twice" pause). Do not describe these as "not
+   ported."
+3. **Ported, wired OFF by default, and correctly so** — parity proven,
+   gate-2 *failed* (a real, measured loss). Losing is a valid, wanted
+   outcome per Rule 9's discipline — report it, don't hide it, don't
+   re-attempt without a new idea.
+4. **Ported, no dispatcher/wiring exists at all** — parity proven on
+   some subset, but no call site was ever connected (e.g.
+   `ALOS_pre_process_py`'s LED/orbit gap, `make_slc_csk2_py`'s missing
+   CSG test fixture in the repo).
+5. **Never attempted** — no Python code exists. Split further into
+   *worth attempting* vs. *judged not worth it*, with the one-line
+   reason each (see `PATHWAY_FORWARD.md`'s own tables) — "never
+   attempted" is not the same claim as "can't beat C," and must not be
+   asserted without either a real attempt or a stated reason.
+
+**When you land a new port** (yourself or via a dispatched agent):
+update `docs/PATHWAY_FORWARD.md` with its state (1-5 above), the gate
+evidence, and the file:line of its dispatcher — in the same edit that
+lands the code, not as a follow-up. This is what let a same-day audit
+catch two stale "done" claims (`SAT_look`, `iono_gauss`) that had
+drifted from the code; skipping this step is how those claims happened
+in the first place.
+
+See Rule 6 for golden/oracle-dir protection, which also applies to the
+scratch workdirs these sweeps create.
