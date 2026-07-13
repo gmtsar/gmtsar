@@ -382,6 +382,94 @@ class TestXyz2GrdRoundTrip(unittest.TestCase):
 
 
 @unittest.skipUnless(_IMPORTED, f"gmt_grd_io import failed: {_IMPORT_ERR}")
+class TestSymlinkAliasedWrite(unittest.TestCase):
+    """Regression test for the ALOS_haiti phasefilt_ll dimension-mismatch
+    bug (2026-07): several csh stages (gmtsar/csh/snaphu.csh:41,52 —
+    `ln -s phasefilt.grd phase_patch.grd` then
+    `gmt grdmath phase_patch.grd landmask_ra_patch.grd MUL = phase_patch.grd`)
+    rely on GMT's netCDF writer following a symlink and mutating the TARGET
+    file in place. `write_gmt_grd` used to `os.remove(grd_path)` before
+    writing, which — for a symlinked path — deletes only the symlink and
+    leaves the target untouched, silently breaking that C-mirrored side
+    effect. utils/snaphu.py hit this exactly: its in-process `grdmath2`
+    (GMTSAR_GRDMATH_PY, default ON) wrote the landmask-masked result to
+    the `phase_patch.grd` symlink, but `phasefilt.grd` itself never picked
+    up the landmask NaNs — a permanent data divergence from the csh/C
+    reference that only showed up downstream as a proj_ra2ll.csh
+    data-driven `-R` region / pixel-dimension mismatch on the geocoded
+    phasefilt_ll / phasefilt_mask_ll / phase_mask_ll grids.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="test_gmt_grd_io_symlink_")
+        self.x = np.arange(6, dtype=float)
+        self.y = np.arange(5, dtype=float)
+        self.z0 = np.ones((5, 6), dtype=np.float32)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_through_symlink_mutates_target_in_place(self):
+        target = os.path.join(self.tmp, "phasefilt.grd")
+        alias = os.path.join(self.tmp, "phase_patch.grd")
+        write_gmt_grd(target, self.z0, self.x, self.y, history="orig")
+        os.symlink(target, alias)
+        self.assertTrue(os.path.islink(alias))
+
+        masked = self.z0 * 2.0
+        write_gmt_grd(alias, masked, self.x, self.y, history="masked")
+
+        # The symlink itself must survive the write (matches `gmt grdmath`;
+        # see test_symlink_write_matches_real_gmt_grdmath below for the
+        # C-binary ground truth this mirrors).
+        self.assertTrue(os.path.islink(alias),
+                        "write_gmt_grd must not replace a symlinked "
+                        "output path with a regular file")
+        zt, _, _, _ = read_gmt_grd(target)
+        za, _, _, _ = read_gmt_grd(alias)
+        np.testing.assert_allclose(zt, masked, rtol=0, atol=1e-6)
+        np.testing.assert_allclose(za, masked, rtol=0, atol=1e-6)
+
+    def test_regular_non_symlink_overwrite_still_works(self):
+        """Guard against a regression in the other direction: a plain
+        (non-symlink) path must still be freely overwritable."""
+        path = os.path.join(self.tmp, "plain.grd")
+        write_gmt_grd(path, self.z0, self.x, self.y, history="v1")
+        write_gmt_grd(path, self.z0 * 3.0, self.x, self.y, history="v2")
+        self.assertFalse(os.path.islink(path))
+        zr, _, _, _ = read_gmt_grd(path)
+        np.testing.assert_allclose(zr, self.z0 * 3.0, rtol=0, atol=1e-6)
+
+    @unittest.skipUnless(_HAS_GMT, "gmt not on PATH and not in expected conda env")
+    def test_symlink_write_matches_real_gmt_grdmath(self):
+        """Ground truth: run the ACTUAL `gmt grdmath` C binary through the
+        same alias-then-overwrite pattern snaphu.csh uses, and assert
+        write_gmt_grd reproduces the same symlink-preserving,
+        target-mutating behavior it exhibits."""
+        # Reference side: real `gmt grdmath` writing through a symlink.
+        ref_target = os.path.join(self.tmp, "ref_phasefilt.grd")
+        ref_alias = os.path.join(self.tmp, "ref_phase_patch.grd")
+        write_gmt_grd(ref_target, self.z0, self.x, self.y, history="orig")
+        os.symlink(ref_target, ref_alias)
+        cp = _run_gmt(f"grdmath {ref_alias} 2 MUL = {ref_alias}")
+        self.assertEqual(cp.returncode, 0, msg=cp.stderr)
+        self.assertTrue(os.path.islink(ref_alias),
+                        "ground truth: gmt grdmath preserves the symlink")
+        z_ref, _, _, _ = read_gmt_grd(ref_target)
+
+        # write_gmt_grd side: same pattern via the pure-Python writer.
+        py_target = os.path.join(self.tmp, "py_phasefilt.grd")
+        py_alias = os.path.join(self.tmp, "py_phase_patch.grd")
+        write_gmt_grd(py_target, self.z0, self.x, self.y, history="orig")
+        os.symlink(py_target, py_alias)
+        write_gmt_grd(py_alias, self.z0 * 2.0, self.x, self.y, history="masked")
+        self.assertTrue(os.path.islink(py_alias))
+        z_py, _, _, _ = read_gmt_grd(py_target)
+
+        np.testing.assert_allclose(z_py, z_ref, rtol=0, atol=1e-6)
+
+
+@unittest.skipUnless(_IMPORTED, f"gmt_grd_io import failed: {_IMPORT_ERR}")
 class TestInputValidation(unittest.TestCase):
     """Input-validation tests do not need `gmt` on PATH; they only
     require netCDF4 (covered by _IMPORTED)."""

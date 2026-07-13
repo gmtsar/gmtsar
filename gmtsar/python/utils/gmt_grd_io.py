@@ -237,14 +237,28 @@ def write_gmt_grd(
         x_units = y_units = None
 
     # ----- write
-    # Remove the file first so netCDF4 doesn't try a partial overwrite
-    if os.path.exists(grd_path):
-        os.remove(grd_path)
+    # Resolve symlinks before removing: several csh stages (snaphu.csh:41/52,
+    # mirrored in snaphu.py) alias e.g. `phase_patch.grd -> phasefilt.grd` and
+    # then write "= phase_patch.grd". `gmt grdmath`'s netCDF writer follows
+    # that symlink and mutates the TARGET file in place (verified against the
+    # gmt 6.x C binary: the symlink survives, the target's data changes). If
+    # we instead `os.remove(grd_path)` on a symlink we only delete the
+    # symlink itself, leaving the target untouched and silently diverging
+    # from the C reference (root cause of the ALOS_haiti phasefilt_ll /
+    # phasefilt_mask_ll / phase_mask_ll dimension mismatch: snaphu.py's
+    # landmask MUL wrote through the `phase_patch.grd` symlink but never
+    # mutated `phasefilt.grd`, so its NaN footprint -- and therefore
+    # proj_ra2ll's data-driven -R region -- diverged from the csh side).
+    # Resolve to the real target so the same follow-symlink-and-mutate-
+    # in-place semantics hold.
+    write_path = os.path.realpath(grd_path) if os.path.islink(grd_path) else grd_path
+    if os.path.exists(write_path):
+        os.remove(write_path)
 
     # NETCDF4_CLASSIC: classic data model (no groups, no compound types,
     # no unlimited dims beyond one) on top of HDF5. Readable by every GMT
     # version since GMT 5, and by `ncdump`, `xarray.open_dataset`, etc.
-    with _nc4.Dataset(grd_path, "w", format="NETCDF4_CLASSIC") as ds:
+    with _nc4.Dataset(write_path, "w", format="NETCDF4_CLASSIC") as ds:
         ds.createDimension(xname, nx)
         ds.createDimension(yname, ny)
 

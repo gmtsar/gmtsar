@@ -1,5 +1,38 @@
 # Pathway forward — what's ported, what's not, and why
 
+## Fixed 2026-07-13: `write_gmt_grd` broke GMT's symlink-follow semantics
+
+Found by a real full 21-case regression sweep (`ALOS_haiti` FAIL:
+`phasefilt_mask_ll.png` py 2190×2180 vs csh 2090×2150 — a genuine
+100+px, data-content divergence, not a synthetic edge case). Root
+cause: `gmtsar/csh/snaphu.csh:41,52` aliases `phase_patch.grd ->
+phasefilt.grd` via symlink, then writes `gmt grdmath ... = phase_patch.grd`
+— GMT's C netCDF writer follows the symlink and mutates the *target*
+file in place (verified directly against the real `gmt` binary).
+`utils/gmt_grd_io.py`'s `write_gmt_grd` (the writer behind
+`GMTSAR_GRDMATH_PY`, default ON since commit `6814636`, 2026-06-18 —
+**not** related to any of today's changes) instead did
+`os.remove(grd_path)` before writing, which on a symlink deletes only
+the symlink, leaving the target's data untouched. `snaphu.py`'s
+landmask-masking step silently never reached `phasefilt.grd`, so its
+NaN footprint diverged from the C reference, and that divergence
+propagated downstream into `proj_ra2ll`'s data-driven `-R` region
+computation — a completely different-looking symptom (pixel dimension
+mismatch) three stages removed from the actual bug.
+
+**Fixed**: `write_gmt_grd` now resolves symlinks (`os.path.realpath`)
+before removing/writing, mirroring GMT's own behavior. Regression test
+added: `bin_py/tests/test_gmt_grd_io.py::TestSymlinkAliasedWrite` (3
+tests, including a C-parity test against the real `gmt grdmath`
+binary — ground truth, not assumption). Validated via real-data replay
+of the ALOS_haiti sweep artifacts: fixed NaN count matches the csh
+reference to 1 pixel, and the geocoded region boundary
+(`x_min`) moved from 286.9875 (buggy) to 287.033333333, an exact match.
+Found and fixed via Mira (`mira-volkov`, agent
+`a13485cfdb69e1d4c`), isolated worktree, no defaults flipped.
+**Not yet re-validated on a fresh full `ALOS_haiti` sweep run** —
+that's the next real-world confirmation step.
+
 ## Known bug, not yet fixed
 
 - **`utils/tkGUI.gmtsar:86,97`**: `self.gmtsarPath` silently defaults to
@@ -73,7 +106,7 @@ below is tagged with exactly one:
 | `phasediff_py`, `phasefilt_py`, `gmt_grdfill_py`, `align_tops`, `make_los_py` | [1-ON, audit gap] | correctness evidence only, **no isolated gate-2 timing exists** | various, see "Tried, kept on C" below |
 | `make_slc_s1a_py` | [1-ON] | +1.4-1.8x, byte-identical; confirmed end-to-end on real S1A_SLC_TOPS_Greece sweep (10/10 SUCCESS, 2026-07-13) | `pre_proc`, `GMTSAR_S1A_PREPROC_PY=1` |
 | `make_slc_nsr_py` | [1-ON] | +19x, byte-identical; confirmed end-to-end on real NISAR_Ethiopia sweep (6/6 SUCCESS, csh 431s->py 152s, 2026-07-13) — found+fixed a real `_get_config` quote-stripping bug along the way, see below | `pre_proc_nsr`, `GMTSAR_NSR_PREPROC_PY=1` |
-| `gmt_blockmean_py` | [2-OFF-pending] | +3.7-19.3x, tolerance-equal (not byte-identical, see below) | `dem2topo_ra`, `GMTSAR_BLOCKMEAN_PY=0` |
+| `gmt_blockmean_py` | [1-ON] | +3.7-19.3x, tolerance-equal (not byte-identical, see below); low-risk flip since only topo_interp_mode=1 (opt-in per-case, not the default) exercises it | `dem2topo_ra`, `GMTSAR_BLOCKMEAN_PY=1` |
 | `make_slc_rs2_py` | [1-ON, Rule 13a] | ~1.3x slower individually; wired anyway (deployment simplicity, pre_proc ~7.8% of total time); confirmed end-to-end (RS2_SLC_Hawaii 6/6 SUCCESS, 1.96x case-level, 2026-07-13) | `pre_proc`, `GMTSAR_RS2_PREPROC_PY=1` |
 | `make_slc_tsx_py` | [1-ON, Rule 13a] | slower individually (numpy import tax); wired anyway; confirmed end-to-end (TSX_SLC_Hawaii 6/6 SUCCESS, 1.19x case-level, 2026-07-13) | `pre_proc`/`gmtsar_lib.py`, `GMTSAR_TSX_PREPROC_PY=1` |
 | `make_slc_csk_py` | [1-ON, Rule 13a] | ~1.3-2x slower individually; wired anyway; confirmed end-to-end (CSK_SLC_Italy 6/6 SUCCESS, 1.04x case-level, 2026-07-13) | `pre_proc`, `GMTSAR_CSK_MAKE_SLC_PY=1` |
