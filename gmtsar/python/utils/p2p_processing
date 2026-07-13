@@ -66,10 +66,82 @@ class _NoopStage:
     def __exit__(self, *args): return False
 
 
+# Every GMTSAR_*_PY / GMTSAR_*_INPROC env gate this framework reads, paired
+# with its code default (must be kept in sync with the actual os.environ.get
+# calls at each call site — see docs/PATHWAY_FORWARD.md's wiring ledger).
+# Printed once at the top of every run so a case's log.txt is sufficient
+# evidence of which backend actually ran, without grepping for the presence/
+# absence of a subprocess command line (see project_rules.md for why that's
+# the wrong way to answer "was X on?").
+_ENV_GATE_DEFAULTS = {
+    "GMTSAR_SURFACE_INPROC": "1",
+    "GMTSAR_PROJ_SURFACE_PY": "0",
+    "GMTSAR_BLOCKMEAN_PY": "1",
+    "GMTSAR_BLOCKMEDIAN_PY": "1",
+    "GMTSAR_TRIANGULATE_PY": "0",
+    "GMTSAR_GRDFILL_PY": "1",
+    "GMTSAR_GRDMATH_PY": "1",
+    "GMTSAR_GRDCUT_PY": "1",
+    "GMTSAR_GRDSAMPLE_PY": "1",
+    "GMTSAR_GMT_INPROC": "1",
+    "GMTSAR_DEM2TOPO_INMEM_CHAIN": "1",
+    "GMTSAR_ALIGN_TOPS_PY": "1",
+    "GMTSAR_MERGE_TOPS_PY": "1",
+    "GMTSAR_M2S_PY": "1",
+    "GMTSAR_MAKE_LOS_PY": "1",
+    "GMTSAR_PHASEDIFF_PY": "1",
+    "GMTSAR_PHASEFILT_PY": "1",
+    "GMTSAR_IONO_PY": "1",
+    "GMTSAR_SNAPHU_PY": "1",
+    "GMTSAR_XYZ2GRD_PY": "1",
+    "GMTSAR_RS2_PREPROC_PY": "1",
+    "GMTSAR_S1A_PREPROC_PY": "1",
+    "GMTSAR_TSX_PREPROC_PY": "1",
+    "GMTSAR_CSK_MAKE_SLC_PY": "1",
+    "GMTSAR_NSR_PREPROC_PY": "1",
+}
+
+
+# Thread/concurrency knobs that affect perf-number reliability (Rule 12c:
+# an oversubscribed run's timing is not trustworthy) — logged alongside the
+# feature gates so a slow/fast run can be explained without re-deriving it.
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+    "FFTW_NUM_THREADS", "NUMBA_NUM_THREADS", "XCORR_PY_WORKERS",
+)
+
+
+def _print_env_gate_config():
+    import datetime as _dt_mod
+    ts = _dt_mod.datetime.now(_dt_mod.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    print(f'P2P 0: [{ts}] run start; argv = {sys.argv!r}')
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        sha = "unknown"
+    print(f'P2P 0: git_sha = {sha}  GMTSAR = {os.environ.get("GMTSAR", "*unset*")}  '
+          f'cwd = {os.getcwd()}')
+    print('P2P 0: thread/concurrency env (var=effective value, "*"=not set — process default applies):')
+    for name in _THREAD_ENV_VARS:
+        raw = os.environ.get(name)
+        print(f'P2P 0:   {name} = {raw if raw is not None else "(unset)"}'
+              f'{"" if raw is not None else " *"}')
+    print('P2P 0: env-gate config (var=effective value, "*"=default not overridden) ... ...')
+    for name in sorted(_ENV_GATE_DEFAULTS):
+        default = _ENV_GATE_DEFAULTS[name]
+        raw = os.environ.get(name)
+        effective = raw if raw is not None else default
+        tag = "" if raw is not None else " *"
+        print(f'P2P 0:   {name} = {effective}{tag}')
+
+
 def p2p_processing(debug):
-    # 
+    #
     # check the number of arguments
     n = len(sys.argv)
+    _print_env_gate_config()
     # If using p2p_processing A B C D, then a total of 5 input parameters are expected.
     
     if n!=4 and n!=5:   

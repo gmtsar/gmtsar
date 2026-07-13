@@ -1,0 +1,21 @@
+{
+  "case": "ALOS4_Pinon",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS4_Pinon.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2025105_2025147/corr_ll.grd": "e8f138f82966d8237886a3441bf451b8",
+    "intf/2025105_2025147/corr_ll.png": "6715dd50a211c3f66223cad7aac03c4c",
+    "intf/2025105_2025147/display_amp_ll.png": "a1cd68e968d2c4c3bed236d334dd41dd",
+    "intf/2025105_2025147/filtcorr.grd": "a58faef58acb90d94d43f24d8834f0b4",
+    "intf/2025105_2025147/phasefilt.grd": "dda81b1dbee664a68b5a2031153dbd97",
+    "intf/2025105_2025147/phasefilt_mask_ll.png": "e32887ee74cf70e47ba2ca8990ccaf2d"
+  }
+}
