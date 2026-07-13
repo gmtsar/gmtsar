@@ -1,0 +1,24 @@
+{
+  "case": "S1A_SLC_TOPS_COVE",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/S1A_SLC_TOPS_COVE.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "merge/corr_ll.grd": "e58991f6d329719d2c071f416b55f112",
+    "merge/corr_ll.png": "67b5785aebd7834c608d6b4096ab489c",
+    "F1/intf/2018075_2018087/filtcorr.grd": "a7d017b594b1723c23dccffea9284ad1",
+    "F2/intf/2018075_2018087/filtcorr.grd": "6df2d711308ebba56a031c5ff33a7e89",
+    "F3/intf/2018075_2018087/filtcorr.grd": "ac5d2275f07466dde313a6f31d974a59",
+    "F1/intf/2018075_2018087/phasefilt.grd": "0a8f65594b6bf28cbd3ed2172bb7a5a7",
+    "F2/intf/2018075_2018087/phasefilt.grd": "7be145cb8242067a8a27ce77f7c17499",
+    "F3/intf/2018075_2018087/phasefilt.grd": "f956b090135150230868148d5139cf4c",
+    "merge/phasefilt.grd": "6cd31b20731589ceff46c0905b930ebb",
+    "merge/phasefilt_mask_ll.png": "c693f463984b2217f326f5727ecf6e40"
+  }
+}

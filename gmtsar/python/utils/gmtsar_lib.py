@@ -153,14 +153,26 @@ def run(cmd):
     Switching from os.system was about VISIBILITY of failures, not making
     them fatal.
 
-    If GMTSAR_PROFILE=1, records the wall time via profiler.record(...).
-    The profiler module is a no-op when disabled (zero overhead)."""
-    print(" ")
-    print(cmd)
+    Every call prints a UTC timestamp + the resolved command before running
+    it, and a one-line "done" summary (elapsed time + exit code) after —
+    unconditionally, not just under GMTSAR_PROFILE=1 — so any case's
+    log.txt is self-sufficient for backtracking exactly which commands ran,
+    when, and how long each took (see p2p_processing's env-gate config dump
+    for the matching backend-selection half of this picture).
+
+    If GMTSAR_PROFILE=1, ALSO records the wall time via profiler.record(...)
+    for the aggregate perf-snapshot tooling. The profiler module is a no-op
+    when disabled (zero overhead)."""
     import time as _t
+    import datetime as _dt_mod
+    def _utc_now():
+        return _dt_mod.datetime.now(_dt_mod.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    print(" ")
+    print(f"[{_utc_now()}] {cmd}")
     _t0 = _t.time()
     rc = subprocess.run(cmd, shell=True).returncode
     _dt = _t.time() - _t0
+    print(f"[{_utc_now()}] done in {_dt:.3f}s (rc={rc})")
     try:
         from profiler import record as _prof_record  # type: ignore
         _prof_record(cmd, _dt, backend="subprocess")

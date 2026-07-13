@@ -1,0 +1,31 @@
+{
+  "case": "S1_Ridgecrest_EQ",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/S1_Ridgecrest_EQ.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "FAIL",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "H_res/intf/2019184_2019196/corr_ll.grd": "44cf95947f0e82a42b3bcaaea015d719",
+    "merge/corr_ll.grd": "d6d1f4b193c13effc9b0654524ab92db",
+    "H_res/intf/2019184_2019196/corr_ll.png": "88ffc0e85df11758ade2b15f0feabf07",
+    "merge/corr_ll.png": "ded4f55aa444ab4aa7a996fdb7a8596f",
+    "H_res/intf/2019184_2019196/display_amp_ll.png": "cbcdf2ab63c1c1c0b5b90a802218d54b",
+    "F1/intf/2019184_2019196/filtcorr.grd": "40525933152a41f5cd11ad2a847a4a9b",
+    "F2/intf/2019184_2019196/filtcorr.grd": "016c545e81285950412ecd6bbe748392",
+    "F3/intf/2019184_2019196/filtcorr.grd": "9632b00db003deb4d4b43e1d5751eb9f",
+    "H_res/intf/2019184_2019196/filtcorr.grd": "91742ae19b1d974cb08a21f2a1aca5a9",
+    "F1/intf/2019184_2019196/phasefilt.grd": "69693e4a920c3a5a66ab5e92d266bbff",
+    "F2/intf/2019184_2019196/phasefilt.grd": "f9ef0754138b5ab257b96f485c2008f2",
+    "F3/intf/2019184_2019196/phasefilt.grd": "3fe76948d9cc0afdfa47d8d9eaef7768",
+    "H_res/intf/2019184_2019196/phasefilt.grd": "98fbe916218680c1722bc909fad27a9f",
+    "merge/phasefilt.grd": "280cca9acdc3a5f8fec916c39b05d7a1",
+    "H_res/intf/2019184_2019196/phasefilt_mask_ll.png": "09e57ce5eaee188b303153df7d7a0267",
+    "merge/phasefilt_mask_ll.png": "8c6a92dc8e68652b78e83f3aeebbe691"
+  }
+}

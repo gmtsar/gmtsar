@@ -1,0 +1,24 @@
+{
+  "case": "S1A_SLC_TOPS_Greece",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/S1A_SLC_TOPS_Greece.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "merge/corr_ll.grd": "5ef4a340922999c5ecb51dc40140b18f",
+    "merge/corr_ll.png": "440588ed09ef99a0499d262d57b80659",
+    "F1/intf/2015308_2015320/filtcorr.grd": "c9d568eb14219cb7c5cc8cc5df4d02c6",
+    "F2/intf/2015308_2015320/filtcorr.grd": "899ca568c4aca74a6f45b002ecd47625",
+    "F3/intf/2015308_2015320/filtcorr.grd": "2d2974bf322ab53d7443279105ef1a1a",
+    "F1/intf/2015308_2015320/phasefilt.grd": "7c157657aec03a5a793bbe6b8ac67e9c",
+    "F2/intf/2015308_2015320/phasefilt.grd": "3f62fd09ab919f28e3faea8233d3a508",
+    "F3/intf/2015308_2015320/phasefilt.grd": "4dc03256ff5ca06e875401e4756cf724",
+    "merge/phasefilt.grd": "1703f083b0b25f1000f71d37f88f7e01",
+    "merge/phasefilt_mask_ll.png": "af3b71220f4a5be2b16ec41e8467f381"
+  }
+}
