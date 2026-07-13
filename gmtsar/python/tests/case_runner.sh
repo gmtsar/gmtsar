@@ -68,7 +68,14 @@ EOF
 
 # Pin known thread pools to 1; libgmt's FFTW pthreads ignore these, so we also
 # LD_PRELOAD the shim built by install.sh --build (if present).
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 FFTW_NUM_THREADS=1
+# NUMBA_NUM_THREADS=1 added 2026-07-13: verified every current numba kernel
+# (xcorr_py, resamp_py, SAT_llt2rat_py, gmt_surface_py, gmt_blockmedian_py,
+# gmt_grdsample_py, vector.py) is already genuinely single-threaded (no
+# prange, or prange with parallel=False), so this was harmless-but-missing
+# defensive pinning -- added so a future kernel that DOES use
+# parallel=True/prange doesn't silently break the single-thread gate-2
+# measurement this script exists to produce.
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 FFTW_NUM_THREADS=1 NUMBA_NUM_THREADS=1
 if [ -n "$preloadShim" ] && [ -f "$preloadShim" ]; then
     export LD_PRELOAD="$preloadShim"
 fi
