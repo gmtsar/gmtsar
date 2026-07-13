@@ -130,8 +130,8 @@ below is tagged with exactly one:
 | `make_slc_csk2_py` | [3-OFF-lost] | ~4-5x slower, byte-identical | `pre_proc`, `GMTSAR_CSK_PREPROC_PY=0` |
 | `gmt_triangulate_py` | [3-OFF-lost] | 1.4-9x slower (Qhull vs GMT's linked Shewchuk Triangle) | `dem2topo_ra`, `GMTSAR_TRIANGULATE_PY=0` |
 | `ALOS_pre_process_py` | [4-partial] | IMG-parsing subset byte-identical, +2.1x — LED/orbit/Doppler not ported | none — parity is partial |
-| `SAT_llt2rat_py` (v1) | archived, superseded by v2 | byte-identical, but v2 wins on speed+stability | `bin_py/archive/` |
-| `resamp_py_v2` | archived, superseded by v1 | unstable NFS/numba cache, only tied with C at best | `bin_py/archive/` |
+| `SAT_llt2rat_py` (v1) | removed (v2.7.1 cleanup) | byte-identical, but v2 wins on speed+stability | `bin_py/SAT_llt2rat_py` (v2, live baseline) |
+| `resamp_py_v2` | removed (v2.7.1 cleanup) | unstable NFS/numba cache, only tied with C at best | `bin_py/resamp_py` (v1, live baseline) |
 | `SAT_look` | [5-none] | still C, `calc_look_vector` calls it directly | n/a |
 | `iono_gauss` | ported, opt-in correctly | fails gate 1 by design (2% divergence allowed) | `GMTSAR_IONO_GAUSS_PY` unset |
 | `gmt triangulate`(via triangulate_py, see above), `grdedit`, `trend2d`, `grdlandmask`, ~60 other `gmt` subcommands | [5-none] | see "Never attempted, not worth it" below | n/a |
@@ -211,14 +211,14 @@ below is tagged with exactly one:
   variant (~1.3x, byte-identical) and wasn't what was deployed.
   **Fixed 2026-07-12**: `install.sh` and the live `bin/resamp_py` symlink
   now point at the single production `resamp_py` (no version suffix —
-  production code shouldn't carry one; `SAT_llt2rat_py`/`_v2` still does
-  and is a candidate for the same cleanup, not yet done, out of scope
-  here). `resamp_py` can now be cited as a consistent ~1.3x speedup,
-  byte-identical to C. The old alternate's NFS-numba-cache instability is
-  no longer reachable via the default wiring; that file was **moved to
-  `bin_py/archive/resamp_py_v2`** (not deleted — real, documented work,
-  archive-only, not production) so it can't be mistaken for the current
-  baseline. See `bin_py/archive/README.md` before reviving it.
+  production code shouldn't carry one). `resamp_py` can now be cited as
+  a consistent ~1.3x speedup, byte-identical to C. The old alternate's
+  NFS-numba-cache instability is no longer reachable via the default
+  wiring; it lived at `bin_py/archive/resamp_py_v2` for reference until
+  the v2.7.1 cleanup removed it (recoverable from git history at commit
+  `445623e` or earlier if ever needed — see `docs/release_notes/
+  release_notes_v2.7.0.md` and earlier for the full incident writeup).
+  `SAT_llt2rat_py` v1 was removed the same way, same release.
 - **`gmt surface` (biharmonic spline fit)**: a bit-faithful numba/Cython
   port (`gmt_surface_py`) exists and is wired ON by default at most call
   sites (`dem2topo_ra`, `align_tops`, `proj_ll2ra`, `tide_correction`) —
@@ -461,17 +461,20 @@ else:
   fallback? Affects how aggressively future ports should touch internals
   vs. leave working shell-outs alone.
 
-Also carried over: `docs/audits/AUDIT_stage_cache_mira57.md` documents
-`tests/stage_cache.py` as "architecturally broken," needing a redesign
-(fingerprint post-stage outputs instead of raw/mutate-restore) rather
-than a bugfix — still `GMTSAR_STAGE_CACHE=0` by default, unclear if the
-redesign was ever done. Worth a fresh look before trusting it.
+Also carried over (originally from `docs/audits/AUDIT_stage_cache_mira57.md`,
+removed in the v2.7.1 doc cleanup — recoverable from git history if the
+full investigation transcript is ever needed): `tests/stage_cache.py`
+was found "architecturally broken," needing a redesign (fingerprint
+post-stage outputs instead of raw/mutate-restore) rather than a bugfix
+— still `GMTSAR_STAGE_CACHE=0` by default, unclear if the redesign was
+ever done. Worth a fresh look before trusting it.
 
 `PLAN.md`'s full mission-log history (every dated status snapshot,
 Mira-by-Mira roadmap, and the now-superseded `gmt_surface_py` perf
 numbers — a *third*, independently stale figure for a story this file
-already had to reconcile from two others) is archived unedited at
-`docs/reports/PLAN_archived_2026-05-14_to_2026-06-13.md`. Its
+already had to reconcile from two others) was archived unedited at
+`docs/reports/PLAN_archived_2026-05-14_to_2026-06-13.md` and removed in
+the v2.7.1 doc cleanup (recoverable from git history). Its
 still-relevant technical content (the GMT netCDF attribute spec) was
 extracted to `docs/GMT_NETCDF_ATTR_SPEC.md`, which live code
 (`utils/gmt_grd_io.py`, `utils_pygmt/gmt_compat.py`, `utils/gmt_inproc.py`)

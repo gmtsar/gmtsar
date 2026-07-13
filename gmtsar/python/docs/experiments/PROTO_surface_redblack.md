@@ -3,8 +3,9 @@
 **Status:** Prototype only. NOT wired into the pipeline. No default path modified.  
 **Date:** 2026-06-19  
 **Author:** Dr. Mira Volkov (performance engineering)  
-**Files:**  
-- Prototype: `gmtsar/python/docs/experiments/_proto_surface_redblack.py`  
+**Files:**
+- Prototype: removed in the v2.7.1 doc cleanup (dead code, never
+  imported); recoverable from git history before that release.
 - Reference grids: `gmtsar/python/work/proto_surface_test/`  
 
 ---
@@ -51,7 +52,7 @@ Verified algebraically — all 12 offsets produce non-(0,0) residuals.
 
 ## Implementation
 
-`_proto_surface_redblack.py` implements `surface_9color()` with:
+The (now-removed) prototype implemented `surface_9color()` with:
 - Same PDE (biharmonic spline-in-tension, tension T=0.5)
 - Same stencil weights (computed by `_compute_coefficients`, same as production)
 - Same Briggs sub-cell constraint coefficients
