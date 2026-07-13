@@ -10,6 +10,16 @@ Fork of upstream `gmtsar/gmtsar` (C/csh InSAR processor). This fork extends it w
 - Remote `upstream` → `github.com/gmtsar/gmtsar`
 - Default branch: `master` (not `main`)
 
+## Read this before any port, test, or sweep
+
+**`gmtsar/python/project_rules.md`** — 13 numbered rules, each written
+after a real incident (silent fallbacks, lost sweep artifacts, stale
+"done" claims, etc.). Read it at the start of any task involving:
+porting a C/GMT module, running or reporting on a test sweep, or wiring
+a new env-gate dispatcher. Rule 13 in particular: "ported" and "wired ON
+by default" are different states — track both in
+`gmtsar/python/docs/PATHWAY_FORWARD.md`, not just "ported: yes/no."
+
 ## Where dev lives
 
 **All dev work lives in `gmtsar/python/`.** Do not modify files outside this directory — everything else is upstream `gmtsar/gmtsar` source and should be left untouched so upstream merges stay clean.

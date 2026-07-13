@@ -3,6 +3,30 @@
 Authoritative rules for this fork. Apply to every change, every test recipe,
 every script. Violations are bugs.
 
+## Index — read this list first; jump to a rule only when it's load-bearing
+
+1. No silent fallbacks, swallowed errors, or placeholder data.
+2. Mirror the bundled README + config exactly.
+3. Dev confined to `gmtsar/python/`.
+4. Every test run captures performance, hardware, and provenance.
+5. Pass ALL tests before merging a feature — not a subset.
+6. Golden/oracle test dirs are read-only ground truth — never write
+   through them.
+7. Don't reinvent the wheel — port the C algorithm verbatim FIRST, then
+   optimize; validate bit-parity on REAL data, not synthetic (7a).
+8. Every bug found → add a regression test before shipping the fix.
+9. Don't trust past conclusions (docs, memory, prior session claims) —
+   only fresh-run outputs are evidence.
+10. Sweep tripwire — verify every case's result as it completes; stop
+    on the first real failure, don't run the whole sweep blind.
+11. A/B test an edge case BEFORE wiring a port at a new call site — don't
+    discover a divergence via a multi-hour sweep.
+12. Case-comparison sweeps: report in the fixed table format; "pass"
+    means `compare.py`'s own thresholds, not an invented metric.
+13. "Ported" and "wired ON by default" are different states — track
+    both in `docs/PATHWAY_FORWARD.md`, and losing to C is a valid,
+    documented outcome, not a gap to hide.
+
 ## 1. No silent fallbacks, swallowed errors, or placeholder data
 
 If an expected file, binary, or config is missing, **fail loudly and
