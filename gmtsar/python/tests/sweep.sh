@@ -5,10 +5,11 @@
 # Modes (project_rules.md Rule 13: simple > many options — 2026-07-13
 # trimmed from 6 modes down to these; see docs/reports/ for the archived
 # --smoke/--unit/--sample/--smart_fast history if ever needed again):
-#   bash sweep.sh                 # full sweep, all 21 cases (~3 h)
-#   bash sweep.sh --full          # same as above, explicit
-#   bash sweep.sh --fast          # 9 SAT families (~30-40 min)
+#   bash sweep.sh                     # full sweep, all 21 cases (~3 h)
+#   bash sweep.sh --full              # same as above, explicit
+#   bash sweep.sh --fast              # 9 SAT families (~30-40 min)
 #   TEST_CASES=<name> bash sweep.sh --fast   # single case (works with --full too)
+#   bash sweep.sh --fast --parallel 6        # cap concurrent cases (default 12)
 #
 # Force a re-run of an already-passing (cached) case: SWEEP_FORCE=1.
 #
@@ -16,13 +17,22 @@
 
 set -u
 
-case ${1:-} in
-    --fast|fast)         export TEST_TIER=fast  ;;
-    --full|full|'')       export TEST_TIER=full  ;;
-    -h|--help)
-        sed -n '2,14p' "$0"; exit 0 ;;
-    *) echo "unknown arg: $1 (try --fast / --full / --help; for a single case set TEST_CASES=<name>)" >&2; exit 2 ;;
-esac
+_TIER_SET=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fast|fast)         export TEST_TIER=fast; _TIER_SET=1; shift ;;
+        --full|full)         export TEST_TIER=full; _TIER_SET=1; shift ;;
+        --parallel|-p)
+            if [ -z "${2:-}" ] || ! echo "${2}" | grep -qE '^[0-9]+$'; then
+                echo "sweep.sh: --parallel requires a numeric argument" >&2; exit 2
+            fi
+            export MAX_PARALLEL="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,15p' "$0"; exit 0 ;;
+        *) echo "unknown arg: $1 (try --fast / --full / --parallel N / --help; for a single case set TEST_CASES=<name>)" >&2; exit 2 ;;
+    esac
+done
+[ -n "$_TIER_SET" ] || export TEST_TIER=full
 
 # Derive GMTSAR from this script's location: sweep.sh lives at
 #   <repo>/gmtsar/python/tests/sweep.sh → repo root is three dirs up.
