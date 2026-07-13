@@ -28,8 +28,9 @@ Env-gate
 History
 -------
 * 2026-06-12 -- initial wire-in, default OFF (mira-volkov, Mission #71).
-  See docs/audits/AUDIT_xyz2grd_mira71.md for unit-level parity results (bit-identical
-  on real ALOS_haiti phase_patch.grd, ~10x faster).
+  Unit-level parity: bit-identical on real ALOS_haiti phase_patch.grd,
+  ~10x faster (full investigation transcript removed in the v2.7.1
+  doc cleanup, recoverable from git history).
 * 2026-06-12 -- default flipped ON after RS2_SLC_Hawaii full-pipeline
   smoke (6/6 py-vs-csh SUCCESS, blessed diff PASS at v2.1.22).
 """

@@ -13,7 +13,7 @@ Usage:
     python3 blessed_diff.py [--case RS2_SLC_Hawaii] [--tag v2.0.4]
 
 If --case is omitted, all cases that have a blessed scorecard are checked.
-If --tag is omitted, the lexicographically newest tag dir under
+If --tag is omitted, the highest-semver tag dir under
 docs/blessed_scorecards/ is used.
 
 Writes diff results to work/blessed_diff_<TAG>.md.
@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -43,10 +44,20 @@ def md5_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _semver_key(tag: str) -> tuple:
+    """Sort key for tag dir names like 'v2.10.0' -- plain lexicographic
+    sort (the old behavior) puts 'v2.10.0' before 'v2.2.0', silently
+    picking the wrong "latest" once a double-digit minor/patch exists.
+    Non-numeric segments sort last so a malformed tag name doesn't crash."""
+    parts = re.findall(r"\d+", tag)
+    return tuple(int(p) for p in parts) if parts else (-1,)
+
+
 def latest_tag() -> str | None:
     if not _BLESSED_ROOT.is_dir():
         return None
-    tags = sorted(d.name for d in _BLESSED_ROOT.iterdir() if d.is_dir())
+    tags = sorted((d.name for d in _BLESSED_ROOT.iterdir() if d.is_dir()),
+                  key=_semver_key)
     return tags[-1] if tags else None
 
 

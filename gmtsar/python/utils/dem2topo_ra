@@ -822,8 +822,9 @@ def dem2topo_ra():
     # ASCII %lf path gives sub-ULP parity to C on lon/lat (max|d|=0),
     # azi_pix (max|d|=3.6e-12 px), and height (1.9e-9 m). See Mira
     # AUDIT note in gmtsar/python/AUDIT.md (ALOS_haiti los_ll fix).
-    # See gmtsar/python/AUDIT_SAT_llt2rat_py.md for the 9 sub-ULP bugs
-    # Mira #2 fixed to close parity.
+    # The 9 sub-ULP bugs Mira #2 fixed to close parity were documented in
+    # docs/audits/AUDIT_SAT_llt2rat_py.md, removed in the v2.7.1 doc
+    # cleanup (recoverable from git history if needed).
     with _dem2topo_phase("grd2xyz_SAT_llt2rat"):
         if SC == 10 or SC == 11:
             run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod > trans.dat')

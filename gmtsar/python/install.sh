@@ -150,9 +150,9 @@ if [[ $DO_BUILD -eq 1 ]]; then
   # Symlink the bin_py/ ports that utils/p2p_stages.py invokes by bare name
   # via subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
   # One production copy per tool, no version suffixes (project_rules.md
-  # Rule 13) -- see gmtsar/python/bin_py/archive/README.md for the
-  # superseded variants (resamp_py_v2, SAT_llt2rat_py's old v1) kept there
-  # for reference only, never on PATH.
+  # Rule 13) -- superseded variants (resamp_py_v2, SAT_llt2rat_py's old v1)
+  # were kept at bin_py/archive/ for reference, removed in the v2.7.1 doc
+  # cleanup (recoverable from git history if needed), never on PATH.
   chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py
   for name in phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py SAT_llt2rat_py; do
     ln -sf "$REPO_ROOT/gmtsar/python/bin_py/$name" "$REPO_ROOT/bin/$name"

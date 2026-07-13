@@ -236,7 +236,8 @@ class TestResampVsCBinary(unittest.TestCase):
 
     Generates the C reference IN THE SAME INVOCATION as the Py run, so
     we can't pick up a stale reference file. Asserts byte-identical SLC.
-    (PRM output is not byte-compared — see docs/audits/AUDIT_resamp_py.md.)
+    (PRM output is not byte-compared — see docs/PATHWAY_FORWARD.md's
+    resamp_py entry for why.)
     """
 
     @classmethod

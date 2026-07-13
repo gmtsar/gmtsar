@@ -1,7 +1,9 @@
 # PROTO_surface_parallel_domain — Coarse-Grained Domain-Decomp Parallel SOR Evaluation
 
-**Status:** Prototype only. NOT wired into pipeline. Default path NOT modified.  
-**Prototype file:** `gmtsar/python/docs/experiments/_proto_surface_domain.py`  
+**Status:** Prototype only. NOT wired into pipeline. Default path NOT modified.
+**Prototype file:** removed in the v2.7.1 doc cleanup (dead code, never
+imported); recoverable from git history before that release if the raw
+source is ever needed again. This writeup's findings stand regardless.  
 **Reference oracle:** `work/python_test/ALOS_Baja_EQ/topo/ref_pixel.grd` (fresh `gmt surface` run, 269.4s)  
 **Hardware:** AMD EPYC 7F72 24-core × 2 (48 logical), 1TB RAM, Linux 6.8.0  
 **GMT version:** 6.4.0 · **numba version:** 0.65.1  
@@ -25,7 +27,7 @@ each strip's GS-SOR in its own `threading.Thread`, exchange halos via shared mem
 
 ## Implementation
 
-`docs/experiments/_proto_surface_domain.py` implements `surface_domain_decomp()` with:
+The (now-removed) prototype implemented `surface_domain_decomp()` with:
 
 - Same W-up nested-iteration multigrid hierarchy as `gmt_surface_py`
 - Same Briggs sub-cell constraints, BCs, float32 grid, omega=1.4, T=0.1

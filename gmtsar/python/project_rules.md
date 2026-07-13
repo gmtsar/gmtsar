@@ -239,8 +239,9 @@ Concretely:
   subprocess; the actual new FMG path was not validated. Wire-in
   shipped, --fast later showed CSK_RAW (square cells) hit the new
   path which was 13× slower (numba absent on prod env). Revert at
-  `98758b9`. Lesson logged in
-  `docs/reports/SESSION_LOG_2026-05-21_night.md`.
+  `98758b9`. Full incident log was at
+  `docs/reports/SESSION_LOG_2026-05-21_night.md`, removed in the
+  v2.7.1 doc cleanup (recoverable from git history if needed).
 
 ## 6. Golden/oracle test dirs are read-only ground truth — never write through them
 
