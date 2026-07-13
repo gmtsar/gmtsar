@@ -307,6 +307,17 @@ def main():
 
     if args.force:
         _apply_force(cases, args.force, work, log_path, csh_root_name, py_root_name)
+    elif args.topo_mode_ab:
+        # results/<case>.json is NOT segregated by comparison mode -- it's
+        # shared with normal py-vs-csh sweeps. Skipping "already verified"
+        # cases here would silently read stale py-vs-csh pass/fail state
+        # and treat it as topo-mode-ab verification (real bug hit
+        # 2026-07-13: a --topo-mode-ab run launched right after a py-vs-csh
+        # sweep finished picked up ITS results and skipped 20/21 cases,
+        # running only the one case that happened to have failed the
+        # unrelated py-vs-csh comparison). Always run everything requested.
+        _log_line(log_path, "--topo-mode-ab: skip-already-verified disabled "
+                             "(results/ is shared with py-vs-csh sweeps, not mode-specific)")
     else:
         cases = [c for c in cases if not _already_verified(c, work)]
         if not cases:
