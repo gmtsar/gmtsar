@@ -290,9 +290,12 @@ except ImportError as _e:
 # Timing on the same real input: py 0.078s vs gmt subprocess 0.288s
 # (~3.7x faster, single-threaded, includes subprocess exec overhead).
 #
-# Default OFF (GMTSAR_BLOCKMEAN_PY unset or "0") pending a full sweep
-# review — see bin_py/tests/test_gmt_blockmean_py.py for the parity
-# suite. Set GMTSAR_BLOCKMEAN_PY=1 to opt in.
+# Default ON since 2026-07-13 (GMTSAR_BLOCKMEAN_PY unset or "1") — see
+# bin_py/tests/test_gmt_blockmean_py.py for the parity suite. Only
+# affects the topo_interp_mode=1 branches (rare — default per-case
+# config is topo_interp_mode=0), so this flip is low-risk: it changes
+# nothing for cases that don't opt into topo_interp_mode=1. Set
+# GMTSAR_BLOCKMEAN_PY=0 to force the gmt blockmean subprocess.
 try:
     from gmt_blockmean_py import blockmean as _py_blockmean
     _HAVE_GMT_BLOCKMEAN_PY = True
@@ -311,12 +314,12 @@ def _blockmean_to_meanrat(temp_rat: str, region: str, rng2_step: int,
                       -bi3d -bo3d -r > <out_path>
 
     Used only by the topo_interp_mode=1 (triangulation) branches at
-    dem2topo_ra:773,841. Gated by GMTSAR_BLOCKMEAN_PY (default "0" —
-    OFF; falls back to the `gmt blockmean` subprocess). See the
-    import-site note above for parity/timing evidence.
+    dem2topo_ra:773,841. Gated by GMTSAR_BLOCKMEAN_PY (default "1" —
+    ON since 2026-07-13). Set to "0" to force the `gmt blockmean`
+    subprocess. See the import-site note above for parity/timing evidence.
     """
     use_blockmean_py = (_HAVE_GMT_BLOCKMEAN_PY
-                         and os.environ.get("GMTSAR_BLOCKMEAN_PY", "0") == "1")
+                         and os.environ.get("GMTSAR_BLOCKMEAN_PY", "1") == "1")
     if use_blockmean_py:
         try:
             rg = [float(s) for s in str(region).split("/")]
