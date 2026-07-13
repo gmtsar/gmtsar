@@ -153,6 +153,11 @@ def run(cmd):
     Switching from os.system was about VISIBILITY of failures, not making
     them fatal.
 
+    EXCEPTION: rc=127 (command not found, per shell convention) always
+    raises. That is never a benign gmtsar warning — it means a binary or
+    script isn't on PATH, and the pipeline should fail loudly rather than
+    silently no-op through every subsequent step (project_rules.md Rule 1).
+
     Every call prints a UTC timestamp + the resolved command before running
     it, and a one-line "done" summary (elapsed time + exit code) after —
     unconditionally, not just under GMTSAR_PROFILE=1 — so any case's
@@ -178,6 +183,8 @@ def run(cmd):
         _prof_record(cmd, _dt, backend="subprocess")
     except ImportError:
         pass
+    if rc == 127:
+        raise RuntimeError(f"command not found (rc=127): {cmd}")
     if rc != 0:
         print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
 
