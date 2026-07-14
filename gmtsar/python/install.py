@@ -318,6 +318,23 @@ def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
         "CPPFLAGS": f"-I{prefix}/include -I{prefix}/include/gmt",
         "LDFLAGS": f"-L{prefix}/lib -Wl,-rpath,{prefix}/lib",
         "PKG_CONFIG_PATH": f"{prefix}/lib/pkgconfig",
+        # Real bug found 2026-07-14 (a genuine clean-room run, on a host
+        # with 50+ unrelated conda installs on PATH): CPPFLAGS/LDFLAGS
+        # alone are NOT enough. configure's HDF5 detection doesn't read
+        # them -- it shells out to find `h5cc`/`h5pcc` (a compiler
+        # wrapper script with ITS OWN baked-in flags) via a plain PATH
+        # search, and without this, it silently picks up whichever
+        # unrelated h5cc happens to be first on the ambient PATH. That
+        # produced a real, non-obvious failure: build used one HDF5
+        # version's headers, linked a DIFFERENT version's shared library
+        # at runtime ("Headers are 1.12.1, library is 1.14.3"), and the
+        # NISAR preprocessor (the only sensor pipeline that uses HDF5)
+        # silently produced garbage/empty output with no hard error --
+        # cascading into 6 downstream comparison failures with no
+        # obvious root cause in any single error message. Prepending the
+        # env's own bin/ to PATH makes `h5cc`/`h5pcc` resolve to the
+        # SAME installation CPPFLAGS/LDFLAGS point at.
+        "PATH": f"{prefix}/bin:{os.environ.get('PATH', '')}",
     }
     return prefix, extra_env
 
@@ -362,9 +379,21 @@ def _patch_config_mk_line(lines: list[str], key: str, value: str) -> list[str]:
 
 def patch_config_mk(config_mk: Path, use_conda: bool,
                      conda_prefix: Path | None) -> None:
-    """configure leaves GMT_INC/GMT_LIB/TIFF_* empty or wrong, and the
-    modern-linker muldefs flag must live in LDFLAGS (not CFLAGS) because
-    the gmtsar/Makefile link rule uses $(LDFLAGS) only."""
+    """configure leaves GMT_INC/GMT_LIB/TIFF_*/HDF5_* empty or wrong, and
+    the modern-linker muldefs flag must live in LDFLAGS (not CFLAGS)
+    because the gmtsar/Makefile link rule uses $(LDFLAGS) only.
+
+    HDF5_CPPFLAGS/HDF5_LDFLAGS (2026-07-14, real bug found by a genuine
+    clean-room run): configure's HDF5 detection shells out to whatever
+    h5cc/h5pcc is first on PATH at configure time -- on a shared host
+    with 50+ unrelated conda installs, that's whichever one happened to
+    be first, NOT necessarily the target conda env (do_conda_setup's
+    PATH fix addresses the root cause for fresh builds, but a config.mk
+    generated before that fix -- e.g. this repo's own -- stays wrong
+    forever, since config.mk is never regenerated once present). Patch
+    HDF5_CPPFLAGS/HDF5_LDFLAGS the same way as GMT/TIFF above; leave
+    HDF5_LIBS alone since it only names link flags (-lhdf5 etc), not
+    paths, so it isn't the part that goes stale."""
     lines = config_mk.read_text().splitlines(keepends=True)
     if use_conda:
         lines = _patch_config_mk_line(
@@ -374,6 +403,8 @@ def patch_config_mk(config_mk: Path, use_conda: bool,
             lines, "GMT_LIB", f"-L{conda_prefix}/lib -lgmt")
         lines = _patch_config_mk_line(lines, "TIFF_INC", str(conda_prefix / "include"))
         lines = _patch_config_mk_line(lines, "TIFF_LIB", str(conda_prefix / "lib"))
+        lines = _patch_config_mk_line(lines, "HDF5_CPPFLAGS", f"-I{conda_prefix}/include")
+        lines = _patch_config_mk_line(lines, "HDF5_LDFLAGS", f"-L{conda_prefix}/lib")
     if not any("-Wl,-z,muldefs" in line for line in lines):
         for i, line in enumerate(lines):
             if line.split("=", 1)[0].strip() == "LDFLAGS":
@@ -404,8 +435,17 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
     run_soft(["autoupdate"])  # best-effort, matches `autoupdate || true`
     config_mk = REPO_ROOT / "config.mk"
     if not config_mk.is_file():
-        run(["./configure", f"--prefix={REPO_ROOT}",
-             f"--with-orbits-dir={REPO_ROOT}/orbits"], env=build_env)
+        configure_cmd = ["./configure", f"--prefix={REPO_ROOT}",
+                          f"--with-orbits-dir={REPO_ROOT}/orbits"]
+        if use_conda and conda_prefix is not None:
+            h5cc = conda_prefix / "bin" / "h5cc"
+            if h5cc.is_file():
+                # Explicit, not just PATH-order-dependent: configure's
+                # HDF5 detection walks PATH for h5cc/h5pcc unless told
+                # exactly which one to use (see extra_env's PATH comment
+                # in do_conda_setup for the real bug this closes).
+                configure_cmd.append(f"--with-hdf5={h5cc}")
+        run(configure_cmd, env=build_env)
     patch_config_mk(config_mk, use_conda, conda_prefix)
 
     # Sequential build: gmtsar's recursive Makefile has cross-dir
