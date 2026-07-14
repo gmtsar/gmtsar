@@ -83,42 +83,48 @@ def test_gshhg_gmt_not_gshhg_gmt_nc4():
     assert "gshhg-gmt-nc4" not in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
 
 
-def test_fix_lex_source_mtimes_exists_and_runs_in_do_build():
+def test_defuse_fake_lex_sources_exists_and_runs_in_do_build():
     """preproc/ERS_preproc/ers_line_fixer/ers_line_fixer.l is a troff man
     page, not lex source, but shares a basename with the real committed
-    ers_line_fixer.c. A fresh `git clone` doesn't guarantee .c is newer
-    than .l, so GNU Make's implicit `.l.c:` rule can fire and destroy
-    the real source (confirmed live: flex parse-errors on troff markup,
-    ERS_Hector_EQ fails downstream with zero comparisons). do_build()
-    must call the mtime fix before running make."""
+    ers_line_fixer.c. GNU Make's implicit `.l.c:` rule can fire whenever
+    it thinks .l is newer than .c (confirmed live twice: once via mtime
+    ordering after a fresh git clone, and again even after touching .c
+    forward -- most likely NFS attribute-cache staleness defeating the
+    touch), destroying the real source and cascading into
+    ERS_Hector_EQ failing downstream with zero comparisons. do_build()
+    must call the defuse step before running make."""
     import inspect
-    assert hasattr(install, "_fix_lex_source_mtimes")
+    assert hasattr(install, "_defuse_fake_lex_sources")
     do_build_src = inspect.getsource(install.do_build)
-    assert "_fix_lex_source_mtimes()" in do_build_src
+    assert "_defuse_fake_lex_sources()" in do_build_src
 
 
-def test_fix_lex_source_mtimes_touches_c_newer_than_l(tmp_path):
-    """Functional check (not just a call-site check): given a fixture
-    .l file newer than its .c sibling, _fix_lex_source_mtimes() must
-    make .c newer again."""
-    import time
+def test_defuse_fake_lex_sources_renames_the_l_file(tmp_path):
+    """Functional check (not just a call-site check): given a fixture .l
+    file with a real .c sibling, _defuse_fake_lex_sources() must rename
+    the .l file so it can never match Make's `%.l` implicit-rule
+    pattern again -- mtime-based fixes were tried first and proved
+    unreliable (see the function's own docstring), so this test
+    specifically checks the rename outcome, not a timestamp."""
     sub = tmp_path / "preproc" / "ERS_preproc" / "ers_line_fixer"
     sub.mkdir(parents=True)
     c_file = sub / "ers_line_fixer.c"
     l_file = sub / "ers_line_fixer.l"
     c_file.write_text("int main(){return 0;}")
-    time.sleep(0.02)
     l_file.write_text(".TH fake manpage")
-    assert l_file.stat().st_mtime > c_file.stat().st_mtime
 
     orig_repo_root = install.REPO_ROOT
     install.REPO_ROOT = tmp_path
     try:
-        install._fix_lex_source_mtimes()
+        install._defuse_fake_lex_sources()
     finally:
         install.REPO_ROOT = orig_repo_root
 
-    assert c_file.stat().st_mtime >= l_file.stat().st_mtime
+    assert not l_file.exists(), ".l file must no longer exist under its original name"
+    renamed = sub / "ers_line_fixer.l.not-lex-source"
+    assert renamed.is_file(), "renamed file must exist"
+    assert c_file.is_file(), "the real .c source must be untouched"
+    assert c_file.read_text() == "int main(){return 0;}"
 
 
 if __name__ == "__main__":
