@@ -10,6 +10,7 @@ Each guard here maps to a real bug found by a genuine clean-room run on
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -159,6 +160,127 @@ def test_defuse_fake_lex_sources_works_when_repo_root_under_work_dir(tmp_path):
         "still not renamed when REPO_ROOT is nested under a 'work' dir "
         "-- the substring-vs-path-component bug is back")
     assert (sub / "ers_line_fixer.l.not-lex-source").is_file()
+
+
+def test_phasefilt_py_in_bin_py_names():
+    """phasefilt_py was MISSING from BIN_PY_NAMES -- utils/filter:275
+    calls `run('phasefilt_py ' + args)` by bare name, so every fresh
+    install broke on the filter pipeline stage (rc=127; fails loudly
+    since gmtsar_lib.run() raises on rc=127). Invisible on the dev host
+    only because its bin/phasefilt_py symlink predated this rewrite."""
+    assert "phasefilt_py" in install.BIN_PY_NAMES
+
+
+def test_bin_py_names_covers_every_bare_name_call_site():
+    """General regression guard, not just phasefilt_py specifically:
+    grep every bin_py/*_py tool against every bare `run(f"<name> ...")`/
+    subprocess `['<name>', ...]` call site in utils/, and assert every
+    tool that's actually invoked by bare name is in BIN_PY_NAMES. This
+    is the exact audit done by hand on 2026-07-14 that found the
+    phasefilt_py gap, now automated so a NEW bare-name call site
+    without a matching BIN_PY_NAMES entry fails a test instead of
+    silently breaking a fresh install."""
+    import re
+    utils_dir = _UTILS / "utils"
+    bin_py_dir = _UTILS / "bin_py"
+    tool_names = sorted(p.name for p in bin_py_dir.glob("*_py") if p.is_file())
+    assert tool_names, "no bin_py/*_py tools found -- check test setup"
+
+    missing = []
+    for name in tool_names:
+        # \b on BOTH sides -- without the leading boundary, "surface_py"
+        # would wrongly match inside "gmt_surface_py" (a DIFFERENT,
+        # unrelated in-process module referenced only in comments).
+        pat = re.compile(r"\b" + re.escape(name) + r"\b")
+        invoked_bare = False
+        for f in utils_dir.glob("*"):
+            if not f.is_file():
+                continue
+            try:
+                text = f.read_text(errors="ignore")
+            except Exception:
+                continue
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue  # comment-only line, not a real call site
+                if pat.search(line) and ("run(" in line or "subprocess" in line):
+                    invoked_bare = True
+                    break
+            if invoked_bare:
+                break
+        if invoked_bare and name not in install.BIN_PY_NAMES:
+            missing.append(name)
+
+    assert not missing, (
+        f"{missing} are invoked by bare name in utils/ but missing from "
+        "BIN_PY_NAMES -- a fresh install will fail with rc=127 the first "
+        "time this pipeline stage runs")
+
+
+def test_pytest_in_requirements_txt():
+    """A fresh --system conda install had no way to run bin_py/tests/ at
+    all without a manual `pip install pytest` -- requirements.txt never
+    listed it, even though running that suite is part of the documented
+    dev workflow (README.md's "Testing for developers")."""
+    requirements = (_UTILS / "requirements.txt").read_text()
+    assert re.search(r"^pytest\b", requirements, re.MULTILINE), (
+        "pytest missing from requirements.txt -- a fresh install can't "
+        "run its own test suite")
+
+
+def test_locate_conda_env_creates_when_missing_at_resolved_base(tmp_path, monkeypatch):
+    """locate_conda_env() used to only ever FIND an existing env under
+    the fixed CONDA_SEARCH_BASES list and error if missing, assuming a
+    pre-populated env. It must now CREATE the env via `conda create`
+    when missing, using whatever conda_base locate_conda_base()
+    resolves -- which may be OUTSIDE CONDA_SEARCH_BASES (see the next
+    test for the specific bug that caused)."""
+    fake_conda_base = tmp_path / "fakeconda"
+    (fake_conda_base / "bin").mkdir(parents=True)
+    conda_bin = fake_conda_base / "bin" / "conda"
+    conda_bin.write_text("#!/bin/sh\necho fake\n")
+    conda_bin.chmod(0o755)
+
+    monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
+    monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == [str(conda_bin), "create"]:
+            (fake_conda_base / "envs" / "gmtsar_regress_test").mkdir(parents=True)
+    monkeypatch.setattr(install, "run", fake_run)
+
+    prefix = install.locate_conda_env("gmtsar_regress_test")
+    assert prefix == fake_conda_base / "envs" / "gmtsar_regress_test"
+    assert calls, "conda create was never invoked"
+    assert "conda-forge" in calls[0]
+
+
+def test_locate_conda_env_finds_env_outside_conda_search_bases(tmp_path, monkeypatch):
+    """Real bug: the post-`conda create` existence check used to
+    re-scan the fixed CONDA_SEARCH_BASES list instead of looking under
+    the SAME conda_base locate_conda_base() actually resolved -- on a
+    host with multiple conda installs (this dev host has 50+), the env
+    genuinely got created but the check couldn't find it, incorrectly
+    erroring "conda create exited 0 but the env still doesn't exist"
+    on a real success. Also covers the case where the env already
+    exists under a non-standard base (no create should be attempted)."""
+    fake_conda_base = tmp_path / "fakeconda"
+    (fake_conda_base / "envs" / "gmtsar_existing").mkdir(parents=True)
+    (fake_conda_base / "bin").mkdir()
+    (fake_conda_base / "bin" / "conda").write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
+    monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+
+    calls = []
+    monkeypatch.setattr(install, "run", lambda cmd, **kw: calls.append(cmd))
+
+    prefix = install.locate_conda_env("gmtsar_existing")
+    assert prefix == fake_conda_base / "envs" / "gmtsar_existing"
+    assert not calls, "should NOT have called conda create -- env already exists"
 
 
 if __name__ == "__main__":
