@@ -43,6 +43,23 @@ def test_flex_in_apt_system_deps():
     assert "flex" in install.APT_SYSTEM_DEPS
 
 
+def test_flex_bootstrapped_via_conda_and_lex_overridden():
+    """flex is missing from a real host's system PATH even after being
+    documented as 'assumed present' -- confirmed live (--system conda,
+    ERS_Hector_EQ zero-comparison failure). Since flex has no ABI/
+    linkage implications (unlike gfortran/g++, which deliberately stay
+    system-provided), it's bootstrapped via conda-forge directly. But
+    GNU Make's implicit .l.c rule invokes $(LEX), which defaults to the
+    LITERAL name "lex" -- not "flex" -- so conda-forge's flex package
+    must ALSO be paired with an explicit LEX=flex override; otherwise
+    installing flex alone doesn't guarantee `make`'s lex rule finds it
+    (no lex-alias guarantee across conda-forge builds/channels)."""
+    assert "flex" in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
+    import inspect
+    src = inspect.getsource(install.do_conda_setup)
+    assert '"LEX": "flex"' in src
+
+
 def test_conda_setup_extra_env_includes_path():
     """do_conda_setup()'s extra_env must prepend the conda env's own
     bin/ to PATH -- otherwise configure's HDF5 detection (which shells

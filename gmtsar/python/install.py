@@ -19,9 +19,11 @@ beyond the OS package manager, or an already-installed Miniconda/Anaconda):
               --conda-env) to pick which env (default: 'gmtsar'). If the
               env doesn't exist yet, it's created via `conda create -c
               conda-forge gmt hdf5 libtiff liblapack ...` (network
-              required). Still assumes the system already has basic
-              build tools (gfortran, g++, make, autoconf, csh, flex,
-              ghostscript) -- --system conda deliberately keeps the
+              required, also bootstraps flex -- see do_conda_setup's
+              docstring for why flex specifically is conda-provisioned
+              rather than assumed). Still assumes the system already
+              has basic build tools (gfortran, g++, make, autoconf,
+              csh, ghostscript) -- --system conda deliberately keeps the
               SYSTEM compiler in use rather than conda's (see
               do_conda_setup's docstring), so it is not a fully
               from-scratch bootstrap on a bare OS image the way
@@ -210,7 +212,7 @@ def locate_conda_base() -> Path:
 # itself plus its two data companions (official GMT conda-forge install
 # guidance), and the C libraries requirements.txt documents as NOT
 # pip-installable (libtiff, hdf5, lapack). Deliberately excludes
-# compilers/make/autoconf/csh/flex/ghostscript/git -- do_conda_setup() keeps
+# compilers/make/autoconf/csh/ghostscript/git -- do_conda_setup() keeps
 # system gfortran/gcc in use on purpose (see its docstring), so --system
 # conda still assumes those system build tools pre-exist; only --system
 # ubuntu provisions them.
@@ -242,8 +244,23 @@ def locate_conda_base() -> Path:
 # version-mismatch warning, a hard build failure with no binary
 # produced. 1.12.2 is what the project's actual working reference conda
 # env already has and is confirmed to configure/link cleanly.
+#
+# `flex` (2026-07-14, real clean-room test): documented as a conda-mode
+# "assumed already present" system tool (see do_conda_setup's docstring)
+# same as gfortran/g++/make/autoconf/csh/ghostscript -- but unlike a
+# compiler, flex has no ABI/linkage implications for anything else in
+# the build (it's a standalone code-generator invoked once to turn
+# preproc/ERS_preproc/ers_line_fixer/ers_line_fixer.l into a .c file,
+# nothing links against "libflex"). So unlike gfortran/g++ (which
+# deliberately stay system-provided -- see do_conda_setup's docstring
+# on why conda activation would break configure), it's safe AND more
+# self-sufficient to bootstrap flex via conda-forge directly rather
+# than only assume/document it -- confirmed on a real host where flex
+# genuinely wasn't installed system-wide, breaking --system conda's
+# "just works from a bare Miniconda install" promise for ERS_Hector_EQ
+# and any other .l/.y-derived build.
 CONDA_FORGE_BOOTSTRAP_PACKAGES = [
-    "gmt=6.4", "gshhg-gmt", "dcw-gmt",
+    "gmt=6.4", "gshhg-gmt", "dcw-gmt", "flex",
     "hdf5=1.12.*", "libtiff>=4.5,<5", "liblapack>=3.9",
 ]
 
@@ -332,8 +349,11 @@ def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
     build flags don't silently leak into every other subprocess this
     script runs. This is why --system conda still assumes the system's
     own compiler/build-tool chain (gfortran, g++, make, autoconf, csh,
-    flex, ghostscript) is already present, unlike --system ubuntu which
-    provisions all of that itself via apt."""
+    ghostscript) is already present, unlike --system ubuntu which
+    provisions all of that itself via apt. flex is the one exception --
+    bootstrapped via conda-forge instead of assumed present, since
+    (unlike a compiler) it has no ABI/linkage implications for the rest
+    of the build -- see CONDA_FORGE_BOOTSTRAP_PACKAGES's comment."""
     prefix = locate_conda_env(conda_env)
     print(f"==> Using conda env at {prefix} (no sudo)")
     extra_env = {
@@ -357,6 +377,14 @@ def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
         # env's own bin/ to PATH makes `h5cc`/`h5pcc` resolve to the
         # SAME installation CPPFLAGS/LDFLAGS point at.
         "PATH": f"{prefix}/bin:{os.environ.get('PATH', '')}",
+        # GNU Make's implicit .l.c rule invokes $(LEX), which defaults to
+        # the LITERAL name "lex" -- not "flex". conda-forge's flex
+        # package installs a `flex` binary; whether it also provides a
+        # `lex` alias/symlink is not guaranteed across channels/versions,
+        # so don't gamble on PATH resolution finding one. Overriding LEX
+        # as an env var is honored by make's implicit-rule variable
+        # substitution regardless of what's actually on PATH.
+        "LEX": "flex",
     }
     return prefix, extra_env
 
