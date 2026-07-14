@@ -78,15 +78,26 @@ APT_PYTHON_DEPS = [
 # gmt_surface_py, all wired ON by default.
 PIP_PYTHON_DEPS_UBUNTU = ["numba>=0.56", "cython>=3.0"]
 
-# The bin_py/ ports that utils/p2p_stages.py invokes by bare name via
+# The bin_py/ ports that utils/p2p_stages.py (and utils/filter, utils/
+# intf, utils/geocode, utils/dem2topo_ra) invoke by bare name via
 # subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too. One
 # production copy per tool, no version suffixes (project_rules.md Rule 13)
 # -- superseded variants (resamp_py_v2, SAT_llt2rat_py's old v1) were kept
 # at bin_py/archive/ for reference, removed in the v2.7.1 doc cleanup
 # (recoverable from git history if needed), never on PATH.
+#
+# `phasefilt_py` (2026-07-14, real clean-room test): was MISSING here --
+# utils/filter:275 calls `run('phasefilt_py ' + args)`, so every fresh
+# install broke on the filter pipeline stage (rc=127; fails loudly since
+# gmtsar_lib.run() raises on rc=127 -- see project_rules.md Rule 1).
+# Confirmed by grepping every bin_py/*_py tool against every bare
+# `run(f"<name> ...")`/`subprocess...['<name>', ...]` call site in
+# utils/ -- blockmedian_py/conv_py/make_slc_csk2_py/surface_py have no
+# such call site (not invoked by bare name anywhere), so they're
+# correctly absent from this list.
 BIN_PY_NAMES = [
     "phasediff_py", "make_los_py", "SAT_baseline_py", "xcorr_py",
-    "resamp_py", "make_slc_s1a_py", "SAT_llt2rat_py",
+    "resamp_py", "make_slc_s1a_py", "SAT_llt2rat_py", "phasefilt_py",
 ]
 
 CONDA_SEARCH_BASES = ["~/anaconda3", "~/miniconda3", "/opt/conda"]
