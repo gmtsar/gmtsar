@@ -20,7 +20,7 @@ beyond the OS package manager, or an already-installed Miniconda/Anaconda):
               env doesn't exist yet, it's created via `conda create -c
               conda-forge gmt hdf5 libtiff liblapack ...` (network
               required). Still assumes the system already has basic
-              build tools (gfortran, g++, make, autoconf, csh,
+              build tools (gfortran, g++, make, autoconf, csh, flex,
               ghostscript) -- --system conda deliberately keeps the
               SYSTEM compiler in use rather than conda's (see
               do_conda_setup's docstring), so it is not a fully
@@ -66,6 +66,15 @@ APT_SYSTEM_DEPS = [
     "python-is-python3", "csh", "subversion", "autoconf", "libtiff5-dev",
     "libhdf5-dev", "wget", "liblapack-dev", "gfortran", "g++", "libgmt-dev",
     "gmt-dcw", "gmt-gshhg", "gmt", "ghostscript", "git", "make", "vim",
+    # flex (2026-07-14, real clean-room build failure): preproc/ERS_preproc/
+    # ers_line_fixer/ers_line_fixer.l needs `lex`/`flex` to generate its .c
+    # source. Without it, `lex -t ers_line_fixer.l > ers_line_fixer.c` fails
+    # with "command not found", silently produces an empty .c file that
+    # still COMPILES (0 warnings) but has no main(), and the link step then
+    # fails with "undefined reference to `main'" -- no binary, no clear
+    # connection back to "flex is missing" unless you read the raw build
+    # log. The only .l/.y source in the whole repo, so flex alone suffices.
+    "flex",
 ]
 APT_PYTHON_DEPS = [
     "python3-skimage", "python3-matplotlib", "python3-xarray",
@@ -201,7 +210,7 @@ def locate_conda_base() -> Path:
 # itself plus its two data companions (official GMT conda-forge install
 # guidance), and the C libraries requirements.txt documents as NOT
 # pip-installable (libtiff, hdf5, lapack). Deliberately excludes
-# compilers/make/autoconf/csh/ghostscript/git -- do_conda_setup() keeps
+# compilers/make/autoconf/csh/flex/ghostscript/git -- do_conda_setup() keeps
 # system gfortran/gcc in use on purpose (see its docstring), so --system
 # conda still assumes those system build tools pre-exist; only --system
 # ubuntu provisions them.
@@ -323,7 +332,7 @@ def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
     build flags don't silently leak into every other subprocess this
     script runs. This is why --system conda still assumes the system's
     own compiler/build-tool chain (gfortran, g++, make, autoconf, csh,
-    ghostscript) is already present, unlike --system ubuntu which
+    flex, ghostscript) is already present, unlike --system ubuntu which
     provisions all of that itself via apt."""
     prefix = locate_conda_env(conda_env)
     print(f"==> Using conda env at {prefix} (no sudo)")
