@@ -758,3 +758,67 @@ in the first place.
 
 See Rule 6 for golden/oracle-dir protection, which also applies to the
 scratch workdirs these sweeps create.
+
+## 14. Clean-room install.py tests reuse the tarball cache — freshness is about the install, not the data
+
+When verifying `install.py` end-to-end (a fresh `git clone` + a genuinely
+new conda env, per the "not touching existing installs" discipline this
+kind of test requires), do NOT also force a fresh download of the
+`tests/sweep.py` sample tarballs. What must be fresh is the *install*
+(clone, conda env, build) — the multi-GB `topex.ucsd.edu` sample archives
+are immutable, versioned test fixtures, identical regardless of which
+clone or conda env is running the sweep. Re-downloading them on every
+clean-room test wastes 10s of minutes and bandwidth for zero additional
+verification value.
+
+**How to apply — the ONE exception is the tarball cache; everything else
+in a clean-room install.py test must be fresh:**
+- Repo checkout: a real `git clone` from the commit under test, not a
+  copy of a working tree (uncommitted local state must not leak in).
+- Conda env (or apt state, for `--system ubuntu`): a genuinely new,
+  never-before-used env/name — must not touch or reuse the existing
+  dev env.
+- Build: run for real inside the fresh clone (`configure`/`make`/`make
+  install`, real `stage_execs()` symlinking) — not skipped, not copied
+  from an existing `bin/`.
+- Sweep run outputs: `python_test/`, `csh_test/`, `results/` are
+  produced fresh by this run, in the fresh clone's own `work/` dir —
+  never reused, symlinked, or copied in from an existing cache. This is
+  the actual thing the test is verifying; if it's stale, the test
+  proves nothing.
+- Only `work/dataset/<case>.tar.gz` (the tarball cache) may be
+  copied/symlinked in from an existing cache, per the "how to apply"
+  step above. This mirrors Rule 6: the tarball cache is read-only
+  ground-truth input data, not part of what a clean-room test is
+  attesting to — everything downstream of it must still be fresh.
+
+## 15. Install/setup docs are code — verify by actually following them, not by reading them
+
+Any change to `install.py`, `README.md`'s Installation section, or the
+setup/testing workflow must be verified by RUNNING the documented steps
+end-to-end, not by proofreading them. A README that reads correctly but
+was never executed is a common source of "works on my machine" drift —
+both real bugs found in `install.py` on 2026-07-13 (`gshhg-gmt-nc4` is
+not a real conda-forge package name; `locate_conda_env`'s post-create
+check searched the wrong conda base on a host with multiple conda
+installs) were caught only because something actually RAN the
+instructions in a clean room, not by reading the code. Rule 14 (tarball
+cache reuse) applies to any such run.
+
+**How to apply:**
+- Before landing any `install.py`/README setup change, run
+  `tests/test_install.py --system conda` (cheap, minutes: fresh clone +
+  `gmtsar_sharedir.csh` + `bin_py/tests/`) at minimum.
+- Run `tests/test_install.py --system conda --full` (adds `sweep.py
+  --fast`, ~30-40 min) before a version tag if the change could affect
+  the test pipeline itself, not just the install step.
+- A manual walkthrough (literally running the README's own commands in
+  order — `install.py --system <x>`, its printed env-export lines, its
+  sanity checks, `--rebuild`) is an acceptable quick substitute for
+  `--smoke`, but does NOT replace a real clean-room run (fresh clone,
+  fresh conda env or apt state) before a release — a manual walkthrough
+  on an already-working dev host can't catch the class of bug a fresh
+  environment exposes (see the two 2026-07-13 bugs above, neither of
+  which reproduced on the dev host that wrote the code).
+- If `test_install.py` itself changes, verify IT the same way: run it
+  for real, don't just read the diff.
