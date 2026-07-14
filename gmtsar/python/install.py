@@ -138,8 +138,20 @@ def locate_conda_base() -> Path:
 # system gfortran/gcc in use on purpose (see its docstring), so --system
 # conda still assumes those system build tools pre-exist; only --system
 # ubuntu provisions them.
+#
+# Version guards (same floor-pin convention as requirements.txt -- pin
+# what affects build/output correctness, leave pure-data packages
+# unpinned): gmt is pinned to a minor version since a GMT upgrade can
+# shift numerical output and this project's whole premise is bit-parity
+# with a known-good GMT. hdf5/libtiff get a floor + major-version cap
+# since they're linked into the C build and touch grid I/O -- an
+# unpinned ABI/behavior change discovered months later would be hard to
+# trace back to a conda solve. liblapack gets a floor pin (lower risk,
+# narrow linear-algebra usage, but free to pin). gshhg-gmt-nc4/dcw-gmt
+# are coastline/boundary DATA, not compute -- left unpinned.
 CONDA_FORGE_BOOTSTRAP_PACKAGES = [
-    "gmt=6.4", "gshhg-gmt-nc4", "dcw-gmt", "hdf5", "libtiff", "liblapack",
+    "gmt=6.4", "gshhg-gmt-nc4", "dcw-gmt",
+    "hdf5>=1.14,<2", "libtiff>=4.5,<5", "liblapack>=3.9",
 ]
 
 
@@ -201,23 +213,26 @@ def do_ubuntu_deps() -> None:
     run(sudo + ["apt", "install", "-y"] + APT_SYSTEM_DEPS)
 
 
-def do_conda_setup(conda_env: str) -> Path:
+def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
     """Locate (or create, if missing -- see locate_conda_env) the conda
-    env, then wire its libs/includes WITHOUT activating the env, so
-    system gfortran/gcc stay in use. Full conda activation pollutes
-    CC/F77 and breaks configure -- this is why --system conda still
-    assumes the system's own compiler/build-tool chain (gfortran, g++,
-    make, autoconf, csh, ghostscript) is already present, unlike --system
-    ubuntu which provisions all of that itself via apt."""
+    env, then return its libs/includes as an explicit env-var dict for
+    do_build to pass ONLY to the subprocess calls that need them --
+    WITHOUT activating the env or mutating this process's own
+    os.environ, so system gfortran/gcc stay in use (full conda
+    activation pollutes CC/F77 and breaks configure) and so these
+    build flags don't silently leak into every other subprocess this
+    script runs. This is why --system conda still assumes the system's
+    own compiler/build-tool chain (gfortran, g++, make, autoconf, csh,
+    ghostscript) is already present, unlike --system ubuntu which
+    provisions all of that itself via apt."""
     prefix = locate_conda_env(conda_env)
     print(f"==> Using conda env at {prefix} (no sudo)")
-    os.environ["CPPFLAGS"] = f"-I{prefix}/include -I{prefix}/include/gmt"
-    os.environ["LDFLAGS"] = f"-L{prefix}/lib -Wl,-rpath,{prefix}/lib"
-    pkg_config_path = os.environ.get("PKG_CONFIG_PATH", "")
-    os.environ["PKG_CONFIG_PATH"] = f"{prefix}/lib/pkgconfig" + (
-        f":{pkg_config_path}" if pkg_config_path else ""
-    )
-    return prefix
+    extra_env = {
+        "CPPFLAGS": f"-I{prefix}/include -I{prefix}/include/gmt",
+        "LDFLAGS": f"-L{prefix}/lib -Wl,-rpath,{prefix}/lib",
+        "PKG_CONFIG_PATH": f"{prefix}/lib/pkgconfig",
+    }
+    return prefix, extra_env
 
 
 def do_python_deps(use_conda: bool, conda_prefix: Path | None) -> None:
@@ -280,23 +295,37 @@ def patch_config_mk(config_mk: Path, use_conda: bool,
     config_mk.write_text("".join(lines))
 
 
-def do_build(use_conda: bool, conda_prefix: Path | None) -> None:
+def do_build(use_conda: bool, conda_prefix: Path | None,
+             extra_env: dict[str, str] | None = None) -> None:
+    """extra_env (from do_conda_setup, empty for --system ubuntu) is
+    passed ONLY to the subprocess calls below that need it (configure,
+    make, make install) -- not applied as a global os.environ mutation,
+    so it can't silently affect any other command this script runs."""
     print(f"==> Building gmtsar in {REPO_ROOT} ...")
     os.chdir(REPO_ROOT)
+    build_env = None
+    if extra_env:
+        build_env = dict(os.environ)
+        existing_pkg_config_path = build_env.get("PKG_CONFIG_PATH", "")
+        build_env.update(extra_env)
+        if existing_pkg_config_path:
+            build_env["PKG_CONFIG_PATH"] = (
+                f"{extra_env['PKG_CONFIG_PATH']}:{existing_pkg_config_path}")
+
     if not Path("configure").is_file():
         run(["autoconf"])
     subprocess.run(["autoupdate"])  # best-effort, matches `autoupdate || true`
     config_mk = REPO_ROOT / "config.mk"
     if not config_mk.is_file():
         run(["./configure", f"--prefix={REPO_ROOT}",
-             f"--with-orbits-dir={REPO_ROOT}/orbits"])
+             f"--with-orbits-dir={REPO_ROOT}/orbits"], env=build_env)
     patch_config_mk(config_mk, use_conda, conda_prefix)
 
     # Sequential build: gmtsar's recursive Makefile has cross-dir
     # dependencies (preproc/* links against ../../gmtsar/libgmtsar) that
     # race under -j.
-    run(["make"])
-    run(["make", "install"])  # installs into $REPO_ROOT/bin via --prefix (no sudo)
+    run(["make"], env=build_env)
+    run(["make", "install"], env=build_env)  # installs into $REPO_ROOT/bin via --prefix (no sudo)
 
     bin_dir = REPO_ROOT / "bin"
     py_utils = REPO_ROOT / "gmtsar" / "python" / "utils"
@@ -371,9 +400,9 @@ def main() -> None:
                              "deps (apt for ubuntu, a conda env -- created "
                              "if missing -- for conda), Python packages, "
                              "and the in-place build")
-    parser.add_argument("--conda-env", default=os.environ.get("CONDA_GMTSAR_ENV", "gmtsar"),
+    parser.add_argument("--conda-env", default="gmtsar",
                         help="conda env name for --system conda "
-                             "(default: $CONDA_GMTSAR_ENV or 'gmtsar')")
+                             "(default: 'gmtsar')")
     parser.add_argument("--rebuild", action="store_true",
                         help="skip the dependency steps, just rebuild + "
                              "re-stage (requires --system, for its build "
@@ -394,17 +423,18 @@ def main() -> None:
 
     use_conda = args.system == "conda"
     conda_prefix: Path | None = None
+    extra_env: dict[str, str] = {}
 
     if args.system == "ubuntu":
         if not args.rebuild:
             do_ubuntu_deps()
     elif args.system == "conda":
-        conda_prefix = do_conda_setup(args.conda_env)
+        conda_prefix, extra_env = do_conda_setup(args.conda_env)
 
     if args.system is not None:
         if not args.rebuild:
             do_python_deps(use_conda, conda_prefix)
-        do_build(use_conda, conda_prefix)
+        do_build(use_conda, conda_prefix, extra_env)
 
     if args.orbits:
         do_orbits()
