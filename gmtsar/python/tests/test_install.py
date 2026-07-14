@@ -11,13 +11,21 @@ the two real bugs this tool's manual precursor (a one-off agent run) found
 in install.py on 2026-07-13 (see git log for "gshhg-gmt" and
 "locate_conda_env").
 
-Two modes:
+Three modes (named to match tests/sweep.py's own --fast/--full vocabulary
+directly -- an earlier version of this tool called the 12-case mode
+"--full", which was a real, confusing naming bug: it never actually ran
+sweep.py --full (21 cases), only sweep.py --fast (12 cases), so passing
+"--full" here silently never verified the other 9 cases at all):
     --smoke (default)  fresh install + gmtsar_sharedir.csh (upstream's own
                         post-build sanity check, from .github/workflows/
                         gmtsar.yml) + the bin_py/tests/ unit/parity suite.
                         Minutes, not the better part of an hour.
-    --full              --smoke, plus tests/sweep.py --fast (12 real
+    --fast              --smoke, plus tests/sweep.py --fast (12 real
                         py-vs-csh cases) inside the same fresh clone.
+    --full              --smoke, plus tests/sweep.py --full (all 21 real
+                        py-vs-csh cases) inside the same fresh clone.
+                        Hours, not minutes -- the real, complete
+                        verification.
 
 Per project_rules.md Rule 14: everything is fresh (clone, conda env,
 build, sweep outputs) EXCEPT the sample tarball cache, which is reused
@@ -27,6 +35,7 @@ verification value.
 
 Usage:
     python3 tests/test_install.py --system conda
+    python3 tests/test_install.py --system conda --fast
     python3 tests/test_install.py --system conda --full
     python3 tests/test_install.py --system ubuntu --smoke
     python3 tests/test_install.py --system conda --keep   # don't rm the clone after
@@ -122,14 +131,14 @@ def _reuse_orbits(clone_dir: Path) -> None:
     _log(f"[{_utc_now()}] reused orbits/ via symlink: {dst} -> {src}")
 
 
-def _fast_tier_cases() -> list[str]:
+def _tier_cases(tier: str) -> list[str]:
     """cases.py lives in the same tests/ dir as this script, so it's
     importable directly (no path juggling, no clone dependency -- the
-    fast-tier case LIST is fixed source, unrelated to which clone is
-    running)."""
+    tier case LIST is fixed source, unrelated to which clone is
+    running). tier is "fast" (12 cases) or "full" (all 21)."""
     import cases as _cases_mod
     return [name for name, meta in _cases_mod.CASES.items()
-            if "fast" in meta.get("tiers", set()) and meta.get("enabled", True)]
+            if tier in meta.get("tiers", set()) and meta.get("enabled", True)]
 
 
 def _reuse_tarball_cache(clone_python_dir: Path, cases: list[str]) -> None:
@@ -268,9 +277,13 @@ def main() -> int:
                        help="(default) fresh install + gmtsar_sharedir.csh "
                             "+ bin_py/tests/ -- minutes, not the better "
                             "part of an hour")
-    mode.add_argument("--full", action="store_true",
+    mode.add_argument("--fast", action="store_true",
                        help="--smoke, plus tests/sweep.py --fast (12 real "
                             "py-vs-csh cases) in the same fresh clone")
+    mode.add_argument("--full", action="store_true",
+                       help="--smoke, plus tests/sweep.py --full (all 21 "
+                            "real py-vs-csh cases) in the same fresh "
+                            "clone -- hours, the real complete verification")
     p.add_argument("--conda-env", default=None,
                     help="conda env name to create (default: "
                          "gmtsar_test_install_<UTC timestamp>, always "
@@ -279,10 +292,12 @@ def main() -> int:
                     help="don't rm the fresh clone afterward (default: "
                          "removed only if every step passed)")
     p.add_argument("--cases", nargs="+", default=None,
-                    help="--full only: pass through to sweep.py --fast "
+                    help="--fast/--full only: pass through to sweep.py's "
                          "--cases, to cheaply re-verify specific cases "
-                         "instead of the full 12")
+                         "instead of the whole tier")
     args = p.parse_args()
+
+    sweep_tier = "full" if args.full else "fast" if args.fast else None
 
     global _LOG_PATH
     work_root = _PYTHON_DIR / "work" / "install_test"
@@ -293,7 +308,7 @@ def main() -> int:
 
     _log(f"[{_utc_now()}] test_install.py log start")
     _log(f"  argv: {' '.join(sys.argv)}")
-    _log(f"  system: {args.system}  mode: {'full' if args.full else 'smoke'}  "
+    _log(f"  system: {args.system}  mode: {sweep_tier or 'smoke'}  "
          f"conda_env: {conda_env!r}")
     _log(f"  log file: {_LOG_PATH}")
 
@@ -301,10 +316,10 @@ def main() -> int:
 
     clone_dir = _fresh_clone(work_root)
     clone_python_dir = clone_dir / "gmtsar" / "python"
-    if args.full:
-        # Tarballs and orbits are only needed by sweep.py --fast
+    if sweep_tier:
+        # Tarballs and orbits are only needed by sweep.py --fast/--full
         # (--smoke never touches either -- no point reusing anything).
-        needed_cases = args.cases or _fast_tier_cases()
+        needed_cases = args.cases or _tier_cases(sweep_tier)
         _reuse_tarball_cache(clone_python_dir, needed_cases)
         _reuse_orbits(clone_dir)
 
@@ -345,20 +360,22 @@ def main() -> int:
                    "bin_py/tests/", cwd=str(clone_python_dir), env=env)
     results.append(("bin_py/tests/ (unit/parity suite)", ok, dt))
 
-    if args.full:
-        sweep_cases = args.cases or _fast_tier_cases()
-        sweep_cmd = [py_exe, "tests/sweep.py", "--fast"]
+    if sweep_tier:
+        sweep_cases = args.cases or _tier_cases(sweep_tier)
+        sweep_cmd = [py_exe, "tests/sweep.py", f"--{sweep_tier}"]
         if args.cases:
             sweep_cmd += ["--cases"] + args.cases
-        ok, dt = _run(sweep_cmd, "sweep.py --fast", cwd=str(clone_python_dir), env=env)
+        step_name = f"sweep.py --{sweep_tier}"
+        ok, dt = _run(sweep_cmd, step_name, cwd=str(clone_python_dir), env=env)
         if ok:
             # sweep.py's own exit code only reflects orchestration
             # health -- it's 0 even when individual comparisons FAIL.
             # Re-derive the real verdict from compare.py's own output.
             ok, verdict = _check_sweep_results(clone_python_dir, sweep_cases)
-            _log(f"[{_utc_now()}] [sweep.py --fast] real verdict: {verdict}")
-        cases_label = ", ".join(args.cases) if args.cases else "12 cases"
-        results.append((f"tests/sweep.py --fast ({cases_label})", ok, dt))
+            _log(f"[{_utc_now()}] [{step_name}] real verdict: {verdict}")
+        total_n = 21 if sweep_tier == "full" else 12
+        cases_label = ", ".join(args.cases) if args.cases else f"{total_n} cases"
+        results.append((f"tests/{step_name} ({cases_label})", ok, dt))
 
     all_passed = _print_summary(results, clone_dir)
 
