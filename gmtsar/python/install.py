@@ -147,10 +147,14 @@ def locate_conda_base() -> Path:
 # since they're linked into the C build and touch grid I/O -- an
 # unpinned ABI/behavior change discovered months later would be hard to
 # trace back to a conda solve. liblapack gets a floor pin (lower risk,
-# narrow linear-algebra usage, but free to pin). gshhg-gmt-nc4/dcw-gmt
-# are coastline/boundary DATA, not compute -- left unpinned.
+# narrow linear-algebra usage, but free to pin). gshhg-gmt/dcw-gmt are
+# coastline/boundary DATA, not compute -- left unpinned.
+#
+# `gshhg-gmt-nc4` (2026-07-13, real clean-room test): NOT a real
+# conda-forge package name -- `conda create` fails with
+# PackagesNotFoundError. The correct package is `gshhg-gmt`.
 CONDA_FORGE_BOOTSTRAP_PACKAGES = [
-    "gmt=6.4", "gshhg-gmt-nc4", "dcw-gmt",
+    "gmt=6.4", "gshhg-gmt", "dcw-gmt",
     "hdf5>=1.14,<2", "libtiff>=4.5,<5", "liblapack>=3.9",
 ]
 
@@ -159,25 +163,41 @@ def locate_conda_env(envname: str) -> Path:
     """Find an existing conda env named `envname`; if none exists, create
     it via `conda create -c conda-forge ...` so --system conda works on a
     brand-new host that already has *some* conda install but not yet the
-    'gmtsar' env (network required for the create step)."""
+    'gmtsar' env (network required for the create step).
+
+    Real bug fixed 2026-07-13 (found by a genuine clean-room test, not
+    a fixture): _find_existing_conda_env() only ever checks the fixed
+    CONDA_SEARCH_BASES list (~/anaconda3, ~/miniconda3, /opt/conda).
+    locate_conda_base() can resolve a DIFFERENT conda install entirely
+    (via $CONDA_EXE or `conda` on PATH) -- e.g. a host whose conda lives
+    at ~/anaconda_knox. When that happens, an env this function itself
+    just created under conda_base/envs/<name> would NOT be found by
+    re-scanning CONDA_SEARCH_BASES, incorrectly erroring "conda create
+    exited 0 but the env still doesn't exist" even though it does. The
+    post-create check (and a pre-create check) must look under the
+    SAME conda_base that locate_conda_base() actually resolved, not a
+    separately-guessed list."""
     existing = _find_existing_conda_env(envname)
     if existing is not None:
         return existing
     conda_base = locate_conda_base()
+    # conda_base may not be one of CONDA_SEARCH_BASES -- check its own
+    # envs/ dir directly before assuming a fresh create is needed.
+    candidate = conda_base / "envs" / envname
+    if candidate.is_dir():
+        return candidate
     print(f"==> conda env '{envname}' not found; creating it via "
           f"{conda_base}/bin/conda create -c conda-forge "
           f"{' '.join(CONDA_FORGE_BOOTSTRAP_PACKAGES)} "
           "(this downloads packages -- needs network, may take a while)...")
     run([str(conda_base / "bin" / "conda"), "create", "-n", envname, "-y",
          "-c", "conda-forge"] + CONDA_FORGE_BOOTSTRAP_PACKAGES)
-    created = _find_existing_conda_env(envname)
-    if created is None:
+    if not candidate.is_dir():
         sys.exit(
-            f"ERROR: conda create exited 0 but envs/{envname} still "
-            "doesn't exist under any known conda base -- check the conda "
-            "output above."
+            f"ERROR: conda create exited 0 but {candidate} still doesn't "
+            "exist -- check the conda output above."
         )
-    return created
+    return candidate
 
 
 def stage_execs(paths: list[Path], bin_dir: Path) -> None:
