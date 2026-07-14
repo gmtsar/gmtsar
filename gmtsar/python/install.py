@@ -495,7 +495,16 @@ def _defuse_fake_lex_sources() -> None:
     ers_line_fixer.c/.l exist in the whole repo today, but this is
     written generally in case that ever changes."""
     for l_file in REPO_ROOT.rglob("*.l"):
-        if "/work/" in str(l_file) or "/.git/" in str(l_file):
+        # Real bug (2026-07-14): a substring check ("/work/" in str(l_file))
+        # against the ABSOLUTE path incorrectly matched every file whenever
+        # REPO_ROOT itself happened to be nested under a directory named
+        # "work" -- exactly what test_install.py's own clean-room clones
+        # are (gmtsar/python/work/install_test/clone_.../), silently
+        # skipping the real fix on every test run while a normal user's
+        # clone (no "work" anywhere in its path) would've been unaffected.
+        # Check path COMPONENTS relative to REPO_ROOT instead.
+        rel_parts = l_file.relative_to(REPO_ROOT).parts
+        if "work" in rel_parts or ".git" in rel_parts:
             continue
         c_file = l_file.with_suffix(".c")
         if not c_file.is_file():
