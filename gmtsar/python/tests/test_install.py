@@ -117,6 +117,43 @@ def _reuse_tarball_cache(clone_python_dir: Path) -> None:
     _log(f"[{_utc_now()}] reused {n} cached tarball(s) from {src} -> {dst}")
 
 
+def _check_sweep_results(clone_python_dir: Path) -> tuple[bool, str]:
+    """sweep.py's own exit code only reflects whether the ORCHESTRATION
+    crashed -- it returns 0 even when individual case comparisons FAIL
+    (compare.py logs the failure but doesn't propagate it to sweep.py's
+    exit status). The real pass/fail signal is compare.py's own
+    per-comparison verdict in work/results/<case>.json (project_rules.md
+    Rule 12b: "'pass' means compare.py's own criteria"). Real bug found
+    2026-07-14: an earlier version of this function didn't exist at all
+    -- test_install.py trusted sweep.py's exit code, reported a false
+    PASS, and deleted the fresh clone (destroying the diagnostic
+    evidence) despite 7 real comparison failures."""
+    import json
+    results_dir = clone_python_dir / "work" / "results"
+    fails = []
+    total = 0
+    for f in sorted(results_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+        except Exception as exc:
+            fails.append(f"{f.name}: could not parse ({exc!r})")
+            continue
+        for c in data.get("comparisons", []):
+            if c.get("pair") != "py-vs-csh":
+                continue
+            total += 1
+            if c.get("status") != "SUCCESS":
+                fails.append(
+                    f"{data.get('case', f.stem)}: {c.get('file')} "
+                    f"[{c.get('intf', '')}] -> {c.get('status')} "
+                    f"({c.get('metric_name')}={c.get('metric')})")
+    if not fails:
+        return True, f"{total}/{total} py-vs-csh comparisons SUCCESS"
+    summary = f"{total - len(fails)}/{total} py-vs-csh comparisons SUCCESS -- FAILURES:\n"
+    summary += "\n".join(f"    {line}" for line in fails)
+    return False, summary
+
+
 def _locate_fresh_conda_prefix(conda_env: str) -> Path | None:
     """install.py's locate_conda_env() may create the env under a conda
     base outside the usual search list (see its own docstring for the
@@ -169,6 +206,10 @@ def main() -> int:
     p.add_argument("--keep", action="store_true",
                     help="don't rm the fresh clone afterward (default: "
                          "removed only if every step passed)")
+    p.add_argument("--cases", nargs="+", default=None,
+                    help="--full only: pass through to sweep.py --fast "
+                         "--cases, to cheaply re-verify specific cases "
+                         "instead of the full 12")
     args = p.parse_args()
 
     global _LOG_PATH
@@ -228,9 +269,18 @@ def main() -> int:
     results.append(("bin_py/tests/ (unit/parity suite)", ok, dt))
 
     if args.full:
-        ok, dt = _run([py_exe, "tests/sweep.py", "--fast"],
-                       "sweep.py --fast", cwd=str(clone_python_dir), env=env)
-        results.append(("tests/sweep.py --fast (12 cases)", ok, dt))
+        sweep_cmd = [py_exe, "tests/sweep.py", "--fast"]
+        if args.cases:
+            sweep_cmd += ["--cases"] + args.cases
+        ok, dt = _run(sweep_cmd, "sweep.py --fast", cwd=str(clone_python_dir), env=env)
+        if ok:
+            # sweep.py's own exit code only reflects orchestration
+            # health -- it's 0 even when individual comparisons FAIL.
+            # Re-derive the real verdict from compare.py's own output.
+            ok, verdict = _check_sweep_results(clone_python_dir)
+            _log(f"[{_utc_now()}] [sweep.py --fast] real verdict: {verdict}")
+        cases_label = ", ".join(args.cases) if args.cases else "12 cases"
+        results.append((f"tests/sweep.py --fast ({cases_label})", ok, dt))
 
     all_passed = _print_summary(results, clone_dir)
 
