@@ -35,7 +35,7 @@ Layout under `gmtsar/python/`:
 - `utils/tkGUI.gmtsar` — Tk GUI front-end
 - `tests/` — regression-test framework (`sweep.py`, `case_runner.py`, `compare.py`, `cases.py`, `run_one.sh`) plus `tests/configs/<case>.py` (staged Python configs translated from bundled csh `config*.txt`) and `tests/recipes/README_<case>.txt` (per-case recipes). The old `sweep.sh`/`case_runner.sh`/`runner.py` bash implementation is archived at `tests/archive/` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `tests/archive/README.md`).
 - `docs/` — release notes archive (`release_notes_v*.md`)
-- Install scripts: `install.sh`, `install.gmtsar.ubuntu.sh`, `install.packages.for.python.testing.sh`, `fetch-orbits.sh`
+- Install script: `install.py` (`--system ubuntu|conda` installs everything for that system — deps, Python packages, build; `--rebuild` and `--orbits` are optional add-ons). Old bash version archived at `archive/install.sh` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `archive/README.md`).
 
 ## Syncing from upstream
 
@@ -54,9 +54,11 @@ Python framework is invoked via the scripts in `gmtsar/python/utils/` (most are 
 ## Install (sudo-free path)
 
 ```
-bash gmtsar/python/install.sh --conda --python --build
+python3 gmtsar/python/install.py --system conda
 ```
-Uses the existing `gmtsar` conda env (auto-detected at `$HOME/anaconda3`, `$HOME/miniconda3`, or `/opt/conda`; set `CONDA_GMTSAR_ENV=<name>` to override the env name). Builds in-place; `make install` lands in `<repo>/bin` via `--prefix=<repo>`. `bin/` also gets the Python utilities and symlinks to all `gmtsar/csh/*.csh` so `pop_config.csh`, `p2p_processing.csh`, etc. are on `PATH`.
+Uses the `gmtsar` conda env (auto-detected at `$HOME/anaconda3`, `$HOME/miniconda3`, or `/opt/conda`; set `CONDA_GMTSAR_ENV=<name>` or `--conda-env <name>` to override). If that env doesn't exist yet, it's created via `conda create -c conda-forge gmt hdf5 libtiff liblapack ...` — only a bare Anaconda/Miniconda install is assumed, not a pre-populated env (network required for that create step). Builds in-place; `make install` lands in `<repo>/bin` via `--prefix=<repo>`. `bin/` also gets the Python utilities and symlinks to all `gmtsar/csh/*.csh` so `pop_config.csh`, `p2p_processing.csh`, etc. are on `PATH`. Once installed, iterate with `--system conda --rebuild` to skip the dependency steps.
+
+`--system ubuntu` is the sudo path: assumes a raw Ubuntu box (nothing pre-installed) and apt-installs the full system dependency set itself.
 
 After install, in any shell:
 ```

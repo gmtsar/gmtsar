@@ -61,7 +61,7 @@ def _find_c_binary() -> str:
     env_override = os.environ.get("MAKE_SLC_S1A_C_BIN", "")
     if env_override and os.access(env_override, os.X_OK):
         return env_override
-    # 2. On PATH (e.g. after `install.sh --build`).
+    # 2. On PATH (e.g. after `install.py --system {ubuntu,conda}`).
     found = shutil.which("make_slc_s1a")
     if found:
         return found

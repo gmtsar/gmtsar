@@ -36,7 +36,7 @@ def resolve_sharedir():
         cur = parent
 
     sys.exit("resolve_sharedir: could not locate share/gmtsar directory "
-             "(set $GMTSAR or install via install.sh --build)")
+             "(set $GMTSAR or install via install.py --system conda --rebuild)")
 
 
 def check_file_report(fn):

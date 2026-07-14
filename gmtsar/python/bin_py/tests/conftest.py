@@ -28,7 +28,7 @@ _COMMON_TOOL_DIRS = [
     os.path.expanduser("~/anaconda3/envs/gmtsar/bin"),
     os.path.expanduser("~/miniconda3/envs/gmtsar/bin"),
     "/opt/conda/envs/gmtsar/bin",
-    "/home/utig5/dliu/gmtsar/bin",                     # this fork's own `install.sh --build` output
+    "/home/utig5/dliu/gmtsar/bin",                     # this fork's own `install.py --system conda` output
 ]
 
 

@@ -130,7 +130,7 @@ Deliverables:
   `pygmt.grdcut`, `pygmt.grdsample`, `pygmt.Figure.grdimage`.
 - `requirements-pygmt.txt` adding `pygmt>=0.14,<1.0` (or whichever
   minor we pin after a compatibility check).
-- `install.sh` extended to install pygmt if `--pygmt` flag is passed.
+- `install.py` extended to install pygmt if `--pygmt` flag is passed.
 - A regression-test diff: scorecard before vs after must be all-PASS.
 - Wall-time delta measured per case and recorded in
   `release_notes_<next>.md`.
@@ -143,7 +143,7 @@ time same-or-better, no new dependency conflicts on the conda env.
 1. **PyGMT version pinning**: v0.14 (last 0.x), v1.0 (Mar 2026 with API
    breaks), or floating-latest? Recommend pin to specific minor in
    Phase 0; revisit per release.
-2. **Conda vs pip install** of pygmt: should `install.sh` prefer
+2. **Conda vs pip install** of pygmt: should `install.py` prefer
    `conda install -c conda-forge pygmt`? Probably yes — pygmt depends
    on `libgmt` which conda-forge ships compatible with our GMT 6.4.
 3. **Bit-exactness budget**: today the test framework accepts
