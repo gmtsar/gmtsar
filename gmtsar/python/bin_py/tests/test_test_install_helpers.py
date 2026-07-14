@@ -216,14 +216,26 @@ def test_locate_fresh_conda_prefix_matches_unnamed_column_env(monkeypatch):
     assert missing is None
 
 
-def test_fast_tier_cases_matches_cases_py_fast_tier():
-    """Sanity check that _fast_tier_cases() (used to scope tarball/
-    orbits reuse when no --cases override is given) stays in sync with
-    tests/cases.py's own CASES dict rather than silently drifting."""
+def test_tier_cases_matches_cases_py_for_fast_and_full():
+    """Sanity check that _tier_cases() (used to scope tarball/orbits
+    reuse when no --cases override is given) stays in sync with
+    tests/cases.py's own CASES dict rather than silently drifting, for
+    BOTH the 12-case fast tier and the 21-case full tier. Real naming
+    bug found live (2026-07-14): this tool's --full flag used to only
+    ever run sweep.py --fast (12 cases), never sweep.py --full (21
+    cases) -- so passing --full silently never verified the other 9
+    cases at all. Fixed by renaming to match sweep.py's own --fast/
+    --full vocabulary directly."""
     import cases as cases_mod
-    expected = {name for name, meta in cases_mod.CASES.items()
-                if "fast" in meta.get("tiers", set()) and meta.get("enabled", True)}
-    assert set(ti._fast_tier_cases()) == expected
+    for tier in ("fast", "full"):
+        expected = {name for name, meta in cases_mod.CASES.items()
+                    if tier in meta.get("tiers", set()) and meta.get("enabled", True)}
+        assert set(ti._tier_cases(tier)) == expected, f"tier={tier}"
+    # The full tier must be a strict superset of fast -- if it isn't,
+    # something in cases.py's tier tagging has drifted.
+    assert set(ti._tier_cases("fast")) <= set(ti._tier_cases("full"))
+    assert len(ti._tier_cases("full")) == 21
+    assert len(ti._tier_cases("fast")) == 12
 
 
 if __name__ == "__main__":

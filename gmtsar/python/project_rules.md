@@ -809,9 +809,15 @@ cache reuse) applies to any such run.
 - Before landing any `install.py`/README setup change, run
   `tests/test_install.py --system conda` (cheap, minutes: fresh clone +
   `gmtsar_sharedir.csh` + `bin_py/tests/`) at minimum.
+- Run `tests/test_install.py --system conda --fast` (adds `sweep.py
+  --fast`, 12 cases, ~30-40 min) before a version tag if the change
+  could affect the test pipeline itself, not just the install step.
 - Run `tests/test_install.py --system conda --full` (adds `sweep.py
-  --fast`, ~30-40 min) before a version tag if the change could affect
-  the test pipeline itself, not just the install step.
+  --full`, all 21 cases, hours) before a release -- the real, complete
+  verification. (`--fast`/`--full` here match `sweep.py`'s own
+  vocabulary directly -- an earlier version of this tool called the
+  12-case mode "--full", which never actually ran `sweep.py --full`
+  at all, silently never verifying the other 9 cases; fixed 2026-07-14.)
 - A manual walkthrough (literally running the README's own commands in
   order — `install.py --system <x>`, its printed env-export lines, its
   sanity checks, `--rebuild`) is an acceptable quick substitute for
