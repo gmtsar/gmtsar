@@ -87,6 +87,8 @@ python3 gmtsar/python/install.py --system conda --rebuild
 
 Other flags: `--conda-env <name>` (default env name `gmtsar`), `--orbits` (fetch the ~5-7 GB `ORBITS.tar`, optional, can run alone). Run `install.py --help` for full details. (Old bash version archived at `gmtsar/python/archive/install.sh`.)
 
+Every run writes a full, timestamped log — every command, real output, elapsed time, exit code — to `gmtsar/python/install_logs/install_<UTC timestamp>.log` (path also printed at the end), so a failure can be traced without re-running.
+
 # Testing for developers
 
 The test runner writes everything under a single work directory, resolved in this order:
