@@ -463,7 +463,7 @@ def patch_config_mk(config_mk: Path, use_conda: bool,
     config_mk.write_text("".join(lines))
 
 
-def _fix_lex_source_mtimes() -> None:
+def _defuse_fake_lex_sources() -> None:
     """Real bug found 2026-07-14: preproc/ERS_preproc/ers_line_fixer/
     ers_line_fixer.l is NOT lex source -- it's a troff man page that
     happens to share the "<name>.l" naming convention (also used for
@@ -479,21 +479,35 @@ def _fix_lex_source_mtimes() -> None:
     ers_line_fixer.c is silently thrown away, and the binary never gets
     built (ERS_Hector_EQ fails downstream with zero comparisons).
 
+    First attempt (touching .c's mtime forward) was NOT sufficient:
+    confirmed live that make STILL regenerated .c from .l despite the
+    touch running first -- most likely NFS attribute-cache staleness
+    between the touch() and make's later stat() on the same file,
+    something a client-side mtime bump can't reliably beat. Rather than
+    fight cache timing, remove the possibility of the implicit rule
+    firing at all: rename the .l file so it no longer matches Make's
+    `%.l` pattern. It is never referenced by any real Makefile rule
+    (only the implicit one that's the whole problem), so renaming it
+    costs nothing.
+
     Fixed at the install.py level, not by editing the upstream Makefile
-    (outside gmtsar/python/, not this project's to patch): touch every
-    committed .c file that shares a basename with a .l file in the
-    repo, so the implicit rule never fires on a fresh checkout. Only
+    (outside gmtsar/python/, not this project's to patch). Only
     ers_line_fixer.c/.l exist in the whole repo today, but this is
     written generally in case that ever changes."""
     for l_file in REPO_ROOT.rglob("*.l"):
         if "/work/" in str(l_file) or "/.git/" in str(l_file):
             continue
         c_file = l_file.with_suffix(".c")
-        if c_file.is_file():
-            c_file.touch()
-            print(f"==> touched {c_file.relative_to(REPO_ROOT)} "
-                  f"(newer than {l_file.name}, which is not real lex "
-                  "source -- see _fix_lex_source_mtimes)")
+        if not c_file.is_file():
+            continue
+        renamed = l_file.with_name(l_file.name + ".not-lex-source")
+        if renamed.exists():
+            continue
+        l_file.rename(renamed)
+        print(f"==> renamed {l_file.relative_to(REPO_ROOT)} -> "
+              f"{renamed.name} (not real lex source -- would spuriously "
+              f"trigger Make's implicit .l.c: rule against the real, "
+              f"committed {c_file.name}; see _defuse_fake_lex_sources)")
 
 
 def do_build(use_conda: bool, conda_prefix: Path | None,
@@ -504,7 +518,7 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
     so it can't silently affect any other command this script runs."""
     print(f"==> Building gmtsar in {REPO_ROOT} ...")
     os.chdir(REPO_ROOT)
-    _fix_lex_source_mtimes()
+    _defuse_fake_lex_sources()
     build_env = None
     if extra_env:
         build_env = dict(os.environ)
