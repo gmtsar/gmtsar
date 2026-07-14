@@ -845,8 +845,22 @@ def dem2topo_ra():
                                         str(V), "temp.rat")
         _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
-            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
-            
+            # Bug fix (2026-07-14): the original csh idiom `>& tmp` merges
+            # stdout+stderr into `tmp` under (t)csh -- dem2topo_ra.csh:86
+            # relies on that to capture GMT's "Hint: ..." message from the
+            # `-Q` probe. `run()` executes via
+            # `subprocess.run(cmd, shell=True)` -> `/bin/sh -c`, which does
+            # NOT understand `>&` (POSIX `>&fd` expects a numeric fd, not a
+            # filename) -- this always failed with "Bad fd number" (rc=2,
+            # swallowed as a WARN per gmtsar_lib.run()'s non-fatal-rc
+            # design), and `tmp` was never created. Every Python run
+            # therefore silently skipped the Hint-based -R auto-clip csh
+            # applies whenever GMT's `-Q` probe suggests a tighter region --
+            # a real, deterministic algorithmic divergence from csh
+            # (project_rules.md Rule 7 verbatim-port violation), not a
+            # cosmetic warning. POSIX equivalent of csh's `>&`: `>tmp 2>&1`.
+            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >tmp 2>&1")
+
             print('DEM2TOPO_RA: ?? is it possible that file tmp is not created? ... ')
             if check_file_report('tmp') == True:
                 # Defining RR
@@ -917,8 +931,10 @@ def dem2topo_ra():
                                         str(V), "temp.rat")
         _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
-            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
-            
+            # Same `>&` -> `>tmp 2>&1` fix as the PRF<1000 branch above --
+            # see the comment there for the full explanation.
+            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >tmp 2>&1")
+
             print('DEM2TOPO_RA: ?? is it possible that file tmp is not created? ... ')
             if check_file_report('tmp')==True:
                 # Defining RR

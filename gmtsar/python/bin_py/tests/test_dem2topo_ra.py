@@ -368,6 +368,96 @@ _ALOS_LED = _ALOS_HAITI_TOPO / "IMG-HH-ALPSRP166373240-H1.0__D.LED"
 @unittest.skipUnless(
     _ALOS_MASTER_PRM.exists() and _ALOS_DEM.exists() and _ALOS_LED.exists(),
     f"oracle missing: {_ALOS_HAITI_TOPO}")
+class TestHintProbeRedirectRegression(unittest.TestCase):
+    """The `-Q >& tmp` Hint-probe redirect must be POSIX-sh compatible.
+
+    Bug (found 2026-07-14 investigating ALOS_haiti's intermittent
+    py-vs-csh `los_ll.grd` divergence): dem2topo_ra.csh:86,106 use
+    `gmt surface ... -Q >& tmp` -- valid under (t)csh (the shell that
+    actually runs the csh recipe), which merges stdout+stderr into
+    `tmp` so the script can `grep Hint tmp` and auto-clip `-R` to
+    whatever region GMT's `-Q` probe suggests. The Python port
+    (`utils/dem2topo_ra`) copied this string verbatim into
+    `gmtsar_lib.run()`, which executes via
+    `subprocess.run(cmd, shell=True)` -> `/bin/sh -c`. POSIX sh's
+    `>&fd` redirect expects a NUMERIC file descriptor, not a filename
+    -- `>& tmp` always failed with "Bad fd number" (rc=2). Because
+    `gmtsar_lib.run()` treats non-127 non-zero exit as a
+    print-a-WARN-and-continue (by design, for genuinely benign gmtsar
+    warnings), this failure was silently swallowed: `tmp` was NEVER
+    created, `check_file_report('tmp')` was always False, and the
+    Python port therefore ALWAYS skipped the Hint-based `-R` auto-clip
+    that csh applies whenever GMT's `-Q` probe suggests a tighter
+    region -- a real, deterministic algorithmic divergence from the
+    csh reference (project_rules.md Rule 7), not a cosmetic warning.
+
+    Fix: `>tmp 2>&1` (POSIX-portable stdout+stderr merge into `tmp`,
+    behaviourally equivalent to csh's `>&` here since neither side
+    depends on interleaving order, only aggregate content for the
+    `grep Hint` parse).
+
+    This test reproduces the bug mechanism directly (no ALOS_haiti
+    fixture needed -- the fault is pure shell-redirect syntax, not
+    numerical): the OLD `>&` string must fail to produce a non-empty
+    file under `/bin/sh -c` while the NEW `>...2>&1` string used by
+    the live `utils/dem2topo_ra` source must succeed and capture the
+    command's diagnostic output.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="test_hint_redirect_")
+        self._old_cwd = os.getcwd()
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self._old_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_old_csh_redirect_fails_under_run(self):
+        """`>& tmp` (the pre-fix string) must fail under gmtsar_lib.run()'s
+        /bin/sh backend and never create `tmp` -- this IS the bug."""
+        run = _UTILS_NS["run"]
+        # Any command that would normally emit diagnostic text works here;
+        # the point under test is the redirect syntax, not `gmt surface`.
+        run("echo hello >& tmp")
+        self.assertFalse(
+            os.path.exists("tmp"),
+            msg="`>& tmp` unexpectedly created `tmp` under /bin/sh -- "
+                "if this now passes, /bin/sh's `>&` semantics changed "
+                "and the dem2topo_ra fix may be redundant (but should "
+                "stay, since csh remains the authoritative reference).")
+
+    def test_fixed_redirect_captures_output_under_run(self):
+        """`>tmp 2>&1` (the post-fix string) must succeed and capture
+        stdout+stderr into `tmp` -- this is what dem2topo_ra now uses."""
+        run = _UTILS_NS["run"]
+        run("echo hello >tmp 2>&1")
+        self.assertTrue(os.path.exists("tmp"),
+                        msg="fixed redirect did not create tmp")
+        with open("tmp") as f:
+            content = f.read()
+        self.assertIn("hello", content)
+
+    def test_live_source_has_no_bare_csh_redirect(self):
+        """Static guard: utils/dem2topo_ra must not reintroduce the bare
+        `>&` csh redirect syntax anywhere (only POSIX `2>&1` is valid)."""
+        src = _UTILS_DEM2TOPO_RA.read_text()
+        for lineno, line in enumerate(src.splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue  # explanatory comments may quote the buggy idiom
+            # Match a bare `>&` NOT immediately followed by a digit
+            # (`>&1`/`>&2` are valid POSIX fd-dup forms; `>& tmp` /
+            # `>&tmp` are the csh-only filename form that breaks under sh).
+            import re
+            for m in re.finditer(r">&\s*(\S)", line):
+                nxt = m.group(1)
+                self.assertTrue(
+                    nxt.isdigit(),
+                    msg=f"utils/dem2topo_ra:{lineno}: bare csh-style `>&` "
+                        f"redirect reintroduced (breaks under /bin/sh -- "
+                        f"see TestHintProbeRedirectRegression): {line!r}")
+
+
 class TestMode1ArgRegression(unittest.TestCase):
     """`dem2topo_ra master.PRM dem.grd 1` must produce topo_ra.grd.
 
