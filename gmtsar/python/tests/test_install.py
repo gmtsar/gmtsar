@@ -90,31 +90,46 @@ def _fresh_clone(work_root: Path) -> Path:
     return clone_dir
 
 
-def _reuse_tarball_cache(clone_python_dir: Path) -> None:
-    """Rule 14: copy the tarball cache (immutable input data) into the
-    fresh clone's work/dataset/ so sweep.py/case_runner.py don't
-    re-download multi-GB fixtures. Everything ELSE in the clone's work/
-    dir stays absent -- produced fresh by whatever this run actually
-    does, never copied in."""
+def _fast_tier_cases() -> list[str]:
+    """cases.py lives in the same tests/ dir as this script, so it's
+    importable directly (no path juggling, no clone dependency -- the
+    fast-tier case LIST is fixed source, unrelated to which clone is
+    running)."""
+    import cases as _cases_mod
+    return [name for name, meta in _cases_mod.CASES.items()
+            if "fast" in meta.get("tiers", set()) and meta.get("enabled", True)]
+
+
+def _reuse_tarball_cache(clone_python_dir: Path, cases: list[str]) -> None:
+    """Rule 14: copy ONLY the tarballs this run actually needs (immutable
+    input data) into the fresh clone's work/dataset/, so sweep.py/
+    case_runner.py don't re-download multi-GB fixtures. Everything ELSE
+    in the clone's work/ dir stays absent -- produced fresh by whatever
+    this run actually does, never copied in.
+
+    Real bug found 2026-07-14: an earlier version copied EVERY cached
+    tarball unconditionally (this cache is 164 GB across all tiers,
+    including cases sweep.py --fast never touches) even for a --cases
+    request naming just 1-2 cases -- a "cheap, targeted re-verification"
+    run spent 4+ minutes copying multi-GB files it would never use
+    before doing any real work. Now scoped to exactly the requested (or
+    fast-tier default) case list."""
     src = _PYTHON_DIR / "work" / "dataset"
     if not src.is_dir():
         _log(f"[{_utc_now()}] no existing tarball cache at {src} -- "
-             "sweep.py will download fresh (only relevant for --full)")
+             "sweep.py will download fresh")
         return
     dst = clone_python_dir / "work" / "dataset"
     dst.mkdir(parents=True, exist_ok=True)
     n = 0
-    for tarball in src.glob("*.tar.gz"):
-        target = dst / tarball.name
-        if not target.exists():
-            shutil.copy2(tarball, target)
-            n += 1
-    for tarball in src.glob("*.tgz"):
-        target = dst / tarball.name
-        if not target.exists():
-            shutil.copy2(tarball, target)
-            n += 1
-    _log(f"[{_utc_now()}] reused {n} cached tarball(s) from {src} -> {dst}")
+    for case in cases:
+        for tarball in src.glob(f"{case}.*"):
+            target = dst / tarball.name
+            if not target.exists():
+                shutil.copy2(tarball, target)
+                n += 1
+    _log(f"[{_utc_now()}] reused {n} cached tarball(s) for "
+         f"{len(cases)} case(s) from {src} -> {dst}")
 
 
 def _check_sweep_results(clone_python_dir: Path) -> tuple[bool, str]:
@@ -229,7 +244,11 @@ def main() -> int:
 
     clone_dir = _fresh_clone(work_root)
     clone_python_dir = clone_dir / "gmtsar" / "python"
-    _reuse_tarball_cache(clone_python_dir)
+    if args.full:
+        # Tarballs are only needed by sweep.py --fast (--smoke never
+        # touches work/dataset/ at all -- no point copying anything).
+        needed_cases = args.cases or _fast_tier_cases()
+        _reuse_tarball_cache(clone_python_dir, needed_cases)
 
     install_cmd = ["python3", str(clone_python_dir / "install.py"),
                    "--system", args.system]
