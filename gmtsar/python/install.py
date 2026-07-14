@@ -463,6 +463,39 @@ def patch_config_mk(config_mk: Path, use_conda: bool,
     config_mk.write_text("".join(lines))
 
 
+def _fix_lex_source_mtimes() -> None:
+    """Real bug found 2026-07-14: preproc/ERS_preproc/ers_line_fixer/
+    ers_line_fixer.l is NOT lex source -- it's a troff man page that
+    happens to share the "<name>.l" naming convention (also used for
+    section-l man pages) with the real, committed, hand-written
+    ers_line_fixer.c in the same directory. GNU Make's built-in `.l.c:`
+    implicit rule doesn't know that; it regenerates X.c from X.l
+    whenever X.l's mtime >= X.c's mtime. A `git clone` does not
+    guarantee any particular relative mtime ordering between two files
+    committed at different times in history -- on this host it produced
+    a fresh clone where .l appeared newer, triggering a real, cascading
+    build failure: `flex`/`lex` chokes trying to parse troff markup as
+    lex rules ("bad character: .", hundreds of parse errors), the real
+    ers_line_fixer.c is silently thrown away, and the binary never gets
+    built (ERS_Hector_EQ fails downstream with zero comparisons).
+
+    Fixed at the install.py level, not by editing the upstream Makefile
+    (outside gmtsar/python/, not this project's to patch): touch every
+    committed .c file that shares a basename with a .l file in the
+    repo, so the implicit rule never fires on a fresh checkout. Only
+    ers_line_fixer.c/.l exist in the whole repo today, but this is
+    written generally in case that ever changes."""
+    for l_file in REPO_ROOT.rglob("*.l"):
+        if "/work/" in str(l_file) or "/.git/" in str(l_file):
+            continue
+        c_file = l_file.with_suffix(".c")
+        if c_file.is_file():
+            c_file.touch()
+            print(f"==> touched {c_file.relative_to(REPO_ROOT)} "
+                  f"(newer than {l_file.name}, which is not real lex "
+                  "source -- see _fix_lex_source_mtimes)")
+
+
 def do_build(use_conda: bool, conda_prefix: Path | None,
              extra_env: dict[str, str] | None = None) -> None:
     """extra_env (from do_conda_setup, empty for --system ubuntu) is
@@ -471,6 +504,7 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
     so it can't silently affect any other command this script runs."""
     print(f"==> Building gmtsar in {REPO_ROOT} ...")
     os.chdir(REPO_ROOT)
+    _fix_lex_source_mtimes()
     build_env = None
     if extra_env:
         build_env = dict(os.environ)
