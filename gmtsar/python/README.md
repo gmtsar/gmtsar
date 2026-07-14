@@ -56,45 +56,36 @@ Example comparison (`NISAR_Ethiopia`, the fastest py-vs-csh case): Python output
 
 ## Installation
 
-One consolidated installer: `gmtsar/python/install.sh`. It builds gmtsar **in-place** from this checkout (no system-wide install, no re-clone). Each step is an independent flag — combine as needed:
+One command, one installer: `gmtsar/python/install.py`. It builds gmtsar **in-place** from this checkout (no system-wide install, no re-clone) and works from a genuinely fresh box — pick your system:
 
-| Flag | What it does |
-|---|---|
-| `--ubuntu` | apt-install system deps (csh, gmt, gfortran, …) — **requires sudo** |
-| `--conda`  | use an existing conda env for build deps + Python packages — **no sudo**. Default env name `gmtsar` (override with `CONDA_GMTSAR_ENV=<name>`). Mutually exclusive with `--ubuntu`. |
-| `--python` | install Python packages (skimage, xarray, netcdf4, tk, …) into apt or the conda env, depending on mode |
-| `--build`  | autoconf + configure + make + make install (lands in `<repo>/bin`); also builds the FFTW shim and symlinks Python utils + csh scripts into `<repo>/bin` |
-| `--orbits` | fetch `ORBITS.tar` (~5-7 GB) into `<repo>/orbits` |
-| `--all`    | shortcut for `--ubuntu --python --build` (omits the large orbits download) |
-
-Typical first runs:
 ```
-# Ubuntu / sudo path:
-bash gmtsar/python/install.sh --all
+# Ubuntu (sudo, apt-installs everything):
+python3 gmtsar/python/install.py --system ubuntu
 
-# Shared-server / no-sudo path:
-bash gmtsar/python/install.sh --conda --python --build
+# Any Linux with an existing Miniconda/Anaconda install (no sudo; creates
+# the conda env for you if it doesn't exist yet):
+python3 gmtsar/python/install.py --system conda
 ```
 
-Then export the env vars printed at the end:
+That's it for a first install — it installs system deps, Python packages, and builds, in one step. Then export the env vars it prints at the end:
 ```
 export GMTSAR=<this repo>
 export PATH=$GMTSAR/bin:$PATH
+conda activate gmtsar   # --system conda only; --system ubuntu already has gmt on PATH
 ```
-
-**`--conda` mode:** also put the conda env on PATH so `gmt` (and other
-build-env tools) are found — the line above only adds `$GMTSAR/bin`:
-```
-conda activate gmtsar            # or: export PATH=$CONDA_PREFIX/bin:$PATH
-```
-(In `--ubuntu` mode `gmt` is installed system-wide and already on PATH, so
-this step is not needed.)
 
 Sanity check:
 ```
 p2p_processing       # prints the usage/help message
-gmt --version        # confirms gmt is reachable (needed for actual runs)
+gmt --version         # confirms gmt is reachable
 ```
+
+Iterating on source later (skip the dependency steps, just rebuild):
+```
+python3 gmtsar/python/install.py --system conda --rebuild
+```
+
+Other flags: `--conda-env <name>` (default env name `gmtsar`), `--orbits` (fetch the ~5-7 GB `ORBITS.tar`, optional, can run alone). Run `install.py --help` for full details. (Old bash version archived at `gmtsar/python/archive/install.sh`.)
 
 # Testing for developers
 
@@ -154,7 +145,7 @@ A frozen-csh reference can be optionally produced via `tests/freeze_reference.py
 
 ## Notes on the framework
 1. Per-case computing time is collected in `<workdir>/timeSpentLog.txt`; stdout from each case is piped to `log.txt` in the case folder. A summary (wall-clock + per-pipeline timings) prints at the end of `sweep.py`.
-2. `tests/compare.py` does the comparison. Required Python packages are installed by `install.sh --python`. Per-file thresholds live in `PNG_SSIM_THRESHOLD` / `GRD_RMS_THRESHOLD` dicts at the top of the script (phase-named outputs use a complex-domain rms metric that's invariant to 2π wraps).
+2. `tests/compare.py` does the comparison. Required Python packages are installed by `install.py --system {ubuntu,conda}`. Per-file thresholds live in `PNG_SSIM_THRESHOLD` / `GRD_RMS_THRESHOLD` dicts at the top of the script (phase-named outputs use a complex-domain rms metric that's invariant to 2π wraps).
 3. `tests/report.py` aggregates `results/*.json` and emits `<workdir>/sweep_summary.md`.
 4. The case manifest, tier membership, and `enabled` flags live in `tests/cases.py` (`CASES` dict).
 
@@ -162,4 +153,4 @@ Version history: see [`docs/release_notes/`](docs/release_notes/) for all releas
 
 ## Acknowledgments
 
-Portions of the 2026-05 testing-system overhaul, consolidated installer (`install.sh`), Docker dev environment (`docker/`), FFTW threading shim (`fftw_force_serial.c`), and vectorized Python xcorr (`xcorr_py`) were developed in collaboration with Anthropic's Claude Code (Claude Opus 4.7).
+Portions of the 2026-05 testing-system overhaul, consolidated installer (`install.py`, originally `install.sh`), Docker dev environment (`docker/`), FFTW threading shim (`fftw_force_serial.c`), and vectorized Python xcorr (`xcorr_py`) were developed in collaboration with Anthropic's Claude Code (Claude Opus 4.7).

@@ -13,7 +13,7 @@ import numpy as np
 
 _HERE = Path(__file__).resolve().parent
 # Points at the single production script (bin_py/SAT_llt2rat_py, symlinked
-# onto PATH by install.sh — see project_rules.md Rule 13: one tested copy
+# onto PATH by install.py — see project_rules.md Rule 13: one tested copy
 # per tool, no version suffixes). An older, slower variant was archived
 # to bin_py/archive/ 2026-07-12/13 after a fresh measurement confirmed
 # this one wins on speed+stability with identical algorithm/output.
