@@ -12,7 +12,10 @@ netCDF4>=1.6
 numba>=0.56      # JIT kernels: xcorr_py, resamp_py, SAT JIT path, snaphu_py
 cython>=3.0      # builds utils/_surface_kernel (gmt_surface_py default-ON path)
 h5py>=3.0        # make_slc_nsr_py (GMTSAR_NSR_PREPROC_PY, default ON since 2026-07-13) — reads NISAR RSLC HDF5
+pytest>=7.0      # runs bin_py/tests/ (2026-07-14: a fresh --system conda
+                 # install had no pytest at all, a real gap found by a
+                 # genuine clean-room test_install.py run)
 #
 # NOT pip-installable — install via system package manager / install.py:
 #   gmt>=6.4, csh, gfortran, gcc, autoconf, make, libtiff, libhdf5, liblapack
-# See install.py (--mode ubuntu) and docker/Dockerfile for the full system list.
+# See install.py (--system ubuntu) and docker/Dockerfile for the full system list.
