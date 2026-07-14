@@ -140,38 +140,39 @@ if [[ $DO_BUILD -eq 1 ]]; then
   make
   make install   # installs into $REPO_ROOT/bin via --prefix=$REPO_ROOT (no sudo)
 
-  # Stage Python utilities alongside compiled binaries.
-  # Symlink (not copy) so edits in gmtsar/python/utils/ are picked up live.
-  chmod -R 755 "$REPO_ROOT/gmtsar/python/utils"
-  for f in "$REPO_ROOT/gmtsar/python/utils/"*; do
-    ln -sf "$f" "$REPO_ROOT/bin/$(basename "$f")"
-  done
+  # chmod +x each file matching the given glob(s)/path(s), then symlink it
+  # into $REPO_ROOT/bin (not copy, so edits to the source tree are picked
+  # up live). Shared by every "stage these onto PATH" step below.
+  stage_execs() {
+    local f
+    for f in "$@"; do
+      [[ -e "$f" ]] || continue
+      chmod +x "$f"
+      ln -sf "$f" "$REPO_ROOT/bin/$(basename "$f")"
+    done
+  }
 
-  # Symlink the bin_py/ ports that utils/p2p_stages.py invokes by bare name
-  # via subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
+  # Python utilities (p2p_processing, pre_proc, geocode, ...).
+  stage_execs "$REPO_ROOT/gmtsar/python/utils/"*
+
+  # The bin_py/ ports that utils/p2p_stages.py invokes by bare name via
+  # subprocess (resamp_py, xcorr_py, etc.) -- these must be on PATH too.
   # One production copy per tool, no version suffixes (project_rules.md
   # Rule 13) -- superseded variants (resamp_py_v2, SAT_llt2rat_py's old v1)
   # were kept at bin_py/archive/ for reference, removed in the v2.7.1 doc
   # cleanup (recoverable from git history if needed), never on PATH.
-  chmod +x "$REPO_ROOT/gmtsar/python/bin_py/"*_py
-  for name in phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py SAT_llt2rat_py; do
-    ln -sf "$REPO_ROOT/gmtsar/python/bin_py/$name" "$REPO_ROOT/bin/$name"
-  done
+  BIN_PY_NAMES=(phasediff_py make_los_py SAT_baseline_py xcorr_py resamp_py make_slc_s1a_py SAT_llt2rat_py)
+  stage_execs "${BIN_PY_NAMES[@]/#/$REPO_ROOT/gmtsar/python/bin_py/}"
 
-  # Symlink the canonical csh scripts (pop_config.csh, p2p_processing.csh, ...) so
+  # The canonical csh scripts (pop_config.csh, p2p_processing.csh, ...) so
   # they're on PATH via $GMTSAR/bin. make install does NOT do this upstream.
-  # Source files may ship non-executable in the tree (mode 0644), so chmod first.
-  chmod +x "$REPO_ROOT/gmtsar/csh/"*.csh
-  ln -sf "$REPO_ROOT/gmtsar/csh/"*.csh "$REPO_ROOT/bin/"
+  stage_execs "$REPO_ROOT/gmtsar/csh/"*.csh
 
-  # Symlink deprecated per-SAT csh wrapper shims (p2p_ALOS.csh → p2p_processing.csh
+  # Deprecated per-SAT csh wrapper shims (p2p_ALOS.csh → p2p_processing.csh
   # ALOS, etc.) so legacy tarball READMEs from topex.ucsd.edu/gmtsar/tar/ work
   # out of the box. These names were superseded by p2p_processing.csh's SAT
   # dispatch years ago, but some bundled READMEs still call them.
-  if [ -d "$REPO_ROOT/gmtsar/python/csh_shims" ]; then
-    chmod +x "$REPO_ROOT/gmtsar/python/csh_shims/"*.csh
-    ln -sf "$REPO_ROOT/gmtsar/python/csh_shims/"*.csh "$REPO_ROOT/bin/"
-  fi
+  [[ -d "$REPO_ROOT/gmtsar/python/csh_shims" ]] && stage_execs "$REPO_ROOT/gmtsar/python/csh_shims/"*.csh
 
   # Build FFTW threading shim — neuters fftwf_plan_with_nthreads at runtime
   # (LD_PRELOAD'd by runner.py). Without it, libgmt's pthread-based FFTW
