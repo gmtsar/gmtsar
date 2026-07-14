@@ -164,7 +164,7 @@ def _reuse_tarball_cache(clone_python_dir: Path, cases: list[str]) -> None:
          f"{len(cases)} case(s) from {src} -> {dst}")
 
 
-def _check_sweep_results(clone_python_dir: Path) -> tuple[bool, str]:
+def _check_sweep_results(clone_python_dir: Path, expected_cases: list[str]) -> tuple[bool, str]:
     """sweep.py's own exit code only reflects whether the ORCHESTRATION
     crashed -- it returns 0 even when individual case comparisons FAIL
     (compare.py logs the failure but doesn't propagate it to sweep.py's
@@ -174,29 +174,54 @@ def _check_sweep_results(clone_python_dir: Path) -> tuple[bool, str]:
     2026-07-14: an earlier version of this function didn't exist at all
     -- test_install.py trusted sweep.py's exit code, reported a false
     PASS, and deleted the fresh clone (destroying the diagnostic
-    evidence) despite 7 real comparison failures."""
+    evidence) despite 7 real comparison failures.
+
+    Second real bug found 2026-07-14, same day: this function itself,
+    once fixed, STILL missed a case (ERS_Hector_EQ) where BOTH python
+    and csh failed to produce ANY common intf output -- compare.py's
+    discover_intf_dirs() only adds a directory when at least one side
+    has files, so a total double-failure yields ZERO comparisons, not
+    a FAIL one. Zero fails trivially satisfies "no fails found",
+    silently passing a case that never actually ran successfully on
+    either side. Now cross-checks `expected_cases` against which cases
+    produced at least one py-vs-csh comparison -- a case with a
+    results/<case>.json but zero py-vs-csh entries in it is flagged as
+    a distinct failure mode from an attempted-and-failed comparison."""
     import json
     results_dir = clone_python_dir / "work" / "results"
     fails = []
     total = 0
+    cases_with_comparisons: set[str] = set()
     for f in sorted(results_dir.glob("*.json")):
         try:
             data = json.loads(f.read_text())
         except Exception as exc:
             fails.append(f"{f.name}: could not parse ({exc!r})")
             continue
+        case_name = data.get("case", f.stem)
         for c in data.get("comparisons", []):
             if c.get("pair") != "py-vs-csh":
                 continue
             total += 1
+            cases_with_comparisons.add(case_name)
             if c.get("status") != "SUCCESS":
                 fails.append(
-                    f"{data.get('case', f.stem)}: {c.get('file')} "
+                    f"{case_name}: {c.get('file')} "
                     f"[{c.get('intf', '')}] -> {c.get('status')} "
                     f"({c.get('metric_name')}={c.get('metric')})")
+    zero_comparison_cases = sorted(set(expected_cases) - cases_with_comparisons)
+    for case_name in zero_comparison_cases:
+        fails.append(
+            f"{case_name}: ZERO py-vs-csh comparisons produced -- both "
+            "python and csh sides likely failed to produce any common "
+            "intf output (check csh_test/<case>/log.txt and "
+            "python_test/<case>/log.txt directly, this failure mode "
+            "produces no [py-vs-csh] FAIL line at all)")
     if not fails:
-        return True, f"{total}/{total} py-vs-csh comparisons SUCCESS"
-    summary = f"{total - len(fails)}/{total} py-vs-csh comparisons SUCCESS -- FAILURES:\n"
+        return True, f"{total}/{total} py-vs-csh comparisons SUCCESS across {len(expected_cases)} case(s)"
+    summary = (f"{total - len([f for f in fails if 'ZERO py-vs-csh' not in f])}/{total} "
+               f"py-vs-csh comparisons SUCCESS, {len(zero_comparison_cases)} case(s) with "
+               "zero comparisons -- FAILURES:\n")
     summary += "\n".join(f"    {line}" for line in fails)
     return False, summary
 
@@ -321,6 +346,7 @@ def main() -> int:
     results.append(("bin_py/tests/ (unit/parity suite)", ok, dt))
 
     if args.full:
+        sweep_cases = args.cases or _fast_tier_cases()
         sweep_cmd = [py_exe, "tests/sweep.py", "--fast"]
         if args.cases:
             sweep_cmd += ["--cases"] + args.cases
@@ -329,7 +355,7 @@ def main() -> int:
             # sweep.py's own exit code only reflects orchestration
             # health -- it's 0 even when individual comparisons FAIL.
             # Re-derive the real verdict from compare.py's own output.
-            ok, verdict = _check_sweep_results(clone_python_dir)
+            ok, verdict = _check_sweep_results(clone_python_dir, sweep_cases)
             _log(f"[{_utc_now()}] [sweep.py --fast] real verdict: {verdict}")
         cases_label = ", ".join(args.cases) if args.cases else "12 cases"
         results.append((f"tests/sweep.py --fast ({cases_label})", ok, dt))
