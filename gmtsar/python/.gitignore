@@ -36,3 +36,7 @@ bin_py/tests/phase_profile_py.json
 # GMT leaves a session-state file in whatever directory a `gmt` subcommand
 # runs from; not project state, never shipped via git.
 gmt.history
+
+# Per-run install.py logs (timestamped, one file per invocation) -- local
+# debugging artifacts, not project state.
+install_logs/

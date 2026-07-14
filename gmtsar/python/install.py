@@ -43,15 +43,24 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = (SCRIPT_DIR / ".." / "..").resolve()
+
+# Set once in main() before any run() calls, so every command this script
+# executes -- across every helper function -- gets a timestamped marker in
+# a single durable log file, not just scattered stdout a caller may or may
+# not have redirected. None until then (e.g. --help exits before this is
+# set, and never calls run() anyway).
+_LOG_PATH: Path | None = None
 
 APT_SYSTEM_DEPS = [
     "python-is-python3", "csh", "subversion", "autoconf", "libtiff5-dev",
@@ -83,12 +92,59 @@ BIN_PY_NAMES = [
 CONDA_SEARCH_BASES = ["~/anaconda3", "~/miniconda3", "/opt/conda"]
 
 
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _log_line(line: str) -> None:
+    """Print AND (if a log file is open) append -- so every command this
+    script runs, across every helper function, lands in one durable,
+    timestamped log, not just whatever a caller happened to redirect."""
+    print(line)
+    if _LOG_PATH is not None:
+        with open(_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+
+
+def _run_impl(cmd: list[str], check: bool, **kwargs) -> int:
+    """Shared by run()/run_soft(): tees the subprocess's combined stdout+
+    stderr live to the terminal AND the log file (not just a summary
+    marker), so a failure's real error text -- not just "exit 1" -- is
+    captured for tracing, and prints a timestamped start marker before
+    and a done/FAILED summary (elapsed time + exit code) after."""
+    cmd_str = " ".join(cmd)
+    _log_line(f"[{_utc_now()}] ==> {cmd_str}")
+    t0 = time.time()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True,
+                             bufsize=1, **kwargs)
+    for line in proc.stdout:
+        _log_line(line.rstrip("\n"))
+    rc = proc.wait()
+    dt = time.time() - t0
+    if rc == 0:
+        _log_line(f"[{_utc_now()}] done in {dt:.3f}s (rc=0): {cmd_str}")
+    else:
+        _log_line(f"[{_utc_now()}] FAILED after {dt:.3f}s (rc={rc}): {cmd_str}")
+        if check:
+            raise subprocess.CalledProcessError(rc, cmd)
+    return rc
+
+
 def run(cmd: list[str], **kwargs) -> None:
-    """subprocess.run with check=True -- any failure raises loudly and
-    stops the script immediately (this script's equivalent of `set -e`).
-    Never swallow a non-zero exit (project_rules.md Rule 1)."""
-    print("==>", " ".join(cmd))
-    subprocess.run(cmd, check=True, **kwargs)
+    """Run a subprocess; any non-zero exit raises loudly and stops the
+    script immediately (this script's equivalent of `set -e`). Never
+    swallow a non-zero exit (project_rules.md Rule 1). Full output is
+    teed live + logged -- see _run_impl."""
+    _run_impl(cmd, check=True, **kwargs)
+
+
+def run_soft(cmd: list[str], **kwargs) -> int:
+    """Like run(), but does NOT raise on a non-zero exit -- only for the
+    one genuinely-best-effort call in this script (`autoupdate`, whose
+    original bash equivalent was `autoupdate || true`). Still fully
+    logged, so a soft failure is traceable even though it isn't fatal."""
+    return _run_impl(cmd, check=False, **kwargs)
 
 
 def sudo_prefix() -> list[str]:
@@ -334,7 +390,7 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
 
     if not Path("configure").is_file():
         run(["autoconf"])
-    subprocess.run(["autoupdate"])  # best-effort, matches `autoupdate || true`
+    run_soft(["autoupdate"])  # best-effort, matches `autoupdate || true`
     config_mk = REPO_ROOT / "config.mk"
     if not config_mk.is_file():
         run(["./configure", f"--prefix={REPO_ROOT}",
@@ -392,6 +448,38 @@ def do_orbits() -> None:
         tar_path.unlink()
 
 
+def _git_sha(path: Path) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else "unknown (not a git repo?)"
+    except Exception as exc:
+        return f"unknown ({exc!r})"
+
+
+def _setup_log(args: argparse.Namespace) -> None:
+    """Open this run's log file and write a header -- same "self-
+    sufficient for backtracking" discipline as gmtsar_lib.run() and
+    p2p_processing's env-gate dump: a UTC timestamp, the exact argv,
+    resolved repo root, and every option that affects what this run
+    does, so a bug found later doesn't require reconstructing "what did
+    I actually run" from memory."""
+    global _LOG_PATH
+    log_dir = REPO_ROOT / "gmtsar" / "python" / "install_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = _utc_now().replace(":", "-")
+    _LOG_PATH = log_dir / f"install_{ts}.log"
+    _log_line(f"[{_utc_now()}] install.py log start")
+    _log_line(f"  argv: {' '.join(sys.argv)}")
+    _log_line(f"  repo root: {REPO_ROOT}")
+    _log_line(f"  repo git sha: {_git_sha(REPO_ROOT)}")
+    _log_line(f"  system: {args.system!r}  conda_env: {args.conda_env!r}  "
+               f"rebuild: {args.rebuild}  orbits: {args.orbits}")
+    _log_line(f"  python: {sys.version.split()[0]}  platform: {sys.platform}")
+    _log_line(f"  log file: {_LOG_PATH}")
+    print(f"==> Logging this run to {_LOG_PATH}")
+
+
 def print_summary(conda_env: str) -> None:
     print(f"""
 All requested steps completed.
@@ -407,6 +495,8 @@ If you used --system conda, also put the conda env on PATH so 'gmt' is found
 Sanity check:
   which p2p_processing && p2p_processing
   gmt --version        # confirms gmt is reachable (needed for actual runs)
+
+Full log of this run (every command, timestamped, with real output): {_LOG_PATH}
 """)
 
 
@@ -440,6 +530,8 @@ def main() -> None:
         sys.exit("ERROR: --rebuild requires --system ubuntu or --system conda "
                   "(needed to resolve build flags, e.g. the conda env's "
                   "include/lib paths)")
+
+    _setup_log(args)
 
     use_conda = args.system == "conda"
     conda_prefix: Path | None = None
