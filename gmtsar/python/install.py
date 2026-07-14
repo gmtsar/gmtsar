@@ -210,19 +210,32 @@ def locate_conda_base() -> Path:
 # what affects build/output correctness, leave pure-data packages
 # unpinned): gmt is pinned to a minor version since a GMT upgrade can
 # shift numerical output and this project's whole premise is bit-parity
-# with a known-good GMT. hdf5/libtiff get a floor + major-version cap
-# since they're linked into the C build and touch grid I/O -- an
-# unpinned ABI/behavior change discovered months later would be hard to
-# trace back to a conda solve. liblapack gets a floor pin (lower risk,
-# narrow linear-algebra usage, but free to pin). gshhg-gmt/dcw-gmt are
-# coastline/boundary DATA, not compute -- left unpinned.
+# with a known-good GMT. hdf5/libtiff are linked into the C build and
+# touch grid I/O -- an unpinned ABI/behavior change discovered months
+# later would be hard to trace back to a conda solve. hdf5 specifically
+# is pinned to an exact minor version (1.12.x), not just a floor + cap
+# -- see the real build-failure note below. liblapack gets a floor pin
+# (lower risk, narrow linear-algebra usage, but free to pin). gshhg-gmt/
+# dcw-gmt are coastline/boundary DATA, not compute -- left unpinned.
 #
 # `gshhg-gmt-nc4` (2026-07-13, real clean-room test): NOT a real
 # conda-forge package name -- `conda create` fails with
 # PackagesNotFoundError. The correct package is `gshhg-gmt`.
+#
+# hdf5 pinned to 1.12.x, NOT a "floor + cap" range up to 2.x (2026-07-14,
+# real clean-room test): this repo's own configure.ac/ax_lib_hdf5.m4
+# HDF5 detection macro (outside gmtsar/python/, not something this
+# project can patch) fails its compile-test against conda-forge's
+# HDF5 1.14.3 h5cc wrapper ("Unable to compile HDF5 test program"),
+# falls back to a broken HDF5_LIBS missing the base -lhdf5/-lhdf5_cpp
+# (only -lhdf5_hl/-lhdf5_hl_cpp survive), and make_slc_nsr/make_slc_csk
+# fail to LINK entirely ("undefined reference to H5Aread" etc) -- not a
+# version-mismatch warning, a hard build failure with no binary
+# produced. 1.12.2 is what the project's actual working reference conda
+# env already has and is confirmed to configure/link cleanly.
 CONDA_FORGE_BOOTSTRAP_PACKAGES = [
     "gmt=6.4", "gshhg-gmt", "dcw-gmt",
-    "hdf5>=1.14,<2", "libtiff>=4.5,<5", "liblapack>=3.9",
+    "hdf5=1.12.*", "libtiff>=4.5,<5", "liblapack>=3.9",
 ]
 
 
