@@ -127,6 +127,40 @@ def test_defuse_fake_lex_sources_renames_the_l_file(tmp_path):
     assert c_file.read_text() == "int main(){return 0;}"
 
 
+def test_defuse_fake_lex_sources_works_when_repo_root_under_work_dir(tmp_path):
+    """Real bug found live (2026-07-14): the skip-guard used to do a
+    substring check ("/work/" in str(l_file)) against the ABSOLUTE
+    path, meant to skip files under a repo's own work/ subdirectory.
+    But test_install.py's own clean-room clones live under
+    gmtsar/python/work/install_test/clone_.../ -- REPO_ROOT itself
+    nested under a directory named "work" -- so EVERY file's absolute
+    path matched that substring, silently skipping the real fix on
+    every single test run while never affecting a normal user's clone
+    (which has no "work" in its path). The first functional test above
+    used tmp_path, which happens not to contain "/work/", so it never
+    caught this. This test deliberately nests the fixture repo under a
+    "work" directory to reproduce the exact failure mode."""
+    fake_repo = tmp_path / "work" / "install_test" / "clone_fake"
+    sub = fake_repo / "preproc" / "ERS_preproc" / "ers_line_fixer"
+    sub.mkdir(parents=True)
+    c_file = sub / "ers_line_fixer.c"
+    l_file = sub / "ers_line_fixer.l"
+    c_file.write_text("int main(){return 0;}")
+    l_file.write_text(".TH fake manpage")
+
+    orig_repo_root = install.REPO_ROOT
+    install.REPO_ROOT = fake_repo
+    try:
+        install._defuse_fake_lex_sources()
+    finally:
+        install.REPO_ROOT = orig_repo_root
+
+    assert not l_file.exists(), (
+        "still not renamed when REPO_ROOT is nested under a 'work' dir "
+        "-- the substring-vs-path-component bug is back")
+    assert (sub / "ers_line_fixer.l.not-lex-source").is_file()
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
