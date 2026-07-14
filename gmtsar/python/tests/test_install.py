@@ -90,6 +90,38 @@ def _fresh_clone(work_root: Path) -> Path:
     return clone_dir
 
 
+def _reuse_orbits(clone_dir: Path) -> None:
+    """Real bug found 2026-07-14: orbit-dependent sensors (ENVI, ERS,
+    CSK_RAW -- older platforms without onboard precise-orbit telemetry)
+    need external precise-orbit files that `install.py --orbits`
+    fetches separately (~5-7 GB from topex.ucsd.edu) into <repo>/orbits/
+    -- a location OUTSIDE gmtsar/python/, so Rule 14's tarball-cache
+    reuse never touched it. A fresh clone has no orbits/ at all, so
+    every orbit-dependent sensor's preprocessor fails outright with
+    blank PRM fields (dump_orbit_envi.pl / find_auxi.pl can't open
+    orbits/ENVI/Doris, orbits/ENVI/ASA_INS/list -- "Could not open
+    file!"), cascading into IndexError/FileNotFoundError several stages
+    downstream with no obvious connection to the real cause.
+
+    Same Rule 14 category as the tarball cache (immutable, versioned,
+    read-only reference data, identical regardless of which clone uses
+    it) but reused via symlink instead of copy: nothing in a test run
+    ever WRITES to orbits/, so a live symlink to the source tree's own
+    orbits/ is strictly better than a 3.7+ GB copy."""
+    src = _REPO_ROOT / "orbits"
+    dst = clone_dir / "orbits"
+    if not src.is_dir():
+        _log(f"[{_utc_now()}] no existing orbits/ at {src} -- "
+             "orbit-dependent sensors (ENVI, ERS, CSK_RAW) will fail; "
+             "run `install.py --orbits` once on the source repo to fix "
+             "this for all future clean-room runs")
+        return
+    if dst.exists() or dst.is_symlink():
+        return
+    dst.symlink_to(src)
+    _log(f"[{_utc_now()}] reused orbits/ via symlink: {dst} -> {src}")
+
+
 def _fast_tier_cases() -> list[str]:
     """cases.py lives in the same tests/ dir as this script, so it's
     importable directly (no path juggling, no clone dependency -- the
@@ -245,10 +277,11 @@ def main() -> int:
     clone_dir = _fresh_clone(work_root)
     clone_python_dir = clone_dir / "gmtsar" / "python"
     if args.full:
-        # Tarballs are only needed by sweep.py --fast (--smoke never
-        # touches work/dataset/ at all -- no point copying anything).
+        # Tarballs and orbits are only needed by sweep.py --fast
+        # (--smoke never touches either -- no point reusing anything).
         needed_cases = args.cases or _fast_tier_cases()
         _reuse_tarball_cache(clone_python_dir, needed_cases)
+        _reuse_orbits(clone_dir)
 
     install_cmd = ["python3", str(clone_python_dir / "install.py"),
                    "--system", args.system]
