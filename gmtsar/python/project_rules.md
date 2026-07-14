@@ -822,3 +822,35 @@ cache reuse) applies to any such run.
   which reproduced on the dev host that wrote the code).
 - If `test_install.py` itself changes, verify IT the same way: run it
   for real, don't just read the diff.
+
+## 16. Never delete test/sweep artifacts unless the result is a confirmed pass
+
+A test/sweep run's working state (clones, `work/csh_test`, `work/
+python_test`, per-case `log.txt`) is the ONLY evidence of what actually
+happened. Deleting it destroys the ability to diagnose a failure —
+there is no reconstructing a real csh/Python recipe's stdout after the
+fact.
+
+**Real incident (2026-07-14):** `test_install.py`'s cleanup logic
+(`if all_passed and not args.keep: rmtree(clone_dir)`) trusted
+`sweep.py`'s process exit code as "all passed" — but that exit code
+only reflects whether the orchestration crashed, not whether individual
+comparisons failed (`compare.py` logs a FAIL without propagating it to
+`sweep.py`'s exit status; see Rule 12b, "pass" means `compare.py`'s own
+criteria). The clone was deleted despite 7 real comparison failures,
+destroying `csh_test/NISAR_Ethiopia/log.txt` — the file that would have
+shown the actual root cause (an HDF5 header/library version mismatch
+from a PATH-order bug) immediately, instead of requiring a second
+~25-minute run to reproduce.
+
+**How to apply:**
+- Any tool that cleans up test/sweep working state after a run must
+  derive "did this pass" from the same real signal Rule 12b requires
+  (`compare.py`'s per-file verdicts in `work/results/*.json`), never
+  from a subprocess's raw exit code alone.
+- Default to keeping artifacts on ANY non-pass outcome — partial
+  failure, ambiguous result, or a crash mid-run. Only clean up on a
+  confirmed, fully-verified pass.
+- When in doubt about whether a result is a real pass, treat it as a
+  non-pass and keep the evidence — the cost of extra disk usage is far
+  lower than the cost of an unreproducible bug.
