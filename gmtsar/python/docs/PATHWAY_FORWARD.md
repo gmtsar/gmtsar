@@ -460,6 +460,15 @@ else:
   remaining csh shell-out shims entirely, or keep them as an intentional
   fallback? Affects how aggressively future ports should touch internals
   vs. leave working shell-outs alone.
+- **Gate-2 (speed) isolated benchmarks still missing** for `phasediff_py`,
+  `phasefilt_py`, `gmt_grdfill_py`, `align_tops`, `make_los_py` (see
+  "Gate-2 (speed) audit gap" under Done, above) — all 5 are wired ON by
+  correctness evidence only, no standalone C-vs-Python timing exists.
+  None show evidence of *failing* gate 2, but that's not the same as a
+  verified pass. Run each in isolation on real data, matched hardware,
+  quiet system (Rule 12c — the `xcorr_py` multiplier retraction on
+  2026-07-13 was exactly this mistake: measuring under load and trusting
+  it). `phasediff_py` is the most requested first target (2026-07-14).
 
 Also carried over (originally from `docs/audits/AUDIT_stage_cache_mira57.md`,
 removed in the v2.7.1 doc cleanup — recoverable from git history if the
