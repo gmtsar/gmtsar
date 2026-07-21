@@ -12,6 +12,20 @@ import subprocess
 import sys
 from gmtsar_lib import run
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1 since v2.3.8); set =0 to force the gmt
+# grdmath subprocess. 21-case sweep under =1 is 20/21 py-vs-csh clean.
+# Parity verified in bin_py/tests/test_gmt_grdmath_py.py (42 tests).
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _capture(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
@@ -62,30 +76,57 @@ def stack():
 
     # Mean
     print("computing the mean of the grids ..")
-    for i, name in enumerate(files, start=1):
-        if i == 1:
-            run(f"gmt grdmath {name} = sum.grd")
-        else:
-            run(f"gmt grdmath {name} sum.grd ADD = sumtmp.grd")
-            run("mv sumtmp.grd sum.grd")
-    n = len(files)
-    run(f"gmt grdmath sum.grd {n} DIV = {outmean}")
+    if _grdmath_py_on():
+        for i, name in enumerate(files, start=1):
+            if i == 1:
+                _gm.grdmath_assign(name, "sum.grd", ctx="stack:assign")
+            else:
+                _gm.grdmath2("ADD", name, "sum.grd", "sumtmp.grd", ctx="stack:ADD")
+                run("mv sumtmp.grd sum.grd")
+        n = len(files)
+        _gm.grdmath2("DIV", "sum.grd", n, outmean, ctx="stack:DIV_mean")
 
-    # Stdev
-    print("compute the standard deviation ..")
-    for i, name in enumerate(files, start=1):
-        if i == 1:
-            run(f"gmt grdmath {name} {outmean} SUB SQR = sum2.grd")
-        else:
-            run(f"gmt grdmath {name} {outmean} SUB SQR sum2.grd ADD = sum2tmp.grd")
-            run("mv sum2tmp.grd sum2.grd")
-    run(f"gmt grdmath sum2.grd {n} DIV SQRT = {outstd}")
+        # Stdev
+        print("compute the standard deviation ..")
+        for i, name in enumerate(files, start=1):
+            if i == 1:
+                _gm.grdmath_sub_sqr(name, outmean, "sum2.grd", ctx="stack:SUB_SQR")
+            else:
+                _gm.grdmath_sub_sqr_add(name, outmean, "sum2.grd", "sum2tmp.grd",
+                                         ctx="stack:SUB_SQR_ADD")
+                run("mv sum2tmp.grd sum2.grd")
+        _gm.grdmath_div_sqrt("sum2.grd", n, outstd, ctx="stack:DIV_SQRT_std")
 
-    # Scale + cleanup
-    run(f"gmt grdmath {outmean} {scale} MUL = tmp.grd")
-    run(f"mv tmp.grd {outmean}")
-    run(f"gmt grdmath {outstd} {scale} MUL = tmp.grd")
-    run(f"mv tmp.grd {outstd}")
+        # Scale + cleanup
+        _gm.grdmath2("MUL", outmean, float(scale), "tmp.grd", ctx="stack:MUL_mean")
+        run(f"mv tmp.grd {outmean}")
+        _gm.grdmath2("MUL", outstd, float(scale), "tmp.grd", ctx="stack:MUL_std")
+        run(f"mv tmp.grd {outstd}")
+    else:
+        for i, name in enumerate(files, start=1):
+            if i == 1:
+                run(f"gmt grdmath {name} = sum.grd")
+            else:
+                run(f"gmt grdmath {name} sum.grd ADD = sumtmp.grd")
+                run("mv sumtmp.grd sum.grd")
+        n = len(files)
+        run(f"gmt grdmath sum.grd {n} DIV = {outmean}")
+
+        # Stdev
+        print("compute the standard deviation ..")
+        for i, name in enumerate(files, start=1):
+            if i == 1:
+                run(f"gmt grdmath {name} {outmean} SUB SQR = sum2.grd")
+            else:
+                run(f"gmt grdmath {name} {outmean} SUB SQR sum2.grd ADD = sum2tmp.grd")
+                run("mv sum2tmp.grd sum2.grd")
+        run(f"gmt grdmath sum2.grd {n} DIV SQRT = {outstd}")
+
+        # Scale + cleanup
+        run(f"gmt grdmath {outmean} {scale} MUL = tmp.grd")
+        run(f"mv tmp.grd {outmean}")
+        run(f"gmt grdmath {outstd} {scale} MUL = tmp.grd")
+        run(f"mv tmp.grd {outstd}")
     run("rm -f sum.grd sum2.grd")
 
     _plot_grid(outmean, "Mean of Image Stack")

@@ -14,3 +14,29 @@ utils/.DS_Store
 # Produced locally by tests/freeze_reference.py; not shipped via git.
 # Future: distribute as a GitHub Release asset + fetch_reference.sh.
 tests/reference/
+# (was "gmtsar/python/bin_py/tests/data/" -- wrong relative path from
+# this gitignore's location, never matched; fixed 2026-06-13)
+bin_py/tests/data/
+
+# Scratch dir for one-off audit/review/perf-snapshot artifacts that
+# aren't part of the tracked rule-7 milestone set. Not shipped via git.
+.scratch/
+utils/_surface_kernel*.so
+utils/_surface_kernel.c
+utils/build/
+# snaphu Cython extension build artifacts — built in-place by build_snaphu_kernel.py
+bin_py/snaphu_py/_snaphu_solver_kernel*.so
+bin_py/snaphu_py/_snaphu_solver_kernel.c
+bin_py/snaphu_py/build/
+
+# generated test profiling output
+gmtsar/python/bin_py/tests/phase_profile_py.json
+bin_py/tests/phase_profile_py.json
+
+# GMT leaves a session-state file in whatever directory a `gmt` subcommand
+# runs from; not project state, never shipped via git.
+gmt.history
+
+# Per-run install.py logs (timestamped, one file per invocation) -- local
+# debugging artifacts, not project state.
+install_logs/

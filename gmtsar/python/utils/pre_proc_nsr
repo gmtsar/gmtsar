@@ -14,21 +14,68 @@ full NISAR_L1_PR_RSLC_... filename.
 
 Usage:  pre_proc_nsr file.h5 config.txt
 Output: <NSR_YYYYMMDD>A.{PRM,SLC,LED} and <NSR_YYYYMMDD>B.{PRM,SLC,LED}
+
+``GMTSAR_NSR_PREPROC_PY`` env-gate (default ON since 2026-07-13):
+
+* default / ``GMTSAR_NSR_PREPROC_PY=1``: in-process `make_slc_nsr_py`
+  (Python port, see utils/make_slc_nsr_py.py). Verified byte-for-byte
+  identical .SLC/.PRM/.LED output vs the C binary on real NISAR_Ethiopia
+  data (both A and B frequency paths) — see
+  gmtsar/python/bin_py/tests/test_make_slc_nsr_py.py — ~19x faster
+  (h5py sliced reads vs C mallocing the whole ~11GB array). Confirmed
+  end-to-end on a real, full NISAR_Ethiopia sweep (6/6 SUCCESS,
+  csh 431s -> py 152s). A real config-parsing bug (_get_config not
+  stripping quote characters from staged config.py values, silently
+  corrupting region_cut) was found via that sweep, fixed, and
+  regression-tested (bin_py/tests/test_pre_proc_nsr_config.py) before
+  this default flip. Requires h5py (gmtsar/python/requirements.txt).
+* ``GMTSAR_NSR_PREPROC_PY=0``: subprocess `make_slc_nsr` C binary
+  (instant rollback).
 """
 import os
 import sys
 from gmtsar_lib import run
 
 
+def _use_nsr_preproc_py() -> bool:
+    return os.environ.get("GMTSAR_NSR_PREPROC_PY", "1") == "1"
+
+
 def _get_config(path, key, default=""):
-    """grep <key> <path> | awk '{print $3}'."""
+    """grep <key> <path> | awk '{print $3}', with quote-stripping.
+
+    Found 2026-07-13: staged config.py values are Python string literals
+    (e.g. region_cut = '18000/23000/47000/53000'), so naive line.split()
+    returned the value WITH its surrounding quote characters intact. The
+    C dispatch path never noticed -- subprocess/shell quoting silently
+    stripped them before the C binary saw its argv. The in-process Python
+    path has no shell in between, so the literal leading quote broke
+    get_range()'s _atoi() (stops at the first non-digit, returns 0 for
+    the leading token) -- xl silently became 0 instead of 18000, corrupting
+    every downstream dimension. Caught by a real end-to-end sweep, not the
+    isolated make_slc_nsr_py.py parity test (which never exercises this
+    config-parsing code path at all).
+    """
     with open(path) as f:
         for line in f:
             if key in line:
                 parts = line.split()
                 if len(parts) >= 3:
-                    return parts[2]
+                    return parts[2].strip("'\"")
     return default
+
+
+def _make_slc_nsr(h5_file, out_stem, mode, slc_factor, region_cut):
+    """Dispatch to the in-process Python port or the C-binary subprocess,
+    per GMTSAR_NSR_PREPROC_PY."""
+    if _use_nsr_preproc_py():
+        from make_slc_nsr_py import make_slc_nsr
+
+        print(" ")
+        print(f"make_slc_nsr_py {h5_file} {out_stem} {mode} {slc_factor} {region_cut}")
+        make_slc_nsr(h5_file, out_stem, mode, float(slc_factor), region_cut)
+    else:
+        run(f"make_slc_nsr {h5_file} {out_stem} {mode} {slc_factor} {region_cut}")
 
 
 def pre_proc_nsr():
@@ -52,14 +99,14 @@ def pre_proc_nsr():
 
     # A frequency
     print(f"{stem}.PRM")
-    run(f"make_slc_nsr {h5_file} {stem}A AHH {SLC_factor} {region_cut}")
+    _make_slc_nsr(h5_file, f"{stem}A", "AHH", SLC_factor, region_cut)
     run(f"calc_dop_orb {stem}A.PRM tmp 0 0")
     run(f"cat tmp >> {stem}A.PRM")
     run("rm -f tmp")
 
     # B frequency
     print(f"{stem}.PRM")
-    run(f"make_slc_nsr {h5_file} {stem}B BHH {SLC_factor} {region_cut}")
+    _make_slc_nsr(h5_file, f"{stem}B", "BHH", SLC_factor, region_cut)
     run(f"calc_dop_orb {stem}B.PRM tmp 0 0")
     run(f"cat tmp >> {stem}B.PRM")
     run("rm -f tmp")

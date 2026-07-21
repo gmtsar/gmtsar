@@ -15,6 +15,18 @@ import subprocess
 import sys
 from gmtsar_lib import run, grep_value
 
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
 
 def _capture(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
@@ -82,7 +94,11 @@ def correct_insar_with_gnss():
     run(f"gmt grdsample tmp2.grd -I{incre} -Gcorrection.grd")
 
     print("Correcting the interferogram...")
-    run(f"gmt grdmath {insar} correction.grd SUB = gnss_corrected_intf.grd")
+    if _grdmath_py_on():
+        _gm.grdmath2("SUB", insar, "correction.grd", "gnss_corrected_intf.grd",
+                     ctx="correct_insar_with_gnss:SUB")
+    else:
+        run(f"gmt grdmath {insar} correction.grd SUB = gnss_corrected_intf.grd")
 
     if os.path.isfile("gnss_corrected_intf.grd"):
         print("Interferogram corrected and stored as gnss_corrected_intf.grd!")

@@ -21,13 +21,122 @@ skip_master semantics (driven by argv positions 2 and 4):
   - master_orb=="0", aligned_orb!="0": skip_master=1 (process aligned only)
   - master_orb!="0", aligned_orb=="0": skip_master=2 (process master only)
   - both non-zero:                     skip_master=0 (process both)
+
+Env-gated fallback:
+  GMTSAR_ALIGN_TOPS_PY=0 → exec the original csh align_tops.csh on PATH.
+  Default: use the Python path. Lets us revert the wire-in at runtime
+  without rebuilding bin/ symlinks.
 """
 import os
 import re
 import subprocess
 import sys
 
+import numpy as _np
+
 from gmtsar_lib import run, check_file_report, replace_strings
+
+# In-process gmt surface replacement (gmt_surface_py + gmt_grd_io).
+# Gated by GMTSAR_SURFACE_INPROC=1 (default ON since v2.3.0).
+# Set GMTSAR_SURFACE_INPROC=0 to fall back to the gmt subprocess.
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_surface_py import gmt_surface_py as _surface_inproc
+    import gmt_grd_io as _grd_io
+    _HAVE_GMT_GRD_IO = True
+except Exception as _e:
+    _HAVE_GMT_GRD_IO = False
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
+
+# Mira GMTSAR_BLOCKMEDIAN_PY wire-in: in-process gmt_blockmedian_py via the
+# blockmedian_wrapper for the r.xyz / a.xyz `-bo3d` blockmedian below.
+# A/B verified byte-identical to `gmt blockmedian -r -bo3d` (binary stream
+# cmp = 0). Default ON; set GMTSAR_BLOCKMEDIAN_PY=0 to force the gmt subprocess.
+try:
+    from blockmedian_wrapper import blockmedian as _blockmedian_py
+    _HAVE_BLOCKMEDIAN_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_BLOCKMEDIAN_PY = False
+
+
+def _blockmedian_py_on() -> bool:
+    return _HAVE_BLOCKMEDIAN_PY and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1"
+
+
+def _surface_inproc_f64(xyz_path: str, region_str: str, inc_str: str,
+                         tension: float, max_iter: int, out_path: str,
+                         pixel_reg: bool = False) -> None:
+    """In-process replacement for:
+        gmt surface <xyz_path> -bi3d -R<region> -I<inc> -T<tension> -N<max_iter> [-r] -G<out>
+
+    Reads xyz_path (binary 3-float64 rows: x, y, z), invokes gmt_surface_py,
+    and writes the result via gmt_grd_io.write_gmt_grd.
+
+    Raises on failure — no silent fallback (Rule 12).
+    """
+    parts = region_str.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"align_tops: bad region '{region_str}'")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    inc_parts = inc_str.split("/")
+    if len(inc_parts) == 1:
+        dx = dy = float(inc_parts[0])
+    else:
+        dx, dy = float(inc_parts[0]), float(inc_parts[1])
+
+    data = _np.fromfile(xyz_path, dtype=_np.float64)
+    if data.size % 3 != 0:
+        raise ValueError(f"align_tops: {xyz_path} size {data.size} not divisible by 3 float64s")
+    data = data.reshape(-1, 3)
+    x, y, z = data[:, 0], data[:, 1], data[:, 2]
+
+    grid = _surface_inproc(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(dx, dy),
+        tension=tension,
+        max_iter=max_iter,
+        pixel_reg=pixel_reg,
+    )
+    ny, nx = grid.shape
+    if pixel_reg:
+        x_coord = x0 + dx / 2.0 + _np.arange(nx) * dx
+        y_coord = y0 + dy / 2.0 + _np.arange(ny) * dy
+        node_offset = 1
+    else:
+        x_coord = x0 + _np.arange(nx) * dx
+        y_coord = y0 + _np.arange(ny) * dy
+        node_offset = 0
+    history = f"gmt_surface_py (-T{tension}) -I{inc_str} -N{max_iter}"
+    _grd_io.write_gmt_grd(out_path, grid, x_coord, y_coord,
+                          node_offset=node_offset, history=history)
+
+
+def _maybe_exec_csh_fallback() -> None:
+    """If GMTSAR_ALIGN_TOPS_PY=0, exec align_tops.csh and never return.
+
+    The Python port is symlinked into bin/ as `align_tops`; the original csh
+    is at bin/align_tops.csh. This lets users / sweeps revert the wire-in by
+    a single env-var flip without unbuilding the install tree.
+    """
+    if os.environ.get("GMTSAR_ALIGN_TOPS_PY", "1") != "0":
+        return
+    # Replace this process with the csh binary, preserving all argv.
+    csh_bin = "align_tops.csh"
+    os.execvp(csh_bin, [csh_bin, *sys.argv[1:]])
 
 
 def _grep_field3(path, key):
@@ -55,6 +164,10 @@ def _frame_prefix(input_name):
 
 
 def align_tops():
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+              and _HAVE_GMT_GRD_IO)
+
+    _maybe_exec_csh_fallback()  # GMTSAR_ALIGN_TOPS_PY=0 → exec csh, never return
     if len(sys.argv) not in (6, 7):
         sys.exit(
             "Usage: align_tops master_prefix master_orb aligned_prefix "
@@ -128,9 +241,9 @@ def align_tops():
         run("gmt grd2xyz --FORMAT_FLOAT_OUT=%lf flt.grd -s > topo.llt")
 
     # Tie-point alignment estimate — used in both mode=0 and mode=1 paths.
-    lontie = _capture(f"SAT_baseline {mpre}.PRM {spre}.PRM | "
+    lontie = _capture(f"SAT_baseline_py {mpre}.PRM {spre}.PRM | "
                       f"grep lon_tie_point | awk '{{print $3}}'")
-    lattie = _capture(f"SAT_baseline {mpre}.PRM {spre}.PRM | "
+    lattie = _capture(f"SAT_baseline_py {mpre}.PRM {spre}.PRM | "
                       f"grep lat_tie_point | awk '{{print $3}}'")
     tmp_am = _capture(f"echo {lontie} {lattie} 0 | "
                       f"SAT_llt2rat {mpre}.PRM 1 | awk '{{print $2}}'")
@@ -179,17 +292,33 @@ def align_tops():
         # Build r.xyz and a.xyz, blockmedian → surface → flip → r.grd, a.grd
         run("awk '{ printf(\"%.6f %.6f %.6f \\n\", $1,$3,$2) }' < offset.dat > r.xyz")
         run("awk '{ printf(\"%.6f %.6f %.6f \\n\", $1,$3,$4) }' < offset.dat > a.xyz")
-        run(f"gmt blockmedian r.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > rtmp.xyz")
-        run(f"gmt blockmedian a.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > atmp.xyz")
-        p1 = subprocess.Popen(
-            f"gmt surface rtmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Grtmp.grd -N1000 -r",
-            shell=True)
-        p2 = subprocess.Popen(
-            f"gmt surface atmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Gatmp.grd -N1000 -r",
-            shell=True)
-        p1.wait(); p2.wait()
-        run("gmt grdmath rtmp.grd FLIPUD = r.grd")
-        run("gmt grdmath atmp.grd FLIPUD = a.grd")
+        if _blockmedian_py_on():
+            _blockmedian_py("r.xyz", "rtmp.xyz",
+                            region=f"0/{rmax}/0/{amax}", inc="16/8", out_binary=3)
+            _blockmedian_py("a.xyz", "atmp.xyz",
+                            region=f"0/{rmax}/0/{amax}", inc="16/8", out_binary=3)
+        else:
+            run(f"gmt blockmedian r.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > rtmp.xyz")
+            run(f"gmt blockmedian a.xyz -R0/{rmax}/0/{amax} -I16/8 -r -bo3d > atmp.xyz")
+        if inproc:
+            _surface_inproc_f64("rtmp.xyz", f"0/{rmax}/0/{amax}", "16/8",
+                                0.3, 1000, "rtmp.grd", pixel_reg=True)
+            _surface_inproc_f64("atmp.xyz", f"0/{rmax}/0/{amax}", "16/8",
+                                0.3, 1000, "atmp.grd", pixel_reg=True)
+        else:
+            p1 = subprocess.Popen(
+                f"gmt surface rtmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Grtmp.grd -N1000 -r",
+                shell=True)
+            p2 = subprocess.Popen(
+                f"gmt surface atmp.xyz -bi3d -R0/{rmax}/0/{amax} -I16/8 -T0.3 -Gatmp.grd -N1000 -r",
+                shell=True)
+            p1.wait(); p2.wait()
+        if _grdmath_py_on():
+            _gm.grdmath1("FLIPUD", "rtmp.grd", "r.grd", ctx="align_tops:FLIPUD_r")
+            _gm.grdmath1("FLIPUD", "atmp.grd", "a.grd", ctx="align_tops:FLIPUD_a")
+        else:
+            run("gmt grdmath rtmp.grd FLIPUD = r.grd")
+            run("gmt grdmath atmp.grd FLIPUD = a.grd")
 
     # ===== Stage 3: actual aligned-SLC creation via second make_s1a_tops pass =====
     if skip_master == 0:
@@ -208,7 +337,14 @@ def align_tops():
     run(f"mv -f {spre}.PRMresamp {spre}.PRM")
 
     offset_file = "offset.dat" if -1000 < tmp_da < 1000 else "offset2.dat"
-    run(f"fitoffset 3 3 {offset_file} >> {spre}.PRM")
+    # Use fitoffset.csh wrapper (not the C `fitoffset` binary): wrapper emits
+    # PRM key=value lines on stdout which we append to the aligned PRM. The C
+    # `fitoffset` has a different signature (takes PRM file as 4th arg +
+    # modifies in-place); calling C with csh-style args (3 + redirect)
+    # captures the usage error instead of fit results.
+    # Surfaced by Wei's audit 2026-05-22 and guarded by csh-vs-py parity on
+    # Greece F2 (test_align_tops.py TestAlignTopsCshParity).
+    run(f"fitoffset.csh 3 3 {offset_file} >> {spre}.PRM")
 
     # Re-extract LED and recompute calc_dop_orb
     if skip_master == 0:

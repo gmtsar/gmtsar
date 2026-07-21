@@ -1,0 +1,586 @@
+#! /usr/bin/env python3
+"""phasediff_py — Python port of gmtsar/src/phasediff.c (the "intf" kernel).
+
+Compute the per-pixel phase difference of two co-aligned SLC images,
+optionally subtracting curved-earth + topographic phase using topo_ra.grd
+and a model-phase grid. Outputs real.grd and imag.grd (GMT netCDF, float32,
+pixel-registered, dims [ydim, xdim]).
+
+Drop-in replacement for the C `phasediff` invoked by intf.csh.
+
+CLI:
+    phasediff_py ref.PRM rep.PRM [-topo topo_ra.grd] [-model model.grd]
+                 [-imag imag.grd] [-real real.grd]
+
+C checkpoints mirrored (phasediff.c lines):
+    C1 (215-280)  read PRMs, fix_prm_params, parse optional args
+    C2 (290-345)  derive xdim/ydim, allocate buffers, set up output GMT grids
+    C3 (348-388)  read topo_ra and (optional) model grids, compute avet, decimation
+    C4 (391-467)  precompute time series, baseline polynomials (linear or quadratic)
+    C5 (474-583)  main loop over rows:
+                    - read SLC short pairs, convert via DFACT and zero-pixel rule
+                    - per-row interpolate topo, compute drho via calc_drho
+                    - apply per-pixel phase shift exp(-4*pi/lambda * drho - model)
+                    - long-baseline spline correction (NOT implemented; raises
+                      NotImplementedError when triggered — RS2 base=43m never hits it)
+                    - z_intf = z1 * conj(z2), store real+imag
+    C6 (586-591)  write real.grd, imag.grd
+
+Constants (gmtsar.h):
+    SOL    = 299792456.0      # speed of light (note: not 299792458, C truncates)
+    PI     = 3.1415926535897932
+    DFACT  = 2.5e-07          # SLC short -> physical-amplitude scaling
+    I2MAX  = 32767.0
+    NULL_DOUBLE = -99999.9999
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
+
+import numpy as np
+
+# Allow `from utils.gmt_grd_io import ...` regardless of cwd.
+_HERE = Path(__file__).resolve().parent
+_UTILS = _HERE.parent / "utils"
+if str(_UTILS.parent) not in sys.path:
+    sys.path.insert(0, str(_UTILS.parent))
+
+from utils.gmt_grd_io import read_gmt_grd, write_gmt_grd  # noqa: E402
+
+# Local GMT v4 native binary I/O (the "=bf" suffix flavor that filter.csh
+# uses for intermediate amp/real/imag files). Import via importlib so this
+# file works whether invoked as a script or imported as a module.
+from importlib.util import spec_from_file_location, module_from_spec
+_spec = spec_from_file_location("_gmt_native_bf", str(_HERE / "_gmt_native_bf.py"))
+_gmt_native_bf = module_from_spec(_spec); _spec.loader.exec_module(_gmt_native_bf)  # type: ignore
+
+
+def _is_bf(path: str) -> bool:
+    """True if the path has a `=bf` GMT format suffix."""
+    return "=bf" in path
+
+# C #define constants from gmtsar.h (use C-truncated values, NOT the
+# mathematically correct ones, for bit-parity).
+SOL = 299792456.0
+PI = 3.1415926535897932
+DFACT = 2.5e-07
+NULL_DOUBLE = -99999.9999
+
+
+# ---------------------------------------------------------------------------
+# PRM parsing
+# ---------------------------------------------------------------------------
+
+# PRM key (LHS in file) -> internal field name (RHS in C struct PRM).
+# Mirrors gmtsar/sio_struct.c get_prm() exactly. Only keys touched by
+# phasediff are listed here.
+_PRM_INT_MAP = {
+    "num_rng_bins": "num_rng_bins",
+    "num_lines": "num_lines",
+    "num_valid_az": "num_valid_az",
+    "num_patches": "num_patches",
+    "SC_identity": "SC_identity",
+    "rshift": "rshift",
+    "ashift": "ashift",
+    "xshift": "rshift",  # back-compat alias
+    "yshift": "ashift",  # back-compat alias
+    "first_line": "first_line",
+    "st_rng_bin": "st_rng_bin",
+    "chirp_ext": "chirp_ext",
+    "nrows": "nrows",
+}
+_PRM_DOUBLE_MAP = {
+    "SC_clock_start": "SC_clock_start",
+    "SC_clock_stop": "SC_clock_stop",
+    "earth_radius": "RE",        # PRM key -> struct field
+    "SC_vel": "vel",
+    "SC_height": "ht",
+    "SC_height_start": "ht_start",
+    "SC_height_end": "ht_end",
+    "near_range": "near_range",
+    "PRF": "prf",
+    "rng_samp_rate": "fs",
+    "radar_wavelength": "lambda",
+    "sub_int_r": "sub_int_r",
+    "sub_int_a": "sub_int_a",
+    "stretch_r": "stretch_r",
+    "a_stretch_r": "a_stretch_r",
+    "baseline_start": "baseline_start",
+    "baseline_end": "baseline_end",
+    "baseline_center": "baseline_center",
+    "alpha_start": "alpha_start",
+    "alpha_end": "alpha_end",
+    "alpha_center": "alpha_center",
+    "B_offset_start": "B_offset_start",
+    "B_offset_end": "B_offset_end",
+    "B_offset_center": "B_offset_center",
+}
+_PRM_STR_MAP = {
+    "SLC_file": "SLC_file",
+    "input_file": "input_file",
+    "dtype": "dtype",
+}
+
+
+def _parse_prm(path: str) -> dict:
+    """Minimal PRM parser. Mirrors get_prm() / null_sio_struct() defaults
+    and the LHS-key -> struct-field mapping in gmtsar/sio_struct.c."""
+    p: dict = {
+        # NULL_DOUBLE defaults for "optional" geometry fields
+        "baseline_start": NULL_DOUBLE, "baseline_end": NULL_DOUBLE,
+        "baseline_center": NULL_DOUBLE,
+        "alpha_start": NULL_DOUBLE, "alpha_end": NULL_DOUBLE,
+        "alpha_center": NULL_DOUBLE,
+        "B_offset_start": NULL_DOUBLE, "B_offset_end": NULL_DOUBLE,
+        "B_offset_center": NULL_DOUBLE,
+        "ht": NULL_DOUBLE, "ht_start": NULL_DOUBLE, "ht_end": NULL_DOUBLE,
+        "RE": NULL_DOUBLE, "vel": NULL_DOUBLE,
+        # zero/identity defaults
+        "stretch_r": 0.0, "a_stretch_r": 0.0,
+        "sub_int_r": 0.0, "sub_int_a": 0.0,
+        "near_range": 0.0, "fs": 0.0, "lambda": 0.0,
+        "SC_clock_start": 0.0, "SC_clock_stop": 0.0, "prf": 0.0,
+        # int defaults
+        "num_rng_bins": 0, "num_lines": 0, "num_valid_az": 0,
+        "num_patches": 1, "SC_identity": 0,
+        "rshift": 0, "ashift": 0, "first_line": 0,
+        "st_rng_bin": 1, "chirp_ext": 0, "nrows": 0,
+        # strings
+        "SLC_file": "", "input_file": "", "dtype": "",
+    }
+    with open(path) as f:
+        for line in f:
+            # C uses fscanf "%s = %s" which stops at whitespace; so any
+            # comment after the value is naturally ignored. Match by
+            # taking first whitespace-separated tokens.
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            key, _, rest = line.partition("=")
+            key = key.strip()
+            val = rest.strip().split()[0] if rest.strip() else ""
+            if not val:
+                continue
+            if key in _PRM_INT_MAP:
+                field = _PRM_INT_MAP[key]
+                try:
+                    p[field] = int(val)
+                except ValueError:
+                    try:
+                        p[field] = int(float(val))
+                    except ValueError:
+                        pass
+            elif key in _PRM_DOUBLE_MAP:
+                field = _PRM_DOUBLE_MAP[key]
+                try:
+                    p[field] = float(val)
+                except ValueError:
+                    pass
+            elif key in _PRM_STR_MAP:
+                p[_PRM_STR_MAP[key]] = val
+            # else: ignore unknown keys (mirrors C tolerance)
+    return p
+
+
+def _fix_prm_params(p: dict) -> None:
+    """Mirror fix_prm_params() in phasediff.c lines 147-160 EXACTLY."""
+    delr = SOL / p["fs"] / 2.0
+    p["near_range"] = (
+        p["near_range"]
+        + (p["st_rng_bin"] - p["chirp_ext"] + p["rshift"] + p["sub_int_r"] - 1) * delr
+    )
+    p["SC_clock_start"] = (
+        p["SC_clock_start"]
+        + (p["ashift"] + p["sub_int_a"]) / (p["prf"] * 86400.0)
+        + (p["nrows"] - p["num_valid_az"]) / (2.0 * p["prf"] * 86400)
+    )
+    p["SC_clock_stop"] = (
+        p["SC_clock_start"]
+        + (p["num_valid_az"] * p["num_patches"]) / (p["prf"] * 86400.0)
+    )
+
+
+# ---------------------------------------------------------------------------
+# calc_drho — checkpoint C5a (phasediff.c lines 63-104)
+# ---------------------------------------------------------------------------
+
+def _calc_drho(
+    rng: np.ndarray,  # (xdim,) float64
+    topo: np.ndarray,  # (xdim,) float64
+    avet: float,
+    re: float,
+    height: float,
+    B: float,
+    alpha: float,
+    Bx: float,
+) -> np.ndarray:
+    """Range-change array via Lindsey-2015 nonlinear formula.
+
+    Vectorized port of calc_drho in phasediff.c lines 63-104. Note the C
+    uses long double for the intermediates (sint, cost, term1, ret). On
+    x86_64 long double is 80-bit; numpy float64 is 64-bit. This is the
+    single largest source of expected residual error vs C — typically
+    1e-15 to 1e-13 in drho, which after multiplication by -4*pi/lambda
+    becomes ~1e-9 in phase, well below the 1e-6 float-roundoff floor.
+    """
+    sina = np.sin(alpha)
+    cosa = np.cos(alpha)
+    c = re + height
+    c2 = c * c
+    b = B
+
+    rho = rng
+    ret = re + avet + topo
+    ret2 = ret * ret
+    cost = (rho * rho + c2 - ret2) / (2.0 * rho * c)
+
+    if np.any(cost >= 1.0):
+        # C: die("calc_drho", "cost >= 0");  (note the cryptic message)
+        raise RuntimeError("calc_drho: cost >= 1 — geometry invalid")
+
+    sint = np.sqrt(1.0 - cost * cost)
+
+    # Lindsey 2015 nonlinear formulation — matches C lines 100-102.
+    term1 = rho * rho + b * b - 2.0 * rho * b * (sint * cosa - cost * sina) - Bx * Bx
+    drho = -rho + np.sqrt(term1)
+    return drho
+
+
+# ---------------------------------------------------------------------------
+# SLC reader — checkpoint C3
+# ---------------------------------------------------------------------------
+
+def _read_slc_row(fp, xdim: int) -> np.ndarray:
+    """Read one row (xdim complex shorts) and return (xdim,) complex64.
+
+    Mirrors read_SLC_short2float in utils_complex.c:
+      - reads 2*xdim int16 little-endian (native: SLC files are written
+        as raw native short on the same architecture)
+      - zero-pair convention: if BOTH real/imag are 0, set real := 1
+        (to ensure non-zero amplitude). Imag stays 0.
+      - multiply by DFACT (float32 cast in C).
+    """
+    raw = np.frombuffer(fp.read(4 * xdim), dtype=np.int16)
+    if raw.size != 2 * xdim:
+        raise IOError(f"SLC short read short: got {raw.size}, need {2*xdim}")
+    sdata = raw.copy()  # in-place fixup of zero pairs
+    re = sdata[0::2]
+    im = sdata[1::2]
+    zero_pair = (re == 0) & (im == 0)
+    if zero_pair.any():
+        re[zero_pair] = 1
+    # C casts dfact to float, multiplies by short -> float.
+    # Match by computing in float32.
+    fdf = np.float32(DFACT)
+    cdata = np.empty(xdim, dtype=np.complex64)
+    cdata.real = fdf * re.astype(np.float32)
+    cdata.imag = fdf * im.astype(np.float32)
+    return cdata
+
+
+# ---------------------------------------------------------------------------
+# Topo grid I/O — checkpoint C3
+# ---------------------------------------------------------------------------
+
+def _read_topo_grd(path: str) -> Tuple[np.ndarray, float, float]:
+    """Read a topo_ra (or model) grd. Returns (data_yflipped, xdec, ydec).
+
+    Matches the C convention: T->data[xt + nx*yt] is row-major with row 0
+    at the TOP of the grid (highest y in GMT pixel-reg sense, OR lowest y
+    depending on file orientation). gmtsar pipelines write topo_ra.grd
+    with y ASCENDING — but `dem2topo_ra.csh` flips before write. We
+    therefore preserve the C reading convention: read the file's z[]
+    in the order GMT_Read_Data delivers (which is the same row-major
+    storage; row index == j/ydect maps directly into data array).
+
+    The Python read_gmt_grd returns data in "y ascending" orientation
+    (row 0 → y_min). The C code uses GMT_Read_Data which, for a GMT
+    grd file, returns rows in y DESCENDING order. To match the C, we
+    flip vertically here so data[0,:] is the "top" row that the C
+    sees first.
+
+    NOTE: Empirically verified by running the C binary on a known input
+    and checking that drho_avg over rows matches when we flip.
+    """
+    z, x, y, info = read_gmt_grd(path)
+    # read_gmt_grd returns z in y-ascending. C/GMT_Read_Data delivers
+    # rows in y-descending. Flip to match the C "row 0 == top of image".
+    z = np.flipud(z).astype(np.float64)  # C accesses as float (T->data is float)
+    xdec = abs(info["x_inc"])
+    ydec = abs(info["y_inc"])
+    return z, xdec, ydec
+
+
+# ---------------------------------------------------------------------------
+# Main port — drives the C checkpoints in order
+# ---------------------------------------------------------------------------
+
+def phasediff(
+    refPRM: str,
+    repPRM: str,
+    topo_path: Optional[str] = None,
+    model_path: Optional[str] = None,
+    real_out: str = "real.grd",
+    imag_out: str = "imag.grd",
+    verbose: bool = False,
+) -> None:
+    """End-to-end phasediff. Writes real.grd and imag.grd."""
+    # ----- C1: read PRMs, fix params ----------------------------------------
+    p1 = _parse_prm(refPRM)
+    p2 = _parse_prm(repPRM)
+
+    if p2["baseline_start"] < -9000:
+        raise RuntimeError("baseline < -9000 not set ?")
+
+    _fix_prm_params(p1)
+    _fix_prm_params(p2)
+
+    # ----- C2: derive xdim/ydim --------------------------------------------
+    if p1["num_rng_bins"] != p2["num_rng_bins"]:
+        raise RuntimeError("The dimensions of range do not match")
+    xdim = p1["num_rng_bins"]
+    if (p1["num_patches"] * p1["num_valid_az"]) != (p2["num_patches"] * p2["num_valid_az"]):
+        raise RuntimeError("The dimensions of azimuth do not match")
+    ydim = p1["num_patches"] * p1["num_valid_az"]
+    if verbose:
+        print(f" xdim {xdim}, ydim {ydim}", file=sys.stderr)
+
+    # SLC file paths are relative to the cwd, just like C.
+    slc1_path = p1["SLC_file"]
+    slc2_path = p2["SLC_file"]
+
+    # ----- C3: topo / model -------------------------------------------------
+    topoflag = topo_path is not None
+    modelflag = model_path is not None
+    avet = 0.0
+    xdect = ydect = 1.0
+    xdecm = ydecm = 1.0
+    topo_data = model_data = None
+    topo_nx = topo_ny = 0
+    model_nx = model_ny = 0
+
+    if topoflag:
+        topo_data, xdect_grd, ydect_grd = _read_topo_grd(topo_path)
+        topo_ny, topo_nx = topo_data.shape
+        if xdim % topo_nx != 0 or ydim % topo_ny != 0:
+            raise RuntimeError(
+                f"SLC dim ({xdim}x{ydim}) not a multiple of topo dim "
+                f"({topo_nx}x{topo_ny})"
+            )
+        xdect = abs(xdect_grd)
+        ydect = abs(ydect_grd)
+        # calc_average_topo: avet = mean(topo), then topo -= avet.
+        avet = float(topo_data.mean())
+        topo_data = (topo_data - np.float32(avet)).astype(np.float64)
+        # NOTE: C casts avet to float when subtracting (topo[k] -= (float)*avet)
+        # but topo is already float32 in C. We compute in float64 here; the
+        # difference is below 1e-7 in avet typically.
+        if verbose:
+            print(f" mean topo {avet}", file=sys.stderr)
+
+    if modelflag:
+        model_data, xdecm_grd, ydecm_grd = _read_topo_grd(model_path)
+        model_ny, model_nx = model_data.shape
+        if xdim % model_nx != 0 or ydim % model_ny != 0:
+            raise RuntimeError("SLC dim not multiple of model dim")
+        xdecm = abs(xdecm_grd)
+        ydecm = abs(ydecm_grd)
+
+    # ----- C4: baseline polynomials & range ascending array ----------------
+    tspan = 86400.0 * abs(p2["SC_clock_stop"] - p2["SC_clock_start"])
+    dt = tspan / (ydim - 1) if ydim > 1 else 0.0
+    if tspan < 0.01 or p2["prf"] < 0.01:
+        raise RuntimeError("check sc_clock_start, _end, or prf")
+
+    drange = SOL / (2.0 * p2["fs"])
+    alpha0 = p2["alpha_start"] * PI / 180.0
+    cnst = -4.0 * PI / p2["lambda"]
+
+    k_idx = np.arange(xdim, dtype=np.float64)
+    rng = p1["near_range"] + k_idx * (1.0 + p1["stretch_r"]) * drange
+
+    htc = p1["ht"]
+    ht0 = p1["ht_start"]
+    htf = p1["ht_end"]
+
+    Bh0 = p2["baseline_start"] * np.cos(p2["alpha_start"] * PI / 180.0)
+    Bv0 = p2["baseline_start"] * np.sin(p2["alpha_start"] * PI / 180.0)
+    Bhf = p2["baseline_end"] * np.cos(p2["alpha_end"] * PI / 180.0)
+    Bvf = p2["baseline_end"] * np.sin(p2["alpha_end"] * PI / 180.0)
+    Bx0 = p2["B_offset_start"]
+    Bxf = p2["B_offset_end"]
+
+    if (p2["baseline_center"] != NULL_DOUBLE
+            or p2["alpha_center"] != NULL_DOUBLE
+            or p2["B_offset_center"] != NULL_DOUBLE):
+        Bhc = p2["baseline_center"] * np.cos(p2["alpha_center"] * PI / 180.0)
+        Bvc = p2["baseline_center"] * np.sin(p2["alpha_center"] * PI / 180.0)
+        Bxc = p2["B_offset_center"]
+        dBh = (-3.0 * Bh0 + 4 * Bhc - Bhf) / tspan
+        dBv = (-3.0 * Bv0 + 4 * Bvc - Bvf) / tspan
+        ddBh = (2.0 * Bh0 - 4 * Bhc + 2 * Bhf) / (tspan * tspan)
+        ddBv = (2.0 * Bv0 - 4 * Bvc + 2 * Bvf) / (tspan * tspan)
+        dBx = (-3.0 * Bx0 + 4 * Bxc - Bxf) / tspan
+        ddBx = (2.0 * Bx0 - 4 * Bxc + 2 * Bxf) / (tspan * tspan)
+    else:
+        dBh = (Bhf - Bh0) / tspan
+        dBv = (Bvf - Bv0) / tspan
+        dBx = (Bxf - Bx0) / tspan
+        ddBh = ddBv = ddBx = 0.0
+
+    dht = (-3.0 * ht0 + 4 * htc - htf) / tspan
+    ddht = (2.0 * ht0 - 4 * htc + 2 * htf) / (tspan * tspan)
+
+    ydim_start = 0
+    if p1["first_line"] > 0 and p2["first_line"] > 0:
+        ydim_start = p1["first_line"] - 1
+
+    # ----- C2 cont.: allocate output grids ----------------------------------
+    # GMT pixel registration: wesn = [0, xdim, 0, ydim], inc = [1, 1].
+    real_data = np.empty((ydim, xdim), dtype=np.float32)
+    imag_data = np.empty((ydim, xdim), dtype=np.float32)
+
+    # Long baseline guard
+    long_baseline = topoflag and p2["baseline_start"] > 1000.0
+    if long_baseline:
+        raise NotImplementedError(
+            "phasediff_py: spline range-shift correction for "
+            "baseline > 1000 m not yet ported. Use C phasediff for "
+            "this case."
+        )
+
+    # ----- C5: main loop ----------------------------------------------------
+    with open(slc1_path, "rb") as f1, open(slc2_path, "rb") as f2:
+        for j_local in range(ydim):
+            j = ydim_start + j_local
+            # range2 = range + j * a_stretch_r * drange
+            range2 = rng + j * p1["a_stretch_r"] * drange
+
+            z1 = _read_slc_row(f1, xdim)
+            z2 = _read_slc_row(f2, xdim)
+
+            if topoflag:
+                yt = j // int(ydect) if ydect >= 1 else 0
+                ym = j // int(ydecm) if ydecm >= 1 else 0
+
+                t = j * dt
+                t2 = t * t
+                Bh = Bh0 + dBh * t + ddBh * t2
+                Bv = Bv0 + dBv * t + ddBv * t2
+                Bx = Bx0 + dBx * t + ddBx * t2
+                B = np.sqrt(Bh * Bh + Bv * Bv)
+                alpha_j = np.arctan2(Bv, Bh)
+                height = ht0 + dht * t + ddht * t2
+
+                # Sample topo along this row (constant block per xdect)
+                # C: topo2[k] = T->data[k/xdect + nx*yt]
+                k_xt = (np.arange(xdim) // int(xdect)).astype(np.int64)
+                yt_clip = min(max(yt, 0), topo_ny - 1)
+                topo2_row = topo_data[yt_clip, k_xt]
+
+                drho = _calc_drho(range2, topo2_row, avet, p1["RE"],
+                                  height, B, alpha_j, Bx)
+
+                pha = cnst * drho
+
+                if modelflag:
+                    ym_clip = min(max(ym, 0), model_ny - 1)
+                    k_xm = (np.arange(xdim) // int(xdecm)).astype(np.int64)
+                    pha = pha - model_data[ym_clip, k_xm]
+
+                # C: pshif = Cexp(pha) where pha is cast to float on call.
+                # We replicate by casting to float32 BEFORE cos/sin.
+                pha_f32 = pha.astype(np.float32)
+                # cos/sin on float32 -> float32 (numpy preserves dtype)
+                cos_p = np.cos(pha_f32).astype(np.float32)
+                sin_p = np.sin(pha_f32).astype(np.float32)
+
+                # intfp = z1 * (cos+i sin)   -- complex multiply, float32
+                # We must do this in the exact order Cmul uses:
+                #   r = x.r*y.r - x.i*y.i
+                #   i = x.i*y.r + x.r*y.i
+                z1_r = z1.real
+                z1_i = z1.imag
+                tmp_r = z1_r * cos_p - z1_i * sin_p
+                tmp_i = z1_i * cos_p + z1_r * sin_p
+            else:
+                tmp_r = z1.real.copy()
+                tmp_i = z1.imag.copy()
+
+            # Final step: intfp = intfp * conj(z2)  -> r = a*c + b*d, i = b*c - a*d
+            z2_r = z2.real
+            z2_i = -z2.imag  # Conjg
+            out_r = tmp_r * z2_r - tmp_i * z2_i
+            out_i = tmp_i * z2_r + tmp_r * z2_i
+
+            real_data[j_local, :] = out_r.astype(np.float32)
+            imag_data[j_local, :] = out_i.astype(np.float32)
+
+    # ----- C6: write grids --------------------------------------------------
+    # Pixel-registered, inc=1, wesn=[0,xdim,0,ydim].
+    # GMT convention for image-style grids: row 0 of the C array is the
+    # TOP of the image (highest y in pixel-reg space). phasediff fills
+    # rows 0..ydim-1 in image order (j=0 is the first SLC line). Two
+    # output flavors:
+    #   * netCDF (`.grd`)  → flip vertically (write_gmt_grd expects
+    #                         y-ASCENDING orientation).
+    #   * native bf (`=bf`) → write as-is (the bf reader expects row 0
+    #                         to be the TOP of the image).
+    real_out_stripped = real_out.split("=", 1)[0]
+    imag_out_stripped = imag_out.split("=", 1)[0]
+
+    if _is_bf(real_out):
+        _gmt_native_bf.write_bf(real_out_stripped, real_data,
+                                x_min=0.0, y_min=0.0, x_inc=1.0, y_inc=1.0,
+                                node_offset=1, remark="real")
+    else:
+        x_pix = np.arange(xdim, dtype=np.float64) + 0.5
+        y_pix = np.arange(ydim, dtype=np.float64) + 0.5
+        write_gmt_grd(real_out_stripped, np.flipud(real_data), x_pix, y_pix,
+                      node_offset=1, title="", history="phasediff_py",
+                      description="real")
+
+    if _is_bf(imag_out):
+        _gmt_native_bf.write_bf(imag_out_stripped, imag_data,
+                                x_min=0.0, y_min=0.0, x_inc=1.0, y_inc=1.0,
+                                node_offset=1, remark="imag")
+    else:
+        x_pix = np.arange(xdim, dtype=np.float64) + 0.5
+        y_pix = np.arange(ydim, dtype=np.float64) + 0.5
+        write_gmt_grd(imag_out_stripped, np.flipud(imag_data), x_pix, y_pix,
+                      node_offset=1, title="", history="phasediff_py",
+                      description="imag")
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog="phasediff_py",
+        description="Compute phase difference of two SLC images (port of C phasediff).",
+        add_help=False,
+    )
+    p.add_argument("refPRM")
+    p.add_argument("repPRM")
+    p.add_argument("-topo", dest="topo", default=None)
+    p.add_argument("-model", dest="model", default=None)
+    p.add_argument("-imag", dest="imag", default="imag.grd=bf")
+    p.add_argument("-real", dest="real", default="real.grd=bf")
+    p.add_argument("-V", action="store_true", dest="verbose")
+    p.add_argument("-h", "--help", action="store_true", dest="show_help")
+    ns = p.parse_args(argv)
+    if ns.show_help:
+        p.print_help()
+        return 0
+
+    phasediff(ns.refPRM, ns.repPRM,
+              topo_path=ns.topo, model_path=ns.model,
+              real_out=ns.real, imag_out=ns.imag,
+              verbose=ns.verbose)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

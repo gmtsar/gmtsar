@@ -13,7 +13,23 @@
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1 since v2.3.8); set =0 to force the gmt
+# grdmath subprocess. Full 21-case sweep under =1 is 20/21 py-vs-csh clean
+# (only diff = the documented S1_Ridgecrest no-DEM-corner surface artifact).
+# All operators bit/float64-parity verified vs C binary in
+# bin_py/tests/test_gmt_grdmath_py.py (42 tests, incl. corr_chain=bf).
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 def filter():
     run("alias rm 'rm -f'")
@@ -192,8 +208,12 @@ def filter():
     print('FILTER: form amplitude image ... ...')
     print('FILTER: making amplitude ... ...')
     
-    run('gmt grdmath realfilt.grd imagfilt.grd HYPOT = amp.grd')
-    run('gmt grdmath amp.grd 0.5 POW FLIPUD = display_amp.grd')
+    if _grdmath_py_on():
+        _gm.grdmath2("HYPOT", 'realfilt.grd', 'imagfilt.grd', 'amp.grd', ctx="filter:HYPOT")
+        _gm.grdmath_pow_flipud('amp.grd', 0.5, 'display_amp.grd', ctx="filter:POW_FLIPUD")
+    else:
+        run('gmt grdmath realfilt.grd imagfilt.grd HYPOT = amp.grd')
+        run('gmt grdmath amp.grd 0.5 POW FLIPUD = display_amp.grd')
 
     output = subprocess.check_output(['gmt', 'grdinfo', '-L2', 'display_amp.grd'])
     stdev_line = [line for line in output.splitlines() if b'stdev' in line][0]
@@ -213,9 +233,14 @@ def filter():
     print(' ')
     print('FILTER: form the correlation ... ...')
     print('FILTER: making correction ... ...')
-    run('gmt grdmath amp1.grd amp2.grd MUL = tmp.grd')
-    run('gmt grdmath tmp.grd '+str(thresh)+' GE 0 NAN = mask.grd')
-    run('gmt grdmath amp.grd tmp.grd SQRT DIV mask.grd MUL FLIPUD = tmp2.grd=bf')
+    if _grdmath_py_on():
+        _gm.grdmath2("MUL", 'amp1.grd', 'amp2.grd', 'tmp.grd', ctx="filter:MUL")
+        _gm.grdmath_ge_nan('tmp.grd', float(thresh), 'mask.grd', ctx="filter:GE_NAN")
+        _gm.grdmath_corr_chain('amp.grd', 'tmp.grd', 'mask.grd', 'tmp2.grd=bf', ctx="filter:CORR_CHAIN")
+    else:
+        run('gmt grdmath amp1.grd amp2.grd MUL = tmp.grd')
+        run('gmt grdmath tmp.grd '+str(thresh)+' GE 0 NAN = mask.grd')
+        run('gmt grdmath amp.grd tmp.grd SQRT DIV mask.grd MUL FLIPUD = tmp2.grd=bf')
     run('conv 1 1 '+str(filter3)+' tmp2.grd=bf corr.grd')
     run("gmt makecpt -T0./.8/0.1 -Cgray -Z -N > corr.cpt")
     append_new_line('corr.cpt','N 255 255 254')
@@ -225,7 +250,11 @@ def filter():
     
     print(' ')
     print('FILTER: form the phase ... ...')
-    run('gmt grdmath imagfilt.grd realfilt.grd ATAN2 mask.grd MUL FLIPUD = phase.grd')
+    if _grdmath_py_on():
+        _gm.grdmath_atan2_mul_flipud('imagfilt.grd', 'realfilt.grd', 'mask.grd',
+                                      'phase.grd', ctx="filter:ATAN2_MUL_FLIPUD")
+    else:
+        run('gmt grdmath imagfilt.grd realfilt.grd ATAN2 mask.grd MUL FLIPUD = phase.grd')
     run("gmt makecpt -Crainbow -T-3.15/3.15/0.1 -Z -N > phase.cpt")
     run('gmt grdimage phase.grd '+str(scale)+' -Bxaf+lRange -Byaf+lAzimuth -BWSen -Cphase.cpt -X1.3i -Y3i -P -K > phase.ps')
     run('''gmt psscale -Rphase.grd -J -DJTC+w5i/0.2i+h -Cphase.cpt -B1.57+l"Phase" -By+lrad -O >> phase.ps''')
@@ -236,9 +265,22 @@ def filter():
     
     print(' ')
     print('FILTER: make the Werner/Goldstain filtered phase ... ...')
-    run('phasefilt -imag imagfilt.grd -real realfilt.grd -amp1 amp1.grd -amp2 amp2.grd -psize 32') 
+    # GMTSAR_PHASEFILT_PY → in-process Goldstein/Baran port (bin_py/phasefilt_py),
+    # C-parity validated (complex-rms 8.6e-6 vs phasefilt C). Default ON since v2.1.37
+    # after a fast-tier sweep (RS2, S1A_Greece, ALOS_haiti, ERS, ALOS_Baja, CSK_RAW) showed
+    # all 6 cases py-vs-csh CLEAN with phasefilt.grd complex-rms 0.00002-0.00245 (≪ 0.15).
+    # Set GMTSAR_PHASEFILT_PY=0 to fall back to the `phasefilt` C subprocess.
+    _phasefilt_args = '-imag imagfilt.grd -real realfilt.grd -amp1 amp1.grd -amp2 amp2.grd -psize 32'
+    if os.environ.get('GMTSAR_PHASEFILT_PY', '1') == '1':
+        run('phasefilt_py ' + _phasefilt_args)
+    else:
+        run('phasefilt ' + _phasefilt_args)
     run('''gmt grdedit filtphase.grd `gmt grdinfo mask.grd -I- --FORMAT_FLOAT_OUT=%.12lg`''') 
-    run('gmt grdmath filtphase.grd mask.grd MUL FLIPUD = phasefilt.grd')
+    if _grdmath_py_on():
+        _gm.grdmath_mul_flipud('filtphase.grd', 'mask.grd', 'phasefilt.grd',
+                                ctx="filter:MUL_FLIPUD_phasefilt")
+    else:
+        run('gmt grdmath filtphase.grd mask.grd MUL FLIPUD = phasefilt.grd')
     delete('filtphase.grd')
     run('gmt grdimage phasefilt.grd '+str(scale)+' -Bxaf+lRange -Byaf+lAzimuth -BWSen -Cphase.cpt -X1.3i -Y3i -P -K > phasefilt.ps')
     run('''gmt psscale -Rphasefilt.grd -J -DJTC+w5i/0.2i+h -Cphase.cpt -Bxa1.57+l"Phase" -By+lrad -O >> phasefilt.ps''')
@@ -249,12 +291,27 @@ def filter():
     
     if compute_phase_gradient != 0:
         print('FILTER: making phase gradient ... ...')
-        run('gmt grdmath amp.grd 2. POW = amp_pow.grd')
-        run('gmt grdmath realfilt.grd ximag.grd MUL imagfilt.grd xreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = xphase.grd')
-        run('gmt grdmath realfilt.grd yimag.grd MUL imagfilt.grd yreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = yphase.grd') 
+        if _grdmath_py_on():
+            _gm.grdmath2("POW", 'amp.grd', 2.0, 'amp_pow.grd',
+                         ctx="filter:POW_amp")
+            _gm.grdmath_phase_gradient_chain(
+                'realfilt.grd', 'ximag.grd', 'imagfilt.grd', 'xreal.grd',
+                'amp_pow.grd', 'mask.grd', 'xphase.grd',
+                ctx="filter:phase_grad_x")
+            _gm.grdmath_phase_gradient_chain(
+                'realfilt.grd', 'yimag.grd', 'imagfilt.grd', 'yreal.grd',
+                'amp_pow.grd', 'mask.grd', 'yphase.grd',
+                ctx="filter:phase_grad_y")
+        else:
+            run('gmt grdmath amp.grd 2. POW = amp_pow.grd')
+            run('gmt grdmath realfilt.grd ximag.grd MUL imagfilt.grd xreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = xphase.grd')
+            run('gmt grdmath realfilt.grd yimag.grd MUL imagfilt.grd yreal.grd MUL SUB amp_pow.grd DIV mask.grd MUL FLIPUD = yphase.grd')
     
     file_shuttle('mask.grd','tmp.grd','mv')
-    run('gmt grdmath tmp.grd FLIPUD = mask.grd')
+    if _grdmath_py_on():
+        _gm.grdmath1("FLIPUD", 'tmp.grd', 'mask.grd', ctx="filter:FLIPUD_mask")
+    else:
+        run('gmt grdmath tmp.grd FLIPUD = mask.grd')
     
     print(' ')
     print('FILTER: delete files ... ...')

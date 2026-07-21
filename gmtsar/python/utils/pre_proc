@@ -10,7 +10,37 @@
 
 import sys, os, re, configparser
 import subprocess, glob
-from gmtsar_lib import * 
+from gmtsar_lib import *
+
+
+def _rs2_preproc_py_enabled():
+    """GMTSAR_RS2_PREPROC_PY controls make_slc_rs2 dispatch.
+
+    Default ON since 2026-07-13: verified byte-identical to the C binary
+    on RS2_SLC_Hawaii (both scenes, .PRM/.LED/.SLC). ~1.3x SLOWER on this
+    single stage (I/O-bound; see make_slc_rs2_py.py module docstring),
+    but pre_proc is only ~7.8% of total case wall time, and a pure-Python
+    path removes the C-compiler/build-toolchain dependency for this
+    binary (project_rules.md Rule 13 note: deployment simplicity is a
+    valid secondary criterion alongside raw speed, given the aggregate
+    cost is small — see docs/PATHWAY_FORWARD.md for the measured
+    aggregate impact). Set GMTSAR_RS2_PREPROC_PY=0 to force the C binary.
+    """
+    return os.environ.get('GMTSAR_RS2_PREPROC_PY', '1') == '1'
+
+
+def _make_slc_rs2(xml_file, tif_file, out_prefix):
+    """Dispatch make_slc_rs2: in-process py port (opt-in) or the
+    `make_slc_rs2` C binary subprocess (default). Selection happens
+    BEFORE the call — no post-hoc except-fallback (Rule 1)."""
+    if _rs2_preproc_py_enabled():
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from make_slc_rs2_py import make_slc_rs2
+        print(' ')
+        print(f'[make_slc_rs2_py] {xml_file} {tif_file} {out_prefix}')
+        make_slc_rs2(xml_file, tif_file, out_prefix)
+    else:
+        run('make_slc_rs2 ' + xml_file + ' ' + tif_file + ' ' + out_prefix)
 
 def preprocAlos(SAT, master, aligned, skip_master, cmdAppendix):
     print(' ')
@@ -177,6 +207,12 @@ def preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix):
     additionalFlag = ''
     if SAT=='ALOS_SLC':
         additionalFlag = '-ALOS1'
+    elif SAT=='ALOS4':
+        # Match csh/pre_proc.csh:307-312: ALOS4 (PALSAR-3) needs -ALOS4 + an
+        # explicit -rbias correction. Without these, ALOS_pre_process_SLC ran
+        # in legacy mode and emitted no PRM/SLC files, causing the entire
+        # ALOS4_Pinon recipe to fail downstream.
+        additionalFlag = '-ALOS4 -rbias 2.5'
     if skip_master==0 or skip_master==2:
         run('ALOS_pre_process_SLC '+'IMG-'+masterCut+' LED-'+masterLed+' '+cmdAppendix+' '+additionalFlag)
     if skip_master==0 or skip_master==1:
@@ -227,28 +263,49 @@ def fdb2fbs(SAT, master, aligned, prefix=''):
         with open(f'ALOS_fbd2fbs_log_{imageName}','w') as f:
             f.write(f'{message}\n')
 
-def preprocOthers(SAT, master, aligned, skip_master, RAD): 
+def _run_make_slc_csk(h5_file, out_prefix):
+    """CSK_SLC make_slc_csk dispatcher.
+
+    Default ON since 2026-07-13. Byte-for-byte parity-verified against
+    the real C `make_slc_csk` binary on real CSKS2 SCS_B acquisitions --
+    see gmtsar/python/bin_py/tests/test_make_slc_csk_parity.py. ~1.3-2x
+    SLOWER on this single stage (I/O-bound HDF5 reads), but pre_proc is
+    only ~7.8% of total case wall time, and removes the C-compiler
+    dependency for this binary -- see docs/PATHWAY_FORWARD.md for the
+    measured aggregate impact. Instant rollback: set
+    GMTSAR_CSK_MAKE_SLC_PY=0 to go back to the C binary.
+    """
+    if os.environ.get("GMTSAR_CSK_MAKE_SLC_PY", "1") == "1":
+        print(' ')
+        print(f'make_slc_csk_py {h5_file} {out_prefix}  [GMTSAR_CSK_MAKE_SLC_PY=1]')
+        import make_slc_csk_py
+        make_slc_csk_py.run(h5_file, out_prefix)
+    else:
+        run('make_slc_csk '+h5_file+' '+out_prefix)
+
+
+def preprocOthers(SAT, master, aligned, skip_master, RAD):
     print(' ')
     print('PREPROC: processing CSK/TSX/RS2/S1_STRIP/GF3/LT1 SLC data - START ... ...')
     print(' ')
-    
+
     if SAT=='CSK_SLC':
         if skip_master==0 or skip_master==2:
-            run('make_slc_csk '+master+'.h5 '+master)
+            _run_make_slc_csk(master+'.h5', master)
         if skip_master==0 or skip_master==1:
-            run('make_slc_csk '+aligned+'.h5 '+aligned)
+            _run_make_slc_csk(aligned+'.h5', aligned)
     elif SAT=='TSX':
         if skip_master==0 or skip_master==2:
-            run('make_slc_tsx '+master+'.xml '+master+'.cos '+master)
+            run_make_slc_tsx(master+'.xml', master+'.cos', master)
         if skip_master==0 or skip_master==1:
-            run('make_slc_tsx '+aligned+'.xml '+aligned+'.cos '+aligned)
+            run_make_slc_tsx(aligned+'.xml', aligned+'.cos', aligned)
     elif SAT=='RS2':
         if skip_master==0 or skip_master==2:
-            run('make_slc_rs2 '+master+'.xml '+master+'.tif '+master)
+            _make_slc_rs2(master+'.xml', master+'.tif', master)
             file_shuttle(master+'.LED','save-'+master+'.LED','mv')
             run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
         if skip_master==0 or skip_master==1:
-            run('make_slc_rs2 '+aligned+'.xml '+aligned+'.tif '+aligned)
+            _make_slc_rs2(aligned+'.xml', aligned+'.tif', aligned)
             file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
             run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
     elif SAT=='GF3':
@@ -262,12 +319,22 @@ def preprocOthers(SAT, master, aligned, skip_master, RAD):
         if skip_master==0 or skip_master==1:
             run('make_slc_lt1 '+aligned+'.xml '+aligned+'.tiff '+aligned) 
     else:
+        # GMTSAR_S1A_PREPROC_PY default ON since 2026-07-13. Python port of
+        # make_slc_s1a (utils/s1a_preproc_lib.py, wrapped by
+        # bin_py/make_slc_s1a_py). Verified byte-identical PRM/LED/SLC vs
+        # the C binary on two real Sentinel-1 TOPS scenes
+        # (bin_py/tests/test_make_slc_s1a_py.py), +1.4-1.8x faster
+        # (memmap bulk read replaces per-scanline TIFF calls), AND
+        # confirmed end-to-end on a real S1A_SLC_TOPS_Greece sweep
+        # (10/10 SUCCESS). Instant rollback: set GMTSAR_S1A_PREPROC_PY=0.
+        make_slc_s1a_cmd = ('make_slc_s1a_py' if os.environ.get('GMTSAR_S1A_PREPROC_PY', '1') == '1'
+                             else 'make_slc_s1a')
         if skip_master==0 or skip_master==2:
-            run('make_slc_s1a '+master+'.xml '+master+'.tif '+master)
+            run(make_slc_s1a_cmd+' '+master+'.xml '+master+'.tif '+master)
             file_shuttle(master+'.LED','save-'+master+'.LED','mv')
             run('extend_orbit save-'+master+'.LED '+master+'.LED 3')
         if skip_master==0 or skip_master==1:
-            run('make_slc_s1a '+aligned+'.xml '+aligned+'.tif '+aligned)
+            run(make_slc_s1a_cmd+' '+aligned+'.xml '+aligned+'.tif '+aligned)
             file_shuttle(aligned+'.LED','save-'+aligned+'.LED','mv')
             run('extend_orbit save-'+aligned+'.LED '+aligned+'.LED 3')
     
@@ -385,7 +452,10 @@ def pre_proc():
         preprocEnvi(master, aligned, skip_master, NEAR, RAD, num_patches, FD1)
     elif SAT=='ENVI_SLC':
         preprocEnvislc(master, aligned, skip_master, RAD)
-    elif SAT=='ALOS_SLC' or SAT=='ALOS2' or SAT=='ALOS2_SCAN':
+    elif SAT=='ALOS_SLC' or SAT=='ALOS2' or SAT=='ALOS2_SCAN' or SAT=='ALOS4':
+        # ALOS4 routes here per csh/pre_proc.csh:282; the inner function adds
+        # the -ALOS4 -rbias 2.5 flags. Previously fell through the dispatch
+        # silently and emitted no PRM files.
         preprocAlosslcAlos2Alosscan(SAT, master, aligned, skip_master, cmdAppendix)
     elif SAT=='CSK_RAW':
         preprocCskraw(master, aligned, skip_master, RAD, FD1)
@@ -395,6 +465,13 @@ def pre_proc():
     elif SAT=='S1_TOPS':
         print('S1_TOPS not tested yet')
         preprocS1tops(master, aligned, skip_master, ESD_mode)
+    else:
+        # Fail fast on unknown SAT — silent fallthrough previously emitted no
+        # PRM/SLC and the recipe died downstream with "Can't open prmfile",
+        # hiding the true cause (e.g. ALOS4 missing this branch). Audit finding
+        # in AUDIT.md (#4).
+        raise SystemExit(f"PREPROC: ERROR — unknown SAT '{SAT}'. "
+                         "Add a dispatch branch to pre_proc.")
     print('PREPROC: FINISHED ... ...')
     
 

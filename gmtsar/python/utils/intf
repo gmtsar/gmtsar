@@ -26,7 +26,7 @@ def Error_Message():
 
 def extractSatBaselineOutputToPrm(refPrm, repPrm):
     # csh command: SAT_baseline $1 $2 | tail -n9 >> $2
-    out = subprocess.run(['SAT_baseline', refPrm, repPrm], stdout=subprocess.PIPE)
+    out = subprocess.run(['SAT_baseline_py', refPrm, repPrm], stdout=subprocess.PIPE)
     output = out.stdout.decode('utf-8').split('\n')[-10:]
     print('INTF: SAT_baseline $1 $2 output is ', out)
     print('INTF: tail -n9 the above output is ', output)
@@ -35,7 +35,7 @@ def extractSatBaselineOutputToPrm(refPrm, repPrm):
         f.write('\n'.join(output))
         
     # csh command: SAT_baseline $1 $1 | grep height >> $1
-    out = subprocess.run(['SAT_baseline', refPrm, refPrm], stdout=subprocess.PIPE)
+    out = subprocess.run(['SAT_baseline_py', refPrm, refPrm], stdout=subprocess.PIPE)
     output = out.stdout.decode('utf-8')
     output = '\n'.join(line for line in output.split('\n') if 'height' in line)
     with open(refPrm, 'a') as f:
@@ -70,7 +70,31 @@ def intf():
  
     print('INTF: form the interferogram optionally using topo_ra and modelphase ... ...')
     if n==3 or n==5 or n==7:
-        cmd = 'phasediff'
+        # Mira #41 wire-in (2026-05-22): phasediff_py replaces C phasediff
+        # when (a) short-baseline (|baseline_start| <= 1000 m — the py port
+        # raises NotImplementedError above that until the long-baseline
+        # spline correction is ported, see phasediff_py:447-454), AND
+        # (b) GMTSAR_PHASEDIFF_PY != "0". Bit-parity verified on RS2 Hawaii
+        # (baseline 43 m): max|d| < 5e-8 vs C in real.grd/imag.grd
+        # (87.2% bit-identical, 3.4x faster than C standalone).
+        # On long-baseline cases (typical S1 TOPS), falls back to C.
+        # Env override: GMTSAR_PHASEDIFF_PY=0  → always C (debug / regression A/B).
+        use_py = os.environ.get('GMTSAR_PHASEDIFF_PY', '1') != '0'
+        baseline_ok = True
+        if use_py:
+            try:
+                b = float(grep_value(repPrm, 'baseline_start', 3))
+                baseline_ok = abs(b) <= 1000.0
+                if not baseline_ok:
+                    print(f"INTF: |baseline_start|={abs(b):.1f} m > 1000 m → "
+                          "falling back to C phasediff (py long-baseline "
+                          "spline correction not yet ported).")
+            except Exception as e:
+                print(f"INTF: WARN baseline lookup failed ({e!r}); "
+                      "falling back to C phasediff.")
+                baseline_ok = False
+        binary = 'phasediff_py' if (use_py and baseline_ok) else 'phasediff'
+        cmd = binary
         for i in range(n-1):
             cmd = cmd + ' '+str(arg[i])
         run(cmd)

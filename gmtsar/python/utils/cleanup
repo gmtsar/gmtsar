@@ -56,15 +56,22 @@ def cleanup():
         delete('F2/config.py')
         delete('F3/config.py')
         delete('merge')
-        os.chdir('topo')
-        # original csh command: ls | grep -v dem.grd | xargs rm -f
-        # delete all the files except 'dem.grd'
-        pwd = os.getcwd()
-        all_files = os.listdir(pwd)
-        exclude_filename = 'dem.grd'
-        for filename in all_files:
-            if filename != exclude_filename:
-                delete(filename)
+        # Some tarballs (e.g. NISAR_Ethiopia) don't ship a topo/ dir — the recipe
+        # builds the DEM via make_dem. Skip the topo cleanup in that case;
+        # `os.chdir('topo')` would otherwise FileNotFoundError and break the
+        # case_runner chain (`cleanup all && cp README && ./README`),
+        # leaving the recipe unexecuted and the comparison empty.
+        if os.path.isdir('topo'):
+            os.chdir('topo')
+            # original csh command: ls | grep -v dem.grd | xargs rm -f
+            # delete all the files except 'dem.grd'
+            pwd = os.getcwd()
+            all_files = os.listdir(pwd)
+            exclude_filename = 'dem.grd'
+            for filename in all_files:
+                if filename != exclude_filename:
+                    delete(filename)
+            os.chdir('..')
     
     if str(sys.argv[1]) == 'raw':
         print(' ')

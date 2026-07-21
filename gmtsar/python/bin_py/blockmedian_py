@@ -1,0 +1,130 @@
+#! /usr/bin/env python3
+"""blockmedian_py — thin CLI wrapper around utils/gmt_blockmedian_py.
+
+This file is a CLI surface compatible with the subset of `gmt blockmedian`
+flags that gmtsar's `dem2topo_ra` invokes. **All numerical work is
+delegated to `utils.gmt_blockmedian_py.blockmedian`**, the byte-faithful
+Numba port verified against `gmt blockmedian -bi3d -bo3d -r` on real
+trans.dat (see `bin_py/tests/test_gmt_blockmedian_py.py`).
+
+History: prior to Mira #53 (2026-05-22) this file ran its own
+`scipy.stats.binned_statistic_2d` algorithm and emitted **(cell_centre_x,
+cell_centre_y, median_z)** per non-empty bin. That is NOT what
+`gmt blockmedian` produces: GMT writes **(median_x, median_y, median_z)**
+per bin (independent medians of all three columns). Mira #53 flagged
+this as a latent Rule 10 violation (independent algorithm instead of
+delegating to the GREEN port) and recommended this rewrite as a thin
+CLI wrapper.
+
+Drop-in CLI replacement for the call gmtsar pipes through inside
+`dem2topo_ra`:
+
+    gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d \\
+      | gmt blockmedian -R<x>/<x>/<y>/<y> -I<dx>/<dy> -bi3d -bo3d -r > temp.rat
+
+This wrapper collapses the two-step pipe into one in-memory pass: read
+trans.dat (5 doubles per row when `-bi5d`, else 3 doubles per row when
+`-bi3d`, else ASCII), keep columns 0..2 if needed, call
+`gmt_blockmedian_py.blockmedian(...)`, and stream the result as binary
+3-double rows to stdout (or to a `-G` file).
+
+CLI:
+    blockmedian_py infile -R<x>/<x>/<y>/<y> -I<dx>/<dy>
+                   [-bi3d|-bi5d] [-bo3d] [-r] [-G out.rat] [-V]
+
+Output: binary 3-double rows: (median_x, median_y, median_z) per
+non-empty bin, in `gmt blockmedian -bi3d -bo3d -r` top-down raster
+order.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+
+# Import the byte-faithful port. bin_py/ scripts live one level under
+# python/, utils/ also lives one level under python/, so we add
+# python/utils/ to sys.path so this wrapper works whether invoked from
+# bin_py/ directly or via a PATH symlink.
+_HERE = Path(__file__).resolve().parent
+_UTILS = _HERE.parent / "utils"
+if str(_UTILS) not in sys.path:
+    sys.path.insert(0, str(_UTILS))
+from gmt_blockmedian_py import blockmedian as _gmt_blockmedian  # noqa: E402
+
+
+def _parse_region(r: str) -> tuple[float, float, float, float]:
+    parts = r.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"blockmedian_py: -R{r} not in xmin/xmax/ymin/ymax form")
+    return tuple(float(p) for p in parts)  # type: ignore
+
+
+def _parse_spacing(s: str) -> tuple[float, float]:
+    parts = s.split("/")
+    if len(parts) == 1:
+        return float(parts[0]), float(parts[0])
+    return float(parts[0]), float(parts[1])
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("infile")
+    p.add_argument("-R", required=True)
+    p.add_argument("-I", required=True)
+    p.add_argument("-G", default="", help="output file path (default: stdout)")
+    p.add_argument("-bi3d", action="store_true",
+                   help="binary input, 3 doubles per row (xyz)")
+    p.add_argument("-bi5d", action="store_true",
+                   help="binary input, 5 doubles per row (e.g. from SAT_llt2rat)")
+    p.add_argument("-bo3d", action="store_true",
+                   help="binary output, 3 doubles per row (default true)")
+    p.add_argument("-r", action="store_true", help="pixel registration")
+    p.add_argument("-V", action="store_true", help="verbose (ignored)")
+    p.add_argument("-i", default="", help="input column spec (e.g. 0,1,2)")
+    ns = p.parse_args()
+
+    region = _parse_region(getattr(ns, "R"))
+    spacing = _parse_spacing(getattr(ns, "I"))
+
+    # Read input. Rule 1 (no fallback): if the dtype declared by the
+    # caller doesn't match the file size, raise — don't silently truncate.
+    if ns.bi5d:
+        a = np.fromfile(ns.infile, dtype=np.float64)
+        if a.size == 0 or a.size % 5 != 0:
+            print(f"blockmedian_py: {ns.infile} not a multiple of 5 doubles",
+                  file=sys.stderr)
+            return 2
+        xyz = np.ascontiguousarray(a.reshape(-1, 5)[:, :3])
+    elif ns.bi3d:
+        a = np.fromfile(ns.infile, dtype=np.float64)
+        if a.size == 0 or a.size % 3 != 0:
+            print(f"blockmedian_py: {ns.infile} not a multiple of 3 doubles",
+                  file=sys.stderr)
+            return 2
+        xyz = a.reshape(-1, 3)
+    else:
+        xyz = np.loadtxt(ns.infile, ndmin=2)[:, :3]
+
+    # Delegate. gmt blockmedian's `-r` corresponds to pixel registration.
+    # The port only supports pixel_reg=True for byte-faithful parity,
+    # which is what dem2topo_ra uses. We default to pixel_reg=True even
+    # when `-r` is absent so the CLI matches what the pipe inside
+    # dem2topo_ra invokes (which always passes `-r`).
+    out = _gmt_blockmedian(xyz, region=region, inc=spacing, pixel_reg=True)
+
+    # Output: binary 3-double rows. tobytes() on a contiguous (M, 3)
+    # float64 array gives exactly what `gmt blockmedian -bo3d` writes.
+    out = np.ascontiguousarray(out, dtype=np.float64)
+    if ns.G:
+        out.tofile(ns.G)
+    else:
+        sys.stdout.buffer.write(out.tobytes())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

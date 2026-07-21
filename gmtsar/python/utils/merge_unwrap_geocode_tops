@@ -8,6 +8,11 @@ auto-computes stitching column positions, then unwraps and geocodes.
 This eliminates the LAST csh shell-out from any Python entry point
 (p2p_S1_TOPS_Frame:119).
 
+Env-gate:
+  GMTSAR_MERGE_TOPS_PY=0  → exec merge_unwrap_geocode_tops.csh (the
+  original csh, kept on PATH at $GMTSAR/bin/merge_unwrap_geocode_tops.csh).
+  Default (unset or "1") runs this Python port.
+
 Usage:  merge_unwrap_geocode_tops inputfile config_file [det_stitch]
 
 inputfile format:
@@ -19,6 +24,55 @@ import os
 import subprocess
 import sys
 from gmtsar_lib import run, grep_value, check_file_report
+# Native Python snaphu entry points (Mira #43). Calling these directly
+# avoids the broken `snaphu <thresh> <defomax> <interp> <region>` shell
+# call, since `$GMTSAR/bin/snaphu` is the C unwrapper binary (Chen &
+# Zebker), not the Python wrapper — the bare `snaphu` CLI on PATH does
+# NOT accept that argument shape and would silently mis-invoke.
+from snaphu import snaphu_unwrap, snaphu_interp_unwrap
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+# Note: expressions using PI/MOD (line 236 ionosphere correction) remain on
+# the gmt subprocess path — those operators are not in the port.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
+
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the ionosphere `ph_iono_orig -Rphasefilt.grd`
+# resample below. phasefilt.grd is radar-geometry with clean integer
+# increments → byte-identical to `gmt grdsample` (A/B verified maxabs=0,
+# NaN-footprint identical). Default ON; set GMTSAR_GRDSAMPLE_PY=0 to force gmt.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
+def _maybe_exec_csh_fallback() -> None:
+    """If GMTSAR_MERGE_TOPS_PY=0, exec merge_unwrap_geocode_tops.csh.
+
+    Lets a sweep / user revert the wire-in via one env flip without
+    rebuilding the install tree. Mirrors the pattern used by
+    utils/align_tops.
+    """
+    if os.environ.get("GMTSAR_MERGE_TOPS_PY", "1") != "0":
+        return
+    csh_bin = "merge_unwrap_geocode_tops.csh"
+    os.execvp(csh_bin, [csh_bin, *sys.argv[1:]])
 
 
 def _capture(cmd):
@@ -62,6 +116,18 @@ def _grdinfo_field(grd, field, flags="-C"):
     return parts[field - 1] if len(parts) >= field else ""
 
 
+def _awk_int(x):
+    """Mirror awk's printf("%d", x): truncate toward zero.
+
+    Python's `//` and `int()` differ for negatives — awk truncates toward
+    zero, Python `//` floors. For the cases this code feeds (positive
+    grid-pixel counts) the values agree, but using a single explicit
+    helper keeps the awk parity obvious and protects against a future
+    diff between csh and py if any of these terms went negative.
+    """
+    return int(x)  # Python int() of a float truncates toward zero — matches awk %d.
+
+
 def _det_stitch_2(filelist_lines):
     """Compute n1 for the 2-subswath stitch position. Returns (n1, n2='')."""
     pth0 = filelist_lines[0].split(":")[0]
@@ -72,16 +138,17 @@ def _det_stitch_2(filelist_lines):
     xm1  = _grdinfo_field(f"{pth0}/phasefilt.grd", 3)
     xc1  = _grdinfo_field("tmp.grd", 3)
     incx = _grdinfo_field("tmp.grd", 8)
-    n12 = int((float(xm1) - float(xc1)) / float(incx))
+    n12 = _awk_int((float(xm1) - float(xc1)) / float(incx))
 
     pth1 = filelist_lines[-1].split(":")[0]
     near2 = _grep_field(f"{pth1}/tmp.PRM", "near", 3, last=False)
     run(f"gmt grdcut {pth1}/phasefilt.grd -Z+N -Gtmp.grd")
     x01  = _grdinfo_field("tmp.grd", 2)
     incx = _grdinfo_field("tmp.grd", 8)
-    n21 = int(float(x01) / float(incx))
-    ovl12 = int((float(rng1) - (float(near2) - float(near1)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
-    n1 = (ovl12 - n12 - n21) // 2 + n21
+    n21 = _awk_int(float(x01) / float(incx))
+    ovl12 = _awk_int((float(rng1) - (float(near2) - float(near1)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
+    # csh: `awk '{printf("%d", ($3-$1-$2)/2+$2)}'` — float div + awk truncate.
+    n1 = _awk_int((ovl12 - n12 - n21) / 2.0 + n21)
     run("rm -f tmp.grd")
     if n1 <= 0:
         print("WARNING: Stitching position estimated to be zero — check merged grids")
@@ -99,7 +166,7 @@ def _det_stitch_3(filelist_lines):
     xm1  = _grdinfo_field(f"{pth0}/phasefilt.grd", 3)
     xc1  = _grdinfo_field("tmp.grd", 3)
     incx = _grdinfo_field("tmp.grd", 8)
-    n12 = int((float(xm1) - float(xc1)) / float(incx))
+    n12 = _awk_int((float(xm1) - float(xc1)) / float(incx))
 
     pth1 = filelist_lines[1].split(":")[0]
     near2 = _grep_field(f"{pth1}/tmp.PRM", "near", 3, last=False)
@@ -107,21 +174,21 @@ def _det_stitch_3(filelist_lines):
     run(f"gmt grdcut {pth1}/phasefilt.grd -Z+N -Gtmp.grd")
     x02  = _grdinfo_field("tmp.grd", 2)
     incx = _grdinfo_field("tmp.grd", 8)
-    n21 = int(float(x02) / float(incx))
-    ovl12 = int((float(rng1) - (float(near2) - float(near1)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
-    n1 = (ovl12 - n12 - n21) // 2 + n21
+    n21 = _awk_int(float(x02) / float(incx))
+    ovl12 = _awk_int((float(rng1) - (float(near2) - float(near1)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
+    n1 = _awk_int((ovl12 - n12 - n21) / 2.0 + n21)
     xm2 = _grdinfo_field(f"{pth1}/phasefilt.grd", 3)
     xc2 = _grdinfo_field("tmp.grd", 3)
-    n22 = int((float(xm2) - float(xc2)) / float(incx))
+    n22 = _awk_int((float(xm2) - float(xc2)) / float(incx))
 
     pth2 = filelist_lines[2].split(":")[0]
     near3 = _grep_field(f"{pth2}/tmp.PRM", "near", 3, last=False)
     run(f"gmt grdcut {pth2}/phasefilt.grd -Z+N -Gtmp.grd")
     x03  = _grdinfo_field("tmp.grd", 2)
     incx = _grdinfo_field("tmp.grd", 8)
-    n31 = int(float(x03) / float(incx))
-    ovl23 = int((float(rng2) - (float(near3) - float(near2)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
-    n2 = (ovl23 - n22 - n31) // 2 + n31
+    n31 = _awk_int(float(x03) / float(incx))
+    ovl23 = _awk_int((float(rng2) - (float(near3) - float(near2)) / (299792458.0 / float(fs) / 2.0)) / float(incx))
+    n2 = _awk_int((ovl23 - n22 - n31) / 2.0 + n31)
 
     run("rm -f tmp.grd")
     if n2 == 0:
@@ -131,6 +198,7 @@ def _det_stitch_3(filelist_lines):
 
 
 def merge_unwrap_geocode_tops():
+    _maybe_exec_csh_fallback()  # GMTSAR_MERGE_TOPS_PY=0 → exec csh, never return
     if len(sys.argv) not in (3, 4):
         sys.exit(
             "Usage: merge_unwrap_geocode_tops inputfile config_file [det_stitch]\n"
@@ -194,7 +262,11 @@ def merge_unwrap_geocode_tops():
             print("Need ph_iono_orig.grd to correct ionosphere ...")
         else:
             print("Correcting ionosphere ...")
-            run("gmt grdsample ph_iono_orig.grd -Rphasefilt.grd -Gtmp.grd")
+            if _grdsample_py_on():
+                _grdsample_py("ph_iono_orig.grd", "tmp.grd",
+                              ref_grd="phasefilt.grd")
+            else:
+                run("gmt grdsample ph_iono_orig.grd -Rphasefilt.grd -Gtmp.grd")
             run("gmt grdmath phasefilt.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = tmp2.grd")
             run("mv phasefilt.grd phasefilt_orig.grd")
             run("mv tmp2.grd phasefilt.grd")
@@ -225,8 +297,18 @@ def merge_unwrap_geocode_tops():
         if (mask_water == 1 or switch_land == 1) and not check_file_report("landmask_ra.grd"):
             run(f"landmask {region_cut}")
         print(f"\nSNAPHU - START (threshold {threshold_snaphu})")
-        interp_flag = 1 if near_interp == 1 else 0
-        run(f"snaphu {threshold_snaphu} {defomax} {interp_flag} {region_cut}")
+        # Call the Python snaphu entry points directly (Mira #43). The bare
+        # `snaphu` CLI on PATH resolves to the C unwrapper binary, not the
+        # Python wrapper, so we cannot shell out. The wrappers operate on
+        # the cwd grids (phasefilt.grd / corr.grd / mask.grd) and produce
+        # unwrap.grd. `region_cut` is a GMT -R region string like
+        # `<r0>/<rf>/<a0>/<af>`; passing None when empty matches csh's
+        # `$region_cut` being empty (the csh wrappers handle that path).
+        region_arg = region_cut if region_cut else None
+        if near_interp == 1:
+            snaphu_interp_unwrap(threshold_snaphu, defomax, region=region_arg)
+        else:
+            snaphu_unwrap(threshold_snaphu, defomax, region=region_arg)
         print("SNAPHU - END")
     else:
         print("\nSKIP UNWRAP PHASE")
@@ -234,8 +316,15 @@ def merge_unwrap_geocode_tops():
     if threshold_geocode != 0:
         print("\nGEOCODE - START")
         run(f"proj_ra2ll trans.dat phasefilt.grd phasefilt_ll.grd")
-        run(f"gmt grdmath corr.grd {threshold_geocode} GE 0 NAN mask.grd MUL = mask2.grd")
-        run("gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd")
+        if _grdmath_py_on():
+            _gm.grdmath_ge_nan_mul("corr.grd", threshold_geocode, "mask.grd",
+                                   "mask2.grd",
+                                   ctx="merge_unwrap_geocode_tops:GE_NAN_MUL")
+            _gm.grdmath2("MUL", "phasefilt.grd", "mask2.grd", "phasefilt_mask.grd",
+                         ctx="merge_unwrap_geocode_tops:MUL_phasefilt")
+        else:
+            run(f"gmt grdmath corr.grd {threshold_geocode} GE 0 NAN mask.grd MUL = mask2.grd")
+            run("gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd")
         run("proj_ra2ll trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd")
         run("proj_ra2ll trans.dat corr.grd corr_ll.grd")
         run("gmt makecpt -Crainbow -T-3.15/3.15/0.05 -Z > phase.cpt")
@@ -246,9 +335,18 @@ def merge_unwrap_geocode_tops():
         run("grd2kml corr_ll corr.cpt")
 
         if check_file_report("unwrap.grd"):
-            run("gmt grdmath unwrap.grd mask2.grd MUL = unwrap_mask.grd")
+            if _grdmath_py_on():
+                _gm.grdmath2("MUL", "unwrap.grd", "mask2.grd", "unwrap_mask.grd",
+                             ctx="merge_unwrap_geocode_tops:MUL_unwrap")
+            else:
+                run("gmt grdmath unwrap.grd mask2.grd MUL = unwrap_mask.grd")
             wavel = _capture("grep wavelength *.PRM | awk '{print $3}' | head -1")
-            run(f"gmt grdmath unwrap_mask.grd {wavel} MUL -79.58 MUL = los.grd")
+            if _grdmath_py_on():
+                _gm.grdmath_mul_scalar_mul_scalar(
+                    "unwrap_mask.grd", float(wavel), -79.58, "los.grd",
+                    ctx="merge_unwrap_geocode_tops:MUL_MUL_los")
+            else:
+                run(f"gmt grdmath unwrap_mask.grd {wavel} MUL -79.58 MUL = los.grd")
             run("proj_ra2ll trans.dat unwrap.grd unwrap_ll.grd")
             run("proj_ra2ll trans.dat unwrap_mask.grd unwrap_mask_ll.grd")
             run("proj_ra2ll trans.dat los.grd los_ll.grd")

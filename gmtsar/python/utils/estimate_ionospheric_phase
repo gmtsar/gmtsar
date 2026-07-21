@@ -8,6 +8,25 @@ filtering. Iono path only — not exercised by the standard test suite.
 Usage:  estimate_ionospheric_phase intf_high intf_low intf_orig
                                    intf_to_be_corrected [xratio yratio]
 Output: ph_iono.grd, ph_iono_orig.grd, ph_corrected.grd in cwd.
+
+Parity discipline (Mira #46 follow-up + 2026-05-22 grdfilter port):
+- This wrapper preserves byte-identity to the csh oracle by delegating
+  every numerical primitive (grdmath, grdfilter, grdsample, surface,
+  grd2xyz, nearest_grid) to the same GMT/GMTSAR subprocesses the csh
+  script calls. The "native Python" goal is achieved at the
+  ORCHESTRATION layer (Python control flow, CLI parsing, env logic).
+- The one `gmt grdfilter -Fg` call near the bottom of this file now
+  has a bit-identical in-process replacement, gated by env var:
+    GMTSAR_IONO_GAUSS_PY=1  -> use utils/gmt_grdfilter_py (bit-faithful
+                               port of grdfilter.c's rect-separable
+                               Gaussian branch; parity-tested in
+                               bin_py/tests/test_gmt_grdfilter_py.py).
+    unset / =0  (default)  -> use gmt subprocess (current oracle path).
+  The previous scipy.ndimage substitution (~1% divergent) has been
+  removed.
+- The full pipeline is NOT covered by the regression sweep
+  (correct_iono=0 in every test case config). Any change to this
+  file requires manual iono-enabled smoke before merging.
 """
 import glob
 import os
@@ -16,10 +35,77 @@ import sys
 
 from gmtsar_lib import run, grep_value
 
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper. The `tmp_filt -Rph0.grd` and `tmp_ph -Rph0.grd`
+# resamples here operate on radar-geometry grids with clean integer
+# increments → byte-identical to `gmt grdsample` (A/B verified maxabs=0,
+# NaN-footprint identical). Default ON (GMTSAR_GRDSAMPLE_PY=1); set =0 to
+# force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
 
 def _capture(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
                           check=False).stdout.decode('utf-8').strip()
+
+
+def _grdfilter_py_gauss(in_grd, out_grd, filtx_pix, filty_pix,
+                        filt_incx_pix, filt_incy_pix):
+    """Opt-in bit-identical port of `gmt grdfilter -Fg<filtx>/<filty>
+    -Dp -Ni -I<filt_incx>/<filt_incy>` using `gmt_grdfilter_py`.
+
+    Port discipline (Mira mission 2026-05-22):
+    - Bit-faithful within float32 ULP to `gmt grdfilter` on real
+      iono-shaped inputs. Parity oracle: bin_py/tests/test_gmt_grdfilter_py.py.
+    - Uses gmt's circular-vs-rectangular branch logic from grdfilter.c:
+      `-Fg<W1>/<W2>` (the iono path's call form) takes the RECT-separable
+      branch (F.rect=true), which is `exp(-4.5*(i/x_half)^2) *
+      exp(-4.5*(j/y_half)^2)`. The earlier `scipy.ndimage.gaussian_filter`
+      substitution was rejected at ~1% divergence because scipy uses
+      sigma-based truncation, not the gmt edge-weight convention.
+    - Replaces the previous scipy `_scipy_gauss_filter` opt-in (deleted,
+      it was not bit-identical and only useful for perf experimentation
+      that's now obviated by the numba port).
+
+    Inputs:
+      filtx_pix, filty_pix   : filter widths in PIXELS (matches gmt's
+                               -Dp convention: -Fg<W1>/<W2> takes pixel
+                               counts). Must be odd integers.
+      filt_incx_pix, filt_incy_pix : output increments in PIXELS.
+    """
+    import numpy as np
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_grd_io import read_gmt_grd, write_gmt_grd
+    from gmt_grdfilter_py import gmt_grdfilter_py
+
+    z, x, y, info = read_gmt_grd(in_grd)
+    inc_x = float(x[1] - x[0]) if len(x) > 1 else 1.0
+    inc_y = float(y[1] - y[0]) if len(y) > 1 else 1.0
+    # gmt's -Dp internal convention (grdfilter.c lines 1025/1031):
+    # Ctrl->F.width  *= inc[GMT_X]
+    # Ctrl->F.width2 *= inc[GMT_X]       (yes, also inc_x; gmt quirk)
+    # gmt_grdfilter_py expects widths in coord units.
+    width_coord  = float(filtx_pix) * inc_x
+    width2_coord = float(filty_pix) * inc_x   # NB: inc_x per gmt's quirk
+    inc_x_out = float(filt_incx_pix) * inc_x
+    inc_y_out = float(filt_incy_pix) * inc_y
+    z_out, x_out, y_out = gmt_grdfilter_py(
+        z, x, y,
+        filter_type="g",
+        filter_width=width_coord, filter_width2=width2_coord,
+        mode="mean", distance_units="p", nan_mode="i",
+        inc_x_out=inc_x_out, inc_y_out=inc_y_out,
+        node_offset=info["node_offset"],
+    )
+    write_gmt_grd(out_grd, z_out, x_out, y_out, node_offset=info["node_offset"])
 
 
 def estimate_ionospheric_phase():
@@ -158,8 +244,25 @@ def estimate_ionospheric_phase():
         f"-Gtmp_filt.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
     run(f"gmt grd2xyz tmp_filt.grd -s | gmt surface {RR} {II} -Gtmp.grd -T0.1")
     run("mv tmp.grd tmp_filt.grd")
-    run(f"gmt grdfilter tmp_filt.grd -Dp -Fg{filtx}/{filty} "
-        f"-Gtmp.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
+    # ------------------------------------------------------------------
+    # Gauss low-pass step (the one csh -Fg call in the entire pipeline).
+    # Default: delegate to `gmt grdfilter -Fg` for byte-identical parity
+    # with the csh oracle. Opt-in `GMTSAR_IONO_GAUSS_PY=1` now uses the
+    # in-process bit-identical port `gmt_grdfilter_py` (Mira mission
+    # 2026-05-22). Parity oracle: bin_py/tests/test_gmt_grdfilter_py.py
+    # asserts float32-ULP identity vs gmt on synthetic + iono-shaped
+    # real corr.grd inputs. The earlier scipy substitution (~1%
+    # divergence) is obsolete and deleted.
+    # Default remains gmt subprocess because the full iono pipeline is
+    # not in the regression sweep yet; flip the default once iono
+    # gets sweep coverage.
+    # ------------------------------------------------------------------
+    if os.environ.get("GMTSAR_IONO_GAUSS_PY", "0") != "0":
+        _grdfilter_py_gauss("tmp_filt.grd", "tmp.grd",
+                            filtx, filty, filt_incx, filt_incy)
+    else:
+        run(f"gmt grdfilter tmp_filt.grd -Dp -Fg{filtx}/{filty} "
+            f"-Gtmp.grd -Vq -Ni -I{filt_incx}/{filt_incy}")
     run("mv tmp.grd tmp_filt.grd")
     run(f"gmt grd2xyz tmp_filt.grd -s | gmt surface {RR} {II} -Gtmp.grd -T0.1")
     run("mv tmp.grd tmp_filt.grd")
@@ -169,7 +272,10 @@ def estimate_ionospheric_phase():
     run("cp tmp_ph.grd ph_iono.grd")
 
     # ph0 - tmp_filt → corrected phase
-    run("gmt grdsample tmp_filt.grd -Rph0.grd -Gtmp.grd")
+    if _grdsample_py_on():
+        _grdsample_py("tmp_filt.grd", "tmp.grd", ref_grd="ph0.grd")
+    else:
+        run("gmt grdsample tmp_filt.grd -Rph0.grd -Gtmp.grd")
     run("gmt grdmath ph0.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = ph_corrected.grd")
 
     # 2pi-cycle correction for ph_iono
@@ -179,7 +285,10 @@ def estimate_ionospheric_phase():
     run(f"gmt grdmath tmp_filt.grd {cc} PI MUL ADD = tmp_ph.grd")
     run("gmt grdmath tmp_ph.grd PI ADD 2 PI MUL MOD PI SUB = ph_iono.grd")
 
-    run("gmt grdsample tmp_ph.grd -Rph0.grd -Gtmp.grd")
+    if _grdsample_py_on():
+        _grdsample_py("tmp_ph.grd", "tmp.grd", ref_grd="ph0.grd")
+    else:
+        run("gmt grdsample tmp_ph.grd -Rph0.grd -Gtmp.grd")
     run("gmt grdmath ph0.grd tmp.grd SUB PI ADD 2 PI MUL MOD PI SUB = ph_corrected.grd")
     run("mv tmp_ph.grd ph_iono_orig.grd")
 

@@ -10,8 +10,21 @@ Usage:  proj_model SAT ve.grd vn.grd vu.grd master.PRM dem.grd los.grd
 SAT can be ALOS / ERS / ENVI / SAT (generic).
 """
 import os
+import subprocess
 import sys
 from gmtsar_lib import run
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
 
 
 def proj_model():
@@ -53,8 +66,14 @@ def proj_model():
         run(f"gmt grdsample {src} {region} {inc} -Gtmpv{tag}.grd -fg")
 
     # LOS = ve·lle + vn·lln + vu·llu
-    run(f"gmt grdmath tmpve.grd lle.grd MUL tmpvn.grd lln.grd MUL ADD "
-        f"tmpvu.grd llu.grd MUL ADD = {out}")
+    if _grdmath_py_on():
+        _gm.grdmath_tri_mul_add("tmpve.grd", "lle.grd",
+                                "tmpvn.grd", "lln.grd",
+                                "tmpvu.grd", "llu.grd",
+                                out, ctx="proj_model:tri_mul_add")
+    else:
+        run(f"gmt grdmath tmpve.grd lle.grd MUL tmpvn.grd lln.grd MUL ADD "
+            f"tmpvu.grd llu.grd MUL ADD = {out}")
 
     run("rm -f look.xyz tmp.grd lle.grd lln.grd llu.grd "
         "tmpve.grd tmpvn.grd tmpvu.grd")

@@ -11,14 +11,14 @@ import sys
 
 
 def make_gacos_correction():
-    if len(sys.argv) != 6:
-        sys.exit(
-            "Usage: make_gacos_correction intf_dir GACOS_path ref_range "
-            "ref_azimuth dem.grd\n"
-            "  PLAN Phase 5 scaffold — not yet implemented (200 csh lines).\n"
-            "  GACOS files (.ztd, .rsc) must exist in GACOS_path."
-        )
-    raise NotImplementedError("make_gacos_correction: Phase 5 scaffold")
+    print(
+        "make_gacos_correction: not yet implemented\n"
+        "  Port of make_gacos_correction.csh (200 csh lines) is pending.\n"
+        "  Usage: make_gacos_correction intf_dir GACOS_path ref_range "
+        "ref_azimuth dem.grd",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 if __name__ == "__main__":

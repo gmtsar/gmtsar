@@ -8,8 +8,722 @@
 # Purpose: to make topography for interferograms. The USGS elevations are height above WGS84 so this is OK.
 """
 
-import sys, os, subprocess
-from gmtsar_lib import *  
+import sys, os, subprocess, mmap as _mmap
+import numpy as _np
+from gmtsar_lib import *
+
+# Internal sub-step profiling: dem2topo_ra is itself one "binary" row in
+# the parent p2p_processing's phase_profile_py.json (e.g. 32.5s for RS2).
+# To find where that time actually goes (grd2xyz|SAT_llt2rat_py vs
+# blockmedian/gmtconvert vs surface vs flipud), we dump our OWN
+# dem2topo_ra_phase_profile_py.json in cwd using the same `phase()` API.
+# Falls back to a no-op if phase_profile is unavailable.
+try:
+    from phase_profile import phase as _dem2topo_phase, dump_profile as _dem2topo_dump_profile
+    _HAVE_DEM2TOPO_PROFILE = True
+except Exception:
+    _HAVE_DEM2TOPO_PROFILE = False
+    from contextlib import contextmanager
+    @contextmanager
+    def _dem2topo_phase(name):
+        yield
+    def _dem2topo_dump_profile(*a, **kw):
+        pass
+
+
+class _PhaseTimer:
+    """start()/stop() wrapper around the `phase()` context manager.
+
+    Used where a phase spans an if/elif block we don't want to
+    re-indent (the mode==0 vs mode==1 surface branches below).
+    """
+    def __init__(self, name):
+        self._cm = _dem2topo_phase(name)
+
+    def start(self):
+        self._cm.__enter__()
+        return self
+
+    def stop(self):
+        self._cm.__exit__(None, None, None)
+
+# Mira (2026-05-22): in-process gmt grdcut wrapper (utils/grdcut_wrapper.py).
+# Default ON (GMTSAR_GRDCUT_PY=1) per Rule 10 carve-out — byte-id to gmt C
+# AND faster (file→file 3.3×, array-only 151×). Set GMTSAR_GRDCUT_PY=0 to
+# fall back to the gmt subprocess for A/B parity debugging.
+try:
+    from grdcut_wrapper import grdcut_file as _grdcut_file
+    _HAVE_GRDCUT_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: grdcut_wrapper import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GRDCUT_PY = False
+
+# Mira (2026-05-22): in-process gmt grdfill -Ag wrapper (utils/gmt_grdfill_py).
+#
+# **Default ON** (GMTSAR_GRDFILL_PY=1, since v2.1.29). The donor_node_offset
+# gap described below (pixel-registered `coarse.grd` donor vs gridline-
+# registered query) was closed by Mira #70 (commit b7eb144, "pixel-registered
+# donor support in -Ag bicubic", 23/23 parity tests): `_bcr_bicubic_sample`
+# now takes a `donor_node_offset` parameter (in_off = 0.5*donor_node_offset)
+# instead of hard-coding `in_off = 0.0`, and `gmt_grdfill_py_file` reads the
+# donor's node_offset from its grid header and propagates it.
+#
+# Original gap (now fixed) for reference: on the real dem2topo_ra mode=1
+# pipeline the donor (`coarse.grd`) is pixel-registered and its pixel-
+# centres are inset from `topo_ra_tmp.grd`'s pixel-centres by inc/2; the old
+# hard-coded `in_off = 0.0` raised `ValueError: donor grid does not cover
+# query x range: qx in [1, 11303] vs donor [8.00567, 11296]`.
+#
+# Rule-8 smoke 2026-06-13 (ALOS_haiti, mode=1, GMTSAR_GRDFILL_PY=1 vs 0):
+#     topo_ra.grd BYTE-IDENTICAL between the two paths (cmp clean).
+#     (This smoke also uncovered and fixed an unrelated pre-existing bug:
+#     `mode = sys.argv[3]` was a str compared against int 0/1, so mode=1
+#     -- the ONLY path that calls _grdfill_dispatch -- matched neither
+#     branch and silently produced no topo_ra.grd. Fixed via
+#     `mode = int(sys.argv[3])`.)
+#
+# Set GMTSAR_GRDFILL_PY=0 to roll back to the `gmt grdfill` subprocess.
+try:
+    from gmt_grdfill_py import gmt_grdfill_py_file as _grdfill_py_file
+    _HAVE_GRDFILL_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_grdfill_py import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GRDFILL_PY = False
+
+# Mira (2026-07-12): in-process gmt_triangulate_py wrapper (Delaunay +
+# linear grid interpolation, mirrors `gmt triangulate -G` with NO other
+# flags -- the only invocation used at these two call sites).
+#
+# PROVEN bit-identical on real data (RS2_SLC_Hawaii, 964,812 pts: 0
+# mismatches out of 2,452,688 grid nodes) but has a documented rare
+# Delaunay-tie divergence on larger inputs (ALOS4_Pinon, 6.16M pts: 10
+# of 29,315,664 nodes differ, up to |diff|=12.2 -- see
+# gmt_triangulate_py.py docstring). It is ALSO measured SLOWER than the
+# `gmt triangulate` C binary single-threaded (~1.4x-6.5x depending on
+# system load; C uses Shewchuk's Triangle, scipy uses Qhull with a
+# larger constant factor -- see module docstring "Performance verdict").
+#
+# Per project_rules.md Rule 7, BOTH gates (bit-identical AND
+# equal-or-faster single-threaded) are required to default this ON.
+# It fails the speed gate. **Default OFF** (GMTSAR_TRIANGULATE_PY=0).
+# Set GMTSAR_TRIANGULATE_PY=1 only for A/B parity debugging.
+try:
+    from gmt_triangulate_py import gmt_triangulate_py_file as _triangulate_py_file
+    _HAVE_TRIANGULATE_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_triangulate_py import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_TRIANGULATE_PY = False
+
+
+def _triangulate_dispatch(xyz_path: str, out_grd: str, region_str: str,
+                          xinc: float, yinc: float, v_flag: str = '') -> None:
+    """Dispatch `gmt triangulate <xyz> -R<region> -I<xinc>/<yinc> -bi3d
+    -G<out> -r` to the py port or gmt subprocess.
+
+    Env gate: GMTSAR_TRIANGULATE_PY=1 (opt-in, NOT default -- see the
+              module-level comment above) -> in-process scipy.spatial
+              Delaunay port. GMTSAR_TRIANGULATE_PY=0 (default) -> `gmt
+              triangulate` subprocess.
+
+    v_flag: caller's resolved `-V`/`''` GMT verbosity flag (the
+            module-level `V` local in dem2topo_ra() is not visible here --
+            passing it explicitly avoids the NameError this function had
+            on its subprocess branch, the only branch exercised at the
+            default gate, until 2026-07-13).
+    """
+    use_py = os.environ.get("GMTSAR_TRIANGULATE_PY", "0") == "1"
+    if use_py and _HAVE_TRIANGULATE_PY:
+        w, e, s, n = (float(v) for v in region_str.split("/"))
+        _triangulate_py_file(xyz_path, out_grd, region=(w, e, s, n),
+                             xinc=xinc, yinc=yinc, pixel_reg=True)
+    else:
+        run(f"gmt triangulate {xyz_path} -R{region_str} -I{xinc}/{yinc} "
+            f"-bi3d -G{out_grd} -r {v_flag}")
+
+
+def _grdfill_dispatch(in_grd: str, out_grd: str, donor_grd: str) -> None:
+    """Dispatch `gmt grdfill <in> -Ag<donor> -G<out>` to py port or gmt.
+
+    Env gate: GMTSAR_GRDFILL_PY=1 (default, since v2.1.29) → in-process
+              numpy port; donor_node_offset-aware (Mira #70), Rule-8
+              smoke-verified byte-identical on real ALOS_haiti mode=1 data.
+              GMTSAR_GRDFILL_PY=0 → `gmt grdfill` subprocess (rollback).
+    """
+    use_py = os.environ.get("GMTSAR_GRDFILL_PY", "1") == "1"
+    if use_py and _HAVE_GRDFILL_PY:
+        _grdfill_py_file(in_grd, out_grd, algorithm='g', donor_path=donor_grd)
+    else:
+        run(f"gmt grdfill {in_grd} -Ag{donor_grd} -G{out_grd}")
+    _fill_remaining_holes(out_grd)
+
+
+def _fill_remaining_holes(grd: str) -> None:
+    """Safety net after the donor-grid grdfill pass: nearest-neighbor-fill
+    any NaN/masked cells still present.
+
+    Root cause (found 2026-07, real ALOS_Baja_EQ mode=1 run): a domain
+    corner can fall outside BOTH the triangulation's convex hull AND the
+    coarse donor grid's convex hull (its blockmean-binned points can also
+    fall just short of the same corner), so -Ag<donor> has nothing to
+    donate there and leaves a handful of masked cells (6 pixels in one
+    corner, observed). Downstream C `phasediff` (long-baseline fallback
+    path, baseline > 1000 m) segfaults on any masked cell in topo_shift.grd
+    -- cascades into filter/geocode FileNotFoundError, no final product.
+    Nearest-neighbor fill of a few edge pixels is numerically inconsequential
+    (this is a never-ship-a-hole invariant, not an accuracy fix).
+    """
+    tmp = grd + ".holefill_tmp.grd"
+    run(f"gmt grdfill {grd} -An -G{tmp}")
+    if not check_file_report(tmp):
+        sys.exit(f"DEM2TOPO_RA: FATAL: hole-fill safety net failed to produce "
+                  f"{tmp} from {grd} -- refusing to silently ship a grid that "
+                  f"may still contain masked cells (would segfault downstream "
+                  f"phasediff on this project's no-silent-fallback rule).")
+    file_shuttle(tmp, grd, 'mv')
+
+
+def _advise_sequential(arr):
+    """Hint the kernel that this memmap will be read sequentially.
+
+    Mira #35 / #37: under NFS, np.memmap default access is per-4 KB-page
+    demand-fault, which triggers a separate NFS RPC for each page.
+    MADV_SEQUENTIAL tells the kernel to read-ahead in larger chunks.
+    Linux-only; falls back silently on macOS/BSD.
+    """
+    try:
+        m = arr.base
+        while m is not None and not isinstance(m, _mmap.mmap):
+            m = getattr(m, "base", None)
+        if m is None:
+            return
+        madvise = getattr(m, "madvise", None)
+        advice = getattr(_mmap, "MADV_SEQUENTIAL", None)
+        if madvise is None or advice is None:
+            return
+        madvise(advice)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+# Tier-1 in-process replacements for cheap `gmt` subprocesses
+# (see utils/gmt_inproc.py and PLAN.md §9). Wired into the
+# `gmt gmtconvert` step in the trans.dat → blockmedian pipe below.
+# Disable by setting GMTSAR_GMT_INPROC=0 — falls back to the original
+# `gmt gmtconvert` subprocess (debug-only A/B path).
+try:
+    from gmt_inproc import gmtconvert_select_cols_bin, _inproc_enabled
+    _HAVE_GMT_INPROC = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_inproc import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GMT_INPROC = False
+    # Provide a fallback so _grdmath_flipud (which also gates on
+    # _inproc_enabled) does not NameError if only gmt_inproc fails
+    # to import. Honour GMTSAR_GMT_INPROC=0 to keep the same
+    # debug-override semantics.
+    def _inproc_enabled():
+        return os.environ.get("GMTSAR_GMT_INPROC", "1") != "0"
+
+# Mira #30 (2026-05-21, UPDATED 2026-06-13): in-process numba blockmedian
+# (gmt_blockmedian_py) is byte-identical to `gmt blockmedian -bi3d -bo3d -r`
+# (13/13 parity tests on real RS2 trans.dat). The 2026-05-21 numbers below
+# showed it 4-7x SLOWER than gmt at dem2topo_ra's 1-pt/bin density:
+#     RS2_SLC_Hawaii  (978k rows, 964k bins → 1.0 row/bin): gmt 0.6s vs py 3.0s
+#     ALOS4_Pinon     (6.4M rows, 6.2M bins → 1.0 row/bin): gmt 4.4s vs py 19.3s
+#
+# 2026-06-13 (Mira #67): added an n==1 fast path to the
+# `_per_bin_median` numba kernel. Profiling on this same RS2
+# trans.dat (978883 rows -> 966217 bins, 99.97% singletons) found the
+# old kernel spent ~0.24s of its ~0.32s total in three np.empty()
+# allocations per bin x 966k bins -- pure allocation overhead for a
+# 1-element "sort". The fast path writes the singleton straight to
+# out_{x,y,z} and `continue`s, skipping all three allocations.
+# A bin with n==1 has only one point, so its median IS that point;
+# GMT's blockmedian has no other side effect at n=1 (verified by the
+# existing test_single_point_bin parity test, which still passes).
+#
+# Re-measured on this host (48 cores, NUMBA_NUM_THREADS unset):
+#     RS2_SLC_Hawaii (978883 rows, 966217 bins, 1pt/bin):
+#         gmt subprocess: ~0.39s    py (before fix): ~0.35s
+#         py (after fix): ~0.11s    -> py now ~3.5x FASTER than gmt
+#     Mira #25 canonical dense case (9M rows, 50000 bins, ~180pt/bin):
+#         py (before fix): ~3.25s   py (after fix): ~3.25s (unchanged,
+#         as expected -- dense bins never hit the n==1 fast path)
+#
+# 13/13 byte-parity tests in bin_py/tests/test_gmt_blockmedian_py.py
+# still pass (cache cleared + rerun) after this change.
+#
+# The kernel fix closes the 1-pt/bin performance gap (py now beats gmt
+# at this density too, AND the dense case is unchanged), so a density
+# gate is no longer necessary. Env gate GMTSAR_BLOCKMEDIAN_PY (default
+# "1" -- ON, since v2.1.30) selects this path.
+#
+# Rule-8 smoke 2026-06-13 on real RS2_SLC_Hawaii (full dem2topo_ra run,
+# GMTSAR_BLOCKMEDIAN_PY=1 vs =0):
+#     Accuracy: temp.rat and topo_ra.grd BYTE-IDENTICAL (cmp clean).
+#     Speed:    gmtconvert_to_temprat phase 0.401s (py) vs 0.443s (gmt
+#               subprocess), ~10% faster -- consistent with Mira #67's
+#               ~3.5x kernel speedup (the phase also includes the
+#               numpy memmap col-select, which dominates at this size).
+# Set GMTSAR_BLOCKMEDIAN_PY=0 to roll back to the `gmt blockmedian`
+# subprocess.
+try:
+    from gmt_blockmedian_py import blockmedian as _py_blockmedian
+    _HAVE_GMT_BLOCKMEDIAN_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_blockmedian_py import failed ({_e}); "
+          "using gmt blockmedian subprocess.", file=sys.stderr)
+    _HAVE_GMT_BLOCKMEDIAN_PY = False
+    _py_blockmedian = None  # type: ignore
+
+# Mira (2026-07-12): in-process blockmean for the topo_interp_mode=1
+# (triangulation fast-path) `gmt blockmean` calls at dem2topo_ra:773,841.
+# gmt_blockmean_py.blockmean shares gmt_blockmedian_py's bin/index/
+# region-adjust geometry but reduces each bin with an UNWEIGHTED MEAN
+# (np.add.reduceat sum / count) instead of a median. This matches the
+# call sites exactly: no -C/-W/-S flags, so `gmt blockmean` here writes
+# plain (mean_x, mean_y, mean_z) per bin.
+#
+# UNLIKE blockmedian, this is NOT byte-identical to the C binary: GMT's
+# per-bin accumulation order (its own bin sort is not guaranteed stable)
+# differs from our np.argsort(kind="stable") order, so float64 summation
+# picks up different roundoff. Measured on real RS2_SLC_Hawaii temp.rat
+# (964812 rows, -R0/3416/0/5744 -I32/16, 38413 output bins):
+#     max abs diff vs `gmt blockmean`: 4.5e-12  (atol=1e-9 gate, doubles)
+#     max rel diff: 9.6e-16 (~1 ULP)
+# Timing on the same real input: py 0.078s vs gmt subprocess 0.288s
+# (~3.7x faster, single-threaded, includes subprocess exec overhead).
+#
+# Default ON since 2026-07-13 (GMTSAR_BLOCKMEAN_PY unset or "1") — see
+# bin_py/tests/test_gmt_blockmean_py.py for the parity suite. Only
+# affects the topo_interp_mode=1 branches (rare — default per-case
+# config is topo_interp_mode=0), so this flip is low-risk: it changes
+# nothing for cases that don't opt into topo_interp_mode=1. Set
+# GMTSAR_BLOCKMEAN_PY=0 to force the gmt blockmean subprocess.
+try:
+    from gmt_blockmean_py import blockmean as _py_blockmean
+    _HAVE_GMT_BLOCKMEAN_PY = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_blockmean_py import failed ({_e}); "
+          "using gmt blockmean subprocess.", file=sys.stderr)
+    _HAVE_GMT_BLOCKMEAN_PY = False
+    _py_blockmean = None  # type: ignore
+
+
+def _blockmean_to_meanrat(temp_rat: str, region: str, rng2_step: int,
+                          az_step: int, out_path: str) -> None:
+    """Replacement for:
+
+        gmt blockmean <temp_rat> -R<region> -I<rng2_step>/<az_step> \
+                      -bi3d -bo3d -r > <out_path>
+
+    Used only by the topo_interp_mode=1 (triangulation) branches at
+    dem2topo_ra:773,841. Gated by GMTSAR_BLOCKMEAN_PY (default "1" —
+    ON since 2026-07-13). Set to "0" to force the `gmt blockmean`
+    subprocess. See the import-site note above for parity/timing evidence.
+    """
+    use_blockmean_py = (_HAVE_GMT_BLOCKMEAN_PY
+                         and os.environ.get("GMTSAR_BLOCKMEAN_PY", "1") == "1")
+    if use_blockmean_py:
+        try:
+            rg = [float(s) for s in str(region).split("/")]
+        except ValueError as exc:
+            raise ValueError(
+                f"_blockmean_to_meanrat: bad region '{region}' "
+                f"(want 'xmin/xmax/ymin/ymax'): {exc}")
+        if len(rg) != 4:
+            raise ValueError(
+                f"_blockmean_to_meanrat: region must have 4 numbers, "
+                f"got {rg}")
+        raw = _np.fromfile(temp_rat, dtype=_np.float64)
+        if raw.size % 3 != 0:
+            raise ValueError(
+                f"_blockmean_to_meanrat: {temp_rat} size not a multiple "
+                f"of 3 doubles ({raw.size})")
+        xyz = raw.reshape(-1, 3)
+        out = _py_blockmean(xyz,
+                            region=(rg[0], rg[1], rg[2], rg[3]),
+                            inc=(float(rng2_step), float(az_step)),
+                            pixel_reg=True)
+        out.astype(_np.float64, copy=False).tofile(out_path)
+        return
+    run(f"gmt blockmean {temp_rat} -R{region} -I{rng2_step}/{az_step} "
+        f"-bi3d -bo3d -r > {out_path}")
+
+# Mira #30 (2026-05-21): Tier-1 grdmath FLIPUD replacement via
+# gmt_grd_io.{read,write}_gmt_grd. The dem2topo_ra `gmt grdmath
+# pixel.grd FLIPUD = topo_ra.grd` step is a pure numpy flip + write.
+# Downstream consumers (`offset_topo` C binary, `gmt grdinfo`,
+# `gmt grdimage`) all accept the writer-flavor netCDF — verified by
+# the 16-test parity suite in bin_py/tests/test_gmt_grd_io.py
+# (specifically test_grdmath_flipud + test_grdcut_pixel).
+try:
+    from gmt_grd_io import read_gmt_grd as _read_gmt_grd
+    from gmt_grd_io import write_gmt_grd as _write_gmt_grd
+    _HAVE_GMT_GRD_IO = True
+except ImportError as _e:
+    print(f"DEM2TOPO_RA: WARN: gmt_grd_io import failed ({_e}); "
+          "using gmt subprocess.", file=sys.stderr)
+    _HAVE_GMT_GRD_IO = False
+
+
+# Mira (2026-05-22): in-memory chain between adjacent in-process ops.
+# When GMTSAR_DEM2TOPO_INMEM_CHAIN=1 (default ON since v2.1.28), the
+# in-process `surface` step does NOT write its `pixel.grd` to disk and
+# instead stashes (grid, x_coord, y_coord, node_offset, history) in this
+# module-level carrier keyed by the would-be output path. The
+# subsequent in-process `_grdmath_flipud` step picks it up and skips
+# the intermediate `pixel.grd` read/write entirely; the only disk
+# write in the chain is the final `topo_ra.grd`.
+#
+# Byte-identity is preserved: numpy.flipud is deterministic, the
+# coord vectors and node_offset are identical to what the disk
+# round-trip would yield, and `_write_gmt_grd` is the same writer.
+#
+# GMTSAR_SURFACE_INPROC defaults to "1"/ON since v2.3.0 (2026-06-16,
+# 20/21 full-sweep clean) for this module's pixel.grd
+# call.  The same env var defaults to "1"/ON in proj_ra2ll_lib.py's
+# _ensure_raln_ralt (flipped there in v2.1.27): that flip is for the
+# raln/ralt surface call which does NOT use pixel_reg and IS byte-identical
+# to gmt surface.  This module's pixel.grd call uses pixel_reg + a large
+# gcd-hierarchy expansion; gmt_surface_py's GS-SOR solver diverges from
+# gmt surface on real terrain at that scale (Mira #72).
+#
+# History
+# -------
+# * v2.1.27: INPROC=1 default set for proj_ra2ll_lib.py's surface call
+#   only (raln/ralt, non-pixel_reg, verified byte-identical).
+# * v2.1.28: RS2_SLC_Hawaii "byte-identical" smoke run for this module --
+#   but the subprocess fallback (try/except) was silently doing the work;
+#   gmt_surface_py raised NotImplementedError at pixel_reg crop-back (Mira
+#   #68), got caught, subprocess ran.  Incorrectly logged as "gmt_surface_py
+#   is bit-identical".
+# * v2.1.32: default flipped to "1" for this module based on the wrong
+#   RS2 smoke.
+# * v2.2.0 pre-release: CSK_SLC_Italy phasefilt.grd complex-rms = 0.2298
+#   (threshold 0.15).  Root-caused to gmt_surface_py producing topo_ra.grd
+#   rms=0.46m vs gmt surface on 5595x5367 px terrain (Mira #72).
+#   Default reverted to "0".  Do not re-flip until Mira #72 is closed and
+#   CSK_SLC_Italy parity passes with INPROC=1.
+def _chain_enabled() -> bool:
+    return (os.environ.get("GMTSAR_DEM2TOPO_INMEM_CHAIN", "1") == "1"
+            and _HAVE_GMT_GRD_IO)
+
+
+# Carrier dict: {out_path: {grid, x_coord, y_coord, node_offset, history}}
+# Per-process global (dem2topo_ra is a one-shot CLI; no thread-safety
+# requirement). Cleared by `_grdmath_flipud` after consumption.
+_PENDING_INMEM_GRID: dict = {}
+
+
+def _gmtconvert_pipe_to_temprat(trans_dat: str, region: str, rng_step: int,
+                                az_step: int, V: str, out_path: str) -> None:
+    """Replacement for the bash pipe:
+
+        gmt gmtconvert <trans_dat> -o0,1,2 -bi5d -bo3d \
+          | gmt blockmedian -R<region> -I<rng_step>/<az_step> -bi3d -bo3d -r <V>
+          > <out_path>
+
+    Three execution paths, in priority order:
+      1. inproc=on + blockmedian_py (GMTSAR_BLOCKMEDIAN_PY=1, default since
+         v2.1.30): full in-process memmap -> col-select -> blockmedian ->
+         bytes-out, no subprocess at all. Byte-parity-tested (13/13) and,
+         after the Mira #67 n==1 fast path, FASTER than `gmt blockmedian`
+         at dem2topo_ra's 1-pt/bin density. See the import-site note.
+      2. inproc=on + only gmtconvert_select_cols_bin: numpy col-select
+         then `gmt blockmedian` subprocess (Mira #19 path). Used when
+         GMTSAR_BLOCKMEDIAN_PY=0.
+      3. inproc=off (GMTSAR_GMT_INPROC=0): pure `gmt | gmt` pipe.
+
+    Paths 2 and 3 are the production fast/fallback. Path 1 is reserved
+    for a future bin-density gate. All three are byte-equivalent on the
+    temp.rat output (verified per
+    bin_py/tests/test_gmt_blockmedian_py.py::TestParityRealData on 9M
+    rows of real RS2 trans.dat, plus the in-line parity check in the
+    Mira #30 commit).
+    """
+    use_inproc = _HAVE_GMT_INPROC and _inproc_enabled()
+    use_blockmedian_py = (use_inproc and _HAVE_GMT_BLOCKMEDIAN_PY
+                           and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1")
+    if use_blockmedian_py:
+        # Full in-process: memmap → col-select → blockmedian → bytes-out.
+        # `region` is "xmin/xmax/ymin/ymax" (`set_region_string` format).
+        try:
+            rg = [float(s) for s in str(region).split("/")]
+        except ValueError as exc:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: bad region '{region}' "
+                f"(want 'xmin/xmax/ymin/ymax'): {exc}")
+        if len(rg) != 4:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: region must have 4 numbers, "
+                f"got {rg}")
+        # Memmap the 5-double trans.dat and slice cols [0,1,2] to a
+        # contiguous (N,3) float64 array (no temp file needed).
+        sz = os.path.getsize(trans_dat)
+        if sz % (5 * 8) != 0:
+            raise ValueError(
+                f"_gmtconvert_pipe_to_temprat: trans.dat size {sz} not "
+                f"multiple of 5*8")
+        n_rows = sz // (5 * 8)
+        in_mm = _np.memmap(trans_dat, dtype=_np.float64, mode="r",
+                           shape=(n_rows, 5))
+        _advise_sequential(in_mm)  # Mira #37: avoid NFS per-page fault storms
+        xyz = _np.ascontiguousarray(in_mm[:, :3])
+        # blockmedian returns (M, 3) float64; tobytes is the 3-double
+        # binary stream `gmt blockmedian -bo3d` writes.
+        out = _py_blockmedian(xyz,
+                              region=(rg[0], rg[1], rg[2], rg[3]),
+                              inc=(float(rng_step), float(az_step)),
+                              pixel_reg=True)
+        out.astype(_np.float64, copy=False).tofile(out_path)
+        return
+    if use_inproc:
+        # Slice cols 0,1,2 from the 5-double trans.dat → 3-double tmp file,
+        # then pipe to blockmedian directly. ~0.5-1.0 s saved per call.
+        tmp_xyz = out_path + ".xyz3.bin"
+        gmtconvert_select_cols_bin(trans_dat, 5, [0, 1, 2], tmp_xyz)
+        cmd = (
+            f"gmt blockmedian {tmp_xyz} -R{region} -I{rng_step}/{az_step} "
+            f"-bi3d -bo3d -r {V} > {out_path}"
+        )
+        run(cmd)
+        try:
+            os.remove(tmp_xyz)
+        except OSError:
+            pass
+    else:
+        cmd = (
+            f"gmt gmtconvert {trans_dat} -o0,1,2 -bi5d -bo3d | "
+            f"gmt blockmedian -R{region} -I{rng_step}/{az_step} "
+            f"-bi3d -bo3d -r {V} > {out_path}"
+        )
+        run(cmd)
+
+
+def _grdmath_flipud(src_grd: str, dst_grd: str) -> None:
+    """Replacement for `gmt grdmath <src> FLIPUD = <dst>`.
+
+    Reads the source grid via netCDF4, flips along the y axis, writes
+    a GMT-compatible netCDF via utils/gmt_grd_io.write_gmt_grd. The
+    writer-flavor output is bit-readable by GMT 6.4.0 and by gmtsar's
+    `offset_topo`, `gmt grdinfo`, `gmt grdimage` — verified by the
+    16-test suite in bin_py/tests/test_gmt_grd_io.py.
+
+    Disable by setting GMTSAR_GMT_INPROC=0 to fall back to the gmt
+    subprocess (debug-only A/B path).
+
+    Skipped if either:
+      - GMTSAR_GMT_INPROC=0 (debug fallback)
+      - gmt_grd_io / netCDF4 not importable (fail-soft to subprocess)
+    """
+    use_inproc = _HAVE_GMT_GRD_IO and _inproc_enabled()
+    if use_inproc:
+        try:
+            # Chain fast-path: upstream `_surface_inproc` may have stashed
+            # an in-memory grid keyed by src_grd. Consume it directly and
+            # skip the .grd read entirely (NFS round-trip elimination).
+            stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+            if stash is not None:
+                data = stash["grid"]
+                x = stash["x_coord"]
+                y = stash["y_coord"]
+                node_off = int(stash.get("node_offset", 1))
+                geographic = bool(stash.get("geographic", False))
+                upstream_hist = stash.get("history", "")
+                flipped = _np.flipud(data)
+                _write_gmt_grd(
+                    dst_grd, flipped, x, y,
+                    node_offset=node_off,
+                    geographic=geographic,
+                    history=(f"{upstream_hist} | "
+                             f"gmt grdmath {src_grd} FLIPUD = {dst_grd} "
+                             "[gmt_grd_io in-process, chained]"),
+                )
+                return
+            data, x, y, info = _read_gmt_grd(src_grd)
+            flipped = _np.flipud(data)
+            # Preserve node_offset (pixel vs gridline) and geographic
+            # flags. `gmt surface ... -r` produces pixel-registered grids,
+            # so node_offset will typically be 1.
+            _write_gmt_grd(
+                dst_grd, flipped, x, y,
+                node_offset=int(info.get("node_offset", 0)),
+                geographic=bool(info.get("geographic", False)),
+                history=f"gmt grdmath {src_grd} FLIPUD = {dst_grd} "
+                        "[gmt_grd_io in-process]",
+            )
+            return
+        except Exception as exc:
+            print(f"DEM2TOPO_RA: WARN: in-process FLIPUD failed ({exc!r}); "
+                  "falling back to gmt subprocess.", file=sys.stderr)
+            # If we'd stashed an in-mem grid but consumption failed, the
+            # disk file does not exist — flush the stash so we don't
+            # leave a dangling reference and force the subprocess to
+            # read a nonexistent file.
+            stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+            if stash is not None:
+                # Emergency: write the stashed grid out so the subprocess
+                # path can succeed. This is a hard-failure recovery — we
+                # still want to honor the legacy behavior cleanly.
+                try:
+                    _write_gmt_grd(
+                        src_grd, stash["grid"], stash["x_coord"],
+                        stash["y_coord"],
+                        node_offset=int(stash.get("node_offset", 1)),
+                        geographic=bool(stash.get("geographic", False)),
+                        history=stash.get("history", ""),
+                    )
+                except Exception as exc2:
+                    print(f"DEM2TOPO_RA: ERROR: stash-flush failed ({exc2!r})",
+                          file=sys.stderr)
+                    raise
+    # Fallback: classic gmt subprocess. If we still have a stash, flush
+    # it to disk first so the subprocess sees a real file. (This case
+    # happens when GMTSAR_GMT_INPROC=0 explicitly disables the in-proc
+    # path AFTER `_surface_inproc` ran with the chain on — unusual but
+    # possible.)
+    stash = _PENDING_INMEM_GRID.pop(src_grd, None)
+    if stash is not None:
+        _write_gmt_grd(
+            src_grd, stash["grid"], stash["x_coord"], stash["y_coord"],
+            node_offset=int(stash.get("node_offset", 1)),
+            geographic=bool(stash.get("geographic", False)),
+            history=stash.get("history", ""),
+        )
+    run(f'gmt grdmath {src_grd} FLIPUD = {dst_grd}')
+
+
+# Mira #41 (2026-05-22): in-process `gmt surface` for dem2topo_ra
+# (the biggest remaining gmt subprocess in the pipeline; per-case wall
+# time impact 25-50 s).  Gated by GMTSAR_SURFACE_INPROC (default ON
+# since v2.3.0; set =0 to force the gmt surface C subprocess).  The Numba-accelerated
+# gmt_surface_py module (utils/gmt_surface_py.py) supports:
+#  - Anisotropic cells via the alpha=dy/dx prefactors (Mira #33)
+#  - FMG nested iteration for fast convergence (Mira #21)
+#  - Briggs sub-cell constraints (GMT_SURFACE_PY_BRIGGS=1; Mira #41)
+#  - Native pixel registration (pixel_reg=True; Mira #41)
+def _surface_inproc(temp_rat: str, region_str: str, rng_step: int,
+                    az_step: int, tension: float, out_path: str,
+                    chainable: bool = False) -> None:
+    """In-process replacement for
+        gmt surface <temp.rat> -R<region> -I<rng>/<az> -bi3d -T<tension>
+                    -N1000 -G<out> -r
+
+    Reads temp.rat (binary 3-double rows: x, y, z), invokes
+    gmt_surface_py with pixel registration to match `gmt surface ... -r`,
+    and writes the result via gmt_grd_io.write_gmt_grd (canonical
+    GMT-compatible netCDF flavor).
+
+    Falls back loudly (raises) on failure — the caller may then catch
+    and degrade to the gmt subprocess; that policy is decided at the
+    call site, not silently in this helper.
+    """
+    from gmt_surface_py import gmt_surface_py
+    # Parse region "x0/x1/y0/y1"
+    parts = region_str.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"bad region '{region_str}' for in-proc surface")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    data = _np.fromfile(temp_rat, dtype=_np.float64)
+    if data.size % 3 != 0:
+        raise ValueError(f"{temp_rat}: size {data.size} not divisible by 3 doubles")
+    data = data.reshape(-1, 3)
+    x = data[:, 0]; y = data[:, 1]; z = data[:, 2]
+    grid = gmt_surface_py(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(float(rng_step), float(az_step)),
+        tension=float(tension),
+        # omega=1.4 matches surface.c:135 SURFACE_OVERRELAXATION; max_iter=1000
+        # matches the C pipeline's `-N1000`.  The prior omega=0.5 (Mira #41, no
+        # documented justification) was severe UNDER-relaxation: it both crawled
+        # on large grids (ENVI surface 2261s) AND returned unconverged/divergent
+        # results within the iter budget (S1_Ridgecrest H_res 77M-cell grid drifted
+        # 41m from `gmt surface` -> phasefilt parity failure).  Matching C's omega
+        # AND max_iter makes the GS-SOR iterate identically to C even when
+        # iteration-bounded on heterogeneous terrain (Mira perf audit 2026-06-13).
+        max_iter=1000, tol=1e-4,
+        omega=1.4,
+        use_multigrid=True,
+        pixel_reg=True,
+    )
+    ny, nx = grid.shape
+    x_coord = x0 + float(rng_step) / 2.0 + _np.arange(nx) * float(rng_step)
+    y_coord = y0 + float(az_step) / 2.0 + _np.arange(ny) * float(az_step)
+    history = (f"gmt_surface_py (-T{tension}) "
+               f"-I{rng_step}/{az_step} -r")
+    # In-memory chain: stash the grid for the downstream FLIPUD step
+    # instead of writing pixel.grd to disk. The downstream
+    # `_grdmath_flipud` consumes the stash, flips, and writes only
+    # `topo_ra.grd` — eliminating the intermediate `pixel.grd`
+    # write+read round-trip (5-10 s on NFS).
+    if chainable and _chain_enabled():
+        _PENDING_INMEM_GRID[out_path] = {
+            "grid": grid,
+            "x_coord": x_coord,
+            "y_coord": y_coord,
+            "node_offset": 1,
+            "geographic": False,
+            "history": history,
+        }
+        return
+    _write_gmt_grd(out_path, grid, x_coord, y_coord, node_offset=1,
+                   history=history)
+
+
+def _surface_or_run(args_str: str, temp_rat: str, region_str: str,
+                    rng_step: int, az_step: int, tension: float,
+                    out_path: str, chainable: bool = False) -> None:
+    """Dispatch the surface call.
+
+    Default ON since v2.3.0 (2026-06-16): gmt_surface_py (float32 GS-SOR,
+    v2.1.41) is production-faithful to `gmt surface`.  A full 21-case
+    GMTSAR_SURFACE_INPROC=1 sweep vs the csh oracle was 20/21 clean
+    (all S1 TOPS, CSK_SLC_Italy, Larsen_C, every ALOS/ALOS2/ENVI/ERS/TSX/
+    NISAR/RS2 family PASS py-vs-csh).  The lone diff is S1_Ridgecrest_EQ's
+    H_res raw phasefilt (complex-rms 0.352) confined ENTIRELY to the
+    unconstrained no-DEM corner (scatter data ends y=11160, grid y=12192):
+    high-coherence pixels where the topographic-phase correction is
+    undefined for BOTH C and Python (each extrapolates differently); its
+    masked + merged products match C.  This is NOT a solver bug — Mira #72
+    re-investigation (2026-06-15) proved gmt_surface_py matches gmt surface
+    to ~0.00m everywhere data exists; the earlier "convergence-floor /
+    high-relief" framing was wrong.  (The v2.1.32 premature flip was a
+    measurement error — an old try/except masked the inproc path failing;
+    this flip is evidence-based.)  Set GMTSAR_SURFACE_INPROC=0 to force the
+    `gmt surface` C subprocess.
+
+    If ``chainable=True`` AND ``GMTSAR_DEM2TOPO_INMEM_CHAIN=1``, the
+    surface result is stashed in-memory for the downstream FLIPUD step
+    instead of being written to ``out_path``. The caller MUST guarantee
+    that no other process or subprocess will read ``out_path`` between
+    this call and the next ``_grdmath_flipud(out_path, ...)`` — i.e.
+    only set ``chainable=True`` on the direct surface → FLIPUD path
+    (mode=0, RR empty).
+
+    No try/except fallback to the subprocess (Rule 12): a prior version
+    caught any exception from ``_surface_inproc`` and re-ran via ``run()``.
+    For RS2_SLC_Hawaii's pixel.grd (region 0/3416/0/5744, inc 2/4,
+    pixel_reg) this masked a real NotImplementedError in gmt_surface_py's
+    gcd-hierarchy + pixel_reg crop-back (Mira #68 known limitation): the
+    in-process path ran the FULL multigrid solve (~26s), threw at the
+    final crop step, and the fallback silently redid the work via
+    subprocess (~12s) -- 38s total reported as "gmt_surface_py is 3.2x
+    slower" when in fact gmt_surface_py never produced output at all.
+    Fixed 2026-06-13; default was incorrectly flipped to ON same day
+    (reverted — see Mira #72 and CSK_SLC_Italy parity failure above).
+    """
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+              and _HAVE_GMT_GRD_IO)
+    if not inproc:
+        run(args_str)
+        return
+    _surface_inproc(temp_rat, region_str, rng_step, az_step,
+                    tension, out_path, chainable=chainable)
+
 
 def dem2topo_ra():
 
@@ -40,9 +754,9 @@ def dem2topo_ra():
     print('DEM2TOPO_RA - START ... ...')
     print(' ')
     tension = 0.1
-    mode    = 0 
+    mode    = 0
     if n == 4:
-        mode = sys.argv[3]
+        mode = int(sys.argv[3])
     print('DEM2TOPO_RA: tension is ', tension)
     print('DEM2TOPO_RA: interpolation approach mode is ', mode)    
     
@@ -92,20 +806,61 @@ def dem2topo_ra():
         print('DEM2TOPO_RA: ERROR: range sampling rate out of bounds ... ...')
     
     print('DEM2TOPO_RA: range decimation rng is ', rng)
-    if SC == 10 or SC == 11:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat '+sys.argv[1]+' 1 -bod  > trans.dat')
-    else:
-        run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat '+sys.argv[1]+' 0 -bod  > trans.dat')
+    # SAT_llt2rat_py wire-in (2026-05-20, after Mira #2 goldop closure):
+    # bit-identical to C SAT_llt2rat on RS2 Hawaii DEM (azi_pix max|d|=0
+    # on all 978882 rows, sub-Angstrom range_pix residual). 3.5× slower
+    # than C (precise=0: 32 s vs 9 s) but the end-to-end pipe stays
+    # competitive because blockmedian/surface dominate the runtime.
+    #
+    # Mira #4 (2026-05-21): MUST use the SAME ASCII `--FORMAT_FLOAT_OUT=%lf`
+    # input pipe that dem2topo_ra.csh uses. The earlier `-bi3d` fast path
+    # fed SAT_llt2rat_py full-precision float64 lon/lat/h that the C
+    # SAT_llt2rat never saw — quantization-free inputs push goldop's
+    # time-bracket search into different bins on ~99% of rows (max|d|
+    # azi_pix = 2 px on ALOS_haiti), corrupting topo_ra → topo_shift →
+    # phase → unwrap → los by ~0.077 m / 0.07 rad / 1.5 mm RMS.
+    # ASCII %lf path gives sub-ULP parity to C on lon/lat (max|d|=0),
+    # azi_pix (max|d|=3.6e-12 px), and height (1.9e-9 m). See Mira
+    # AUDIT note in gmtsar/python/AUDIT.md (ALOS_haiti los_ll fix).
+    # The 9 sub-ULP bugs Mira #2 fixed to close parity were documented in
+    # docs/audits/AUDIT_SAT_llt2rat_py.md, removed in the v2.7.1 doc
+    # cleanup (recoverable from git history if needed).
+    with _dem2topo_phase("grd2xyz_SAT_llt2rat"):
+        if SC == 10 or SC == 11:
+            run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 1 -bod > trans.dat')
+        else:
+            run('gmt grd2xyz --FORMAT_FLOAT_OUT=%lf '+sys.argv[2]+' -s | SAT_llt2rat_py '+sys.argv[1]+' 0 -bod > trans.dat')
     
     print(' ')
     print('DEM2TOPO_RA: use an azimuth spacing of 2 for low PRF data such as S1 TOPS ... ...')
     
     if PRF<1000:
         print('DEM2TOPO_RA: if PRF<1000, then ... ...')
-        run("gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -bo3d -r "+str(V)+" > temp.rat ")
+        # Mira (Tier-1 gmt subprocess kill): gmtconvert -o0,1,2 -bi5d -bo3d
+        # now happens in-process via numpy memmap column slice
+        # (utils/gmt_inproc.py). Bit-id with gmt — see
+        # bin_py/tests/test_gmt_inproc.py::TestGmtconvertSelectCols.
+        with _dem2topo_phase("gmtconvert_to_temprat"):
+            _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 2,
+                                        str(V), "temp.rat")
+        _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
-            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
-            
+            # Bug fix (2026-07-14): the original csh idiom `>& tmp` merges
+            # stdout+stderr into `tmp` under (t)csh -- dem2topo_ra.csh:86
+            # relies on that to capture GMT's "Hint: ..." message from the
+            # `-Q` probe. `run()` executes via
+            # `subprocess.run(cmd, shell=True)` -> `/bin/sh -c`, which does
+            # NOT understand `>&` (POSIX `>&fd` expects a numeric fd, not a
+            # filename) -- this always failed with "Bad fd number" (rc=2,
+            # swallowed as a WARN per gmtsar_lib.run()'s non-fatal-rc
+            # design), and `tmp` was never created. Every Python run
+            # therefore silently skipped the Hint-based -R auto-clip csh
+            # applies whenever GMT's `-Q` probe suggests a tighter region --
+            # a real, deterministic algorithmic divergence from csh
+            # (project_rules.md Rule 7 verbatim-port violation), not a
+            # cosmetic warning. POSIX equivalent of csh's `>&`: `>tmp 2>&1`.
+            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >tmp 2>&1")
+
             print('DEM2TOPO_RA: ?? is it possible that file tmp is not created? ... ')
             if check_file_report('tmp') == True:
                 # Defining RR
@@ -131,27 +886,55 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
-                run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
+                # Chainable: surface → FLIPUD has no intermediate consumer
+                # of pixel.grd, so in-mem stash is safe here.
+                _surface_or_run(
+                    "gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
+                    "temp.rat", str(region), int(rng), 2, float(tension), "pixel.grd",
+                    chainable=True)
             else:
-                run("gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
-                run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
+                # RR is like ['-R0/800/0/1600']; strip the leading -R for our parser.
+                rr_str = str(RR[0]) if isinstance(RR, list) and RR else str(RR)
+                _surface_or_run(
+                    "gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/2 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
+                    "temp.rat", rr_str.replace("-R", "").strip(),
+                    int(rng), 2, float(tension), "pixel.grd")
+                # Mira (2026-05-22): in-process grdcut. Bit-id to gmt C +
+                # ~3.3× faster on real DEM. GMTSAR_GRDCUT_PY=0 → subprocess.
+                if _HAVE_GRDCUT_PY:
+                    _grdcut_file("pixel.grd", "tmp.grd", region=str(region))
+                else:
+                    run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
         elif mode == 1:
             rng2 = rng*8
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
-            run("gmt triangulate temp.rat -R"+str(region)+" -I"+str(rng)+"/2 -bi3d -Gtopo_ra_tmp.grd -r "+str(V))
-            run("gmt blockmean temp.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -bo3d -r > mean.rat")
-            run("gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -T0.1 -N1000 -Gcoarse.grd -r")
-            run("gmt grdfill topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+            # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
+            # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 2, v_flag=V)
+            _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 16, "mean.rat")
+            _surface_or_run(
+                "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/16 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
+                "mean.rat", str(region), int(rng2), 16, 0.1, "coarse.grd")
+            # Mira (2026-05-22): in-process gmt_grdfill_py (-Ag).
+            # GMTSAR_GRDFILL_PY=0 → subprocess.
+            _grdfill_dispatch("topo_ra_tmp.grd", "pixel.grd", "coarse.grd")
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
+        _pt_surface.stop()
     else:
         print('DEM2TOPO_RA: if PRF>=1000, then ... ...')
-        run("gmt gmtconvert trans.dat -o0,1,2 -bi5d -bo3d | gmt blockmedian -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -bo3d -r "+str(V)+" > temp.rat")
+        # Mira (Tier-1 gmt subprocess kill): same as PRF<1000 branch.
+        with _dem2topo_phase("gmtconvert_to_temprat"):
+            _gmtconvert_pipe_to_temprat("trans.dat", str(region), int(rng), 4,
+                                        str(V), "temp.rat")
+        _pt_surface = _PhaseTimer("surface").start()
         if mode == 0:
-            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >& tmp")
-            
+            # Same `>&` -> `>tmp 2>&1` fix as the PRF<1000 branch above --
+            # see the comment there for the full explanation.
+            run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r -Q >tmp 2>&1")
+
             print('DEM2TOPO_RA: ?? is it possible that file tmp is not created? ... ')
             if check_file_report('tmp')==True:
                 # Defining RR
@@ -178,25 +961,47 @@ def dem2topo_ra():
             print('DEM2TOPO_RA: RR is ', RR)
             
             if RR == []: # if RR is empty or unset
-                run("gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
+                # Chainable: see PRF<1000 branch above.
+                _surface_or_run(
+                    "gmt surface temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
+                    "temp.rat", str(region), int(rng), 4, float(tension), "pixel.grd",
+                    chainable=True)
             else:
-                run("gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V))
-                run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
+                rr_str = str(RR[0]) if isinstance(RR, list) and RR else str(RR)
+                _surface_or_run(
+                    "gmt surface temp.rat "+str(RR)+" -I"+str(rng)+"/4 -bi3d -T"+str(tension)+" -N1000 -Gpixel.grd -r "+str(V),
+                    "temp.rat", rr_str.replace("-R", "").strip(),
+                    int(rng), 4, float(tension), "pixel.grd")
+                # Mira (2026-05-22): in-process grdcut (PRF>=1000 branch).
+                if _HAVE_GRDCUT_PY:
+                    _grdcut_file("pixel.grd", "tmp.grd", region=str(region))
+                else:
+                    run("gmt grdcut pixel.grd -R"+str(region)+" -Gtmp.grd")
                 file_shuttle('tmp.grd','pixel.grd','mv')
         elif mode == 1:
             rng2 = rng*8
             print('DEM2TOPO_RA: mode == 1 and rng2 is ', rng2)
-            run("gmt triangulate temp.rat -R"+str(region)+" -I"+str(rng)+"/4 -bi3d -Gtopo_ra_tmp.grd -r "+str(V))
-            run("gmt blockmean temp.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -bo3d -r > mean.rat")
-            run("gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -T0.1 -N1000 -Gcoarse.grd -r")
-            run("gmt grdfill topo_ra_tmp.grd -Agcoarse.grd -Gpixel.grd")
+            # Mira (2026-07-12): in-process gmt_triangulate_py (opt-in).
+            # GMTSAR_TRIANGULATE_PY=0 (default) → gmt subprocess.
+            _triangulate_dispatch("temp.rat", "topo_ra_tmp.grd", str(region), rng, 4, v_flag=V)
+            _blockmean_to_meanrat("temp.rat", str(region), int(rng2), 32, "mean.rat")
+            _surface_or_run(
+                "gmt surface mean.rat -R"+str(region)+" -I"+str(rng2)+"/32 -bi3d -T0.1 -N1000 -Gcoarse.grd -r",
+                "mean.rat", str(region), int(rng2), 32, 0.1, "coarse.grd")
+            # Mira (2026-05-22): in-process gmt_grdfill_py (-Ag).
+            # GMTSAR_GRDFILL_PY=0 → subprocess.
+            _grdfill_dispatch("topo_ra_tmp.grd", "pixel.grd", "coarse.grd")
             delete('topo_ra_tmp.grd')
             delete('coarse.grd')
             delete('mean.rat')
-    
+        _pt_surface.stop()
+
     print(' ')
     print('DEM2TOPO_RA: flip top to bottom for both ascending and descending passes ... ...')
-    run('gmt grdmath pixel.grd FLIPUD = topo_ra.grd')
+    # Mira #30 wire-in: in-process FLIPUD via numpy + gmt_grd_io.
+    # Set GMTSAR_GMT_INPROC=0 to fall back to `gmt grdmath`.
+    with _dem2topo_phase("flipud"):
+        _grdmath_flipud('pixel.grd', 'topo_ra.grd')
     
     print(' ')
     print('DEM2TOPO_RA: plotting ... ...')
@@ -215,7 +1020,9 @@ def dem2topo_ra():
     delete('dem.xyz')
     delete('tmp')
     delete('topo_ra.cpt')
-    
+
+    _dem2topo_dump_profile(path="dem2topo_ra_phase_profile_py.json")
+
     print(' ')
     print("DEM2TOPO_RA - END ... ...")
 

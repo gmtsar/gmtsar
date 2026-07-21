@@ -36,7 +36,7 @@ def resolve_sharedir():
         cur = parent
 
     sys.exit("resolve_sharedir: could not locate share/gmtsar directory "
-             "(set $GMTSAR or install via install.sh --build)")
+             "(set $GMTSAR or install via install.py --system conda --rebuild)")
 
 
 def check_file_report(fn):
@@ -151,12 +151,78 @@ def run(cmd):
     NOT raise — gmtsar binaries exit non-zero for benign reasons (warnings,
     missing-but-optional files), and the legacy csh pipeline tolerates that.
     Switching from os.system was about VISIBILITY of failures, not making
-    them fatal."""
+    them fatal.
+
+    EXCEPTION: rc=127 (command not found, per shell convention) always
+    raises. That is never a benign gmtsar warning — it means a binary or
+    script isn't on PATH, and the pipeline should fail loudly rather than
+    silently no-op through every subsequent step (project_rules.md Rule 1).
+
+    Every call prints a UTC timestamp + the resolved command before running
+    it, and a one-line "done" summary (elapsed time + exit code) after —
+    unconditionally, not just under GMTSAR_PROFILE=1 — so any case's
+    log.txt is self-sufficient for backtracking exactly which commands ran,
+    when, and how long each took (see p2p_processing's env-gate config dump
+    for the matching backend-selection half of this picture).
+
+    If GMTSAR_PROFILE=1, ALSO records the wall time via profiler.record(...)
+    for the aggregate perf-snapshot tooling. The profiler module is a no-op
+    when disabled (zero overhead)."""
+    import time as _t
+    import datetime as _dt_mod
+    def _utc_now():
+        return _dt_mod.datetime.now(_dt_mod.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     print(" ")
-    print(cmd)
+    print(f"[{_utc_now()}] {cmd}")
+    _t0 = _t.time()
     rc = subprocess.run(cmd, shell=True).returncode
+    _dt = _t.time() - _t0
+    print(f"[{_utc_now()}] done in {_dt:.3f}s (rc={rc})")
+    try:
+        from profiler import record as _prof_record  # type: ignore
+        _prof_record(cmd, _dt, backend="subprocess")
+    except ImportError:
+        pass
+    if rc == 127:
+        raise RuntimeError(f"command not found (rc=127): {cmd}")
     if rc != 0:
         print(f"WARN: command exited {rc}: {cmd}", file=sys.stderr)
+
+def run_make_slc_tsx(xml_path, image_path, output_prefix):
+    """Env-gated dispatcher for make_slc_tsx (preproc/TSX_preproc).
+
+    GMTSAR_TSX_PREPROC_PY unset/1 (DEFAULT since 2026-07-13) -> in-process
+        Python port (make_slc_tsx_py.py).
+    GMTSAR_TSX_PREPROC_PY=0 -> shells out to the C binary. Instant
+        rollback: set the env var to 0.
+
+    Parity: verified byte-for-byte (.PRM, .LED, .SLC) against the real C
+    binary on two real TSX scenes (TSX_SLC_Hawaii dataset,
+    TSX20120615/TSX20121208). See
+    gmtsar/python/bin_py/tests/test_make_slc_tsx.py. Performance: as a
+    one-shot CLI call the Python port is slower than C (numpy import is a
+    ~2.5s fixed tax); amortized (warm interpreter) it is roughly on par.
+    pre_proc is only ~7.8% of total case wall time, and a pure-Python
+    path removes the C-compiler dependency for this binary -- see
+    docs/PATHWAY_FORWARD.md for the measured aggregate impact.
+    """
+    if os.environ.get("GMTSAR_TSX_PREPROC_PY", "1") == "1":
+        print(" ")
+        print(f"[make_slc_tsx_py] {xml_path} {image_path} {output_prefix}")
+        import time as _t
+        _t0 = _t.time()
+        import make_slc_tsx_py
+        make_slc_tsx_py.make_slc_tsx(xml_path, image_path, output_prefix)
+        _dt = _t.time() - _t0
+        try:
+            from profiler import record as _prof_record  # type: ignore
+            _prof_record(f"make_slc_tsx_py {xml_path} {image_path} {output_prefix}",
+                         _dt, backend="py_inproc")
+        except ImportError:
+            pass
+    else:
+        run(f"make_slc_tsx {xml_path} {image_path} {output_prefix}")
+
 
 def renameMasterAlignedForS1tops(master0, aligned0):
     print('Renaming master and aligned for SAT==S1_TOPS')

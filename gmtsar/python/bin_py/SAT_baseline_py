@@ -1,0 +1,1005 @@
+#! /usr/bin/env python3
+"""SAT_baseline_py — Python port of the gmtsar C binary SAT_baseline.
+
+Computes the perpendicular / parallel baseline between a reference
+(master) and a secondary (aligned) SAR acquisition using their orbit
+LED files. Used in the `p2p_processing` pipeline to populate alignment
+PRMs before xcorr.
+
+Algorithm (mirrors SAT_baseline.c line-for-line):
+  1. Parse both PRMs and their LED files.
+  2. For the MASTER orbit, compute the start/center/end ECEF positions
+     at radar times t11, t13, t12.
+  3. Pre-sample the SECONDARY orbit on a uniform grid spanning the
+     acquisition window (±50% / ±200% padding depending on platform).
+  4. For each of (t11, t12, t13), grid-walk the secondary orbit to find
+     the int-index of the closest-approach sample.
+  5. Polyfit-refine (when |t11 - t21| > 10 s) by sampling the secondary
+     orbit 100 times in a ±0.005 s window and fitting a 2nd-order poly
+     to range², extracting the vertex.
+  6. Compute baseline_start/center/end, alpha (degrees from horizontal),
+     bpara/bperp via find_parallel_perp_baseline.
+  7. Approximate (rshift, ashift) by shooting a look vector from the
+     master orbit at near_range and projecting back through llt2rat_sub
+     on both PRMs.
+  8. Print results in C printf format (PRM key=value lines).
+
+Checkpoints (mirrors Mira #2 ancestor SAT_llt2rat_py):
+  B1. PRM/LED parse + ECEF helpers (reused from SAT_llt2rat_py).
+  B2. find_unit_vectors / cross3 / get_sign / find_alpha_degrees
+      / xyz2plh / find_dist (NEW — small vector geometry).
+  B3. calc_height_velocity (NEW — orbital height/velocity calc).
+  B4. find_parallel_perp_baseline (NEW — incidence geometry).
+  B5. poly_interp (NEW — 100-sample polyfit refinement; reuses
+      hermite_orbit + polyfit_c from SAT_llt2rat_py).
+  B6. llt2rat_sub (NEW — light recompute of (range, azi) pixels;
+      reuses goldop_batch from SAT_llt2rat_py).
+  B7. baseline() driver (NEW — main entry point).
+  B8. CLI + write_prm_baseline output formatting.
+
+Constants (Mira #2 sub-ULP traps inherited):
+  - SOL = 299792456.0 m/s (C #define SOL, gmtsar.h:16)
+  - π for plh2xyz/xyz2plh: TRUNCATED 14-digit 3.14159265358979
+    (llt2xyz.h:61) — handled by reusing SAT_llt2rat_py's plh2xyz.
+  - π for find_parallel_perp_baseline / find_alpha_degrees:
+    FULL M_PI = 3.14159265358979323846 (gmtsar.h:13).
+    BOTH constants are in play in this binary — DO NOT unify.
+  - (1-FL)*(1-FL) ≠ 1-e2 (1 ULP) — handled by plh2xyz reuse.
+
+CLI:
+    SAT_baseline_py PRM_master PRM_aligned
+
+Output: PRM-key=value lines on stdout, matching `SAT_baseline`
+printf format exactly (trailing spaces, %.12f precision, %d for
+shifts).
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.machinery as _ilm
+import importlib.util as _ilu
+import math
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+
+# ---------------------------------------------------------------------------
+# Source of truth for primitives: utils/vector.py (Mira #34). Importing the
+# constants + cross3 from there eliminates duplicated inline definitions and
+# locks the values to the test_vector.py suite. Orbit-level helpers (Hermite,
+# goldop_batch, presample_orbit, read_prm/read_led) are NOT yet in
+# utils/vector.py — those stay on the SourceFileLoader path below.
+_HERE = Path(__file__).resolve().parent
+_PY_ROOT = _HERE.parent
+if str(_PY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PY_ROOT))
+from utils.vector import (                                       # noqa: E402
+    SOL,                          # 299792456.0 m/s
+    PI as _PI_TRUNC,              # 3.14159265358979 (truncated, llt2xyz.h:61)
+    R_GOLD as _R_GOLD,            # 0.61803399 (SAT_llt2rat_sub.c #define R)
+    C_GOLD as _C_GOLD,            # 0.382      (SAT_llt2rat_sub.c #define C)
+    cross_3 as _cross_3_njit,     # @njit, out-param signature
+)
+
+# Reuse the orbit / Hermite / goldop / plh2xyz / polyfit helpers from the
+# Mira #2 ancestor SAT_llt2rat_py via SourceFileLoader (script with no .py
+# extension). Future Miras may pull plh2xyz / polyfit / hermite into
+# utils/vector.py at which point those names can move to the import block above.
+_LLT_PATH = _HERE / "SAT_llt2rat_py"
+_spec = _ilu.spec_from_loader(
+    "sat_llt2rat_py_for_baseline",
+    _ilm.SourceFileLoader("sat_llt2rat_py_for_baseline", str(_LLT_PATH)),
+)
+_LLT = _ilu.module_from_spec(_spec)
+sys.modules["sat_llt2rat_py_for_baseline"] = _LLT
+_spec.loader.exec_module(_LLT)
+
+read_prm = _LLT.read_prm
+read_led = _LLT.read_led
+plh2xyz = _LLT.plh2xyz                       # uses TRUNCATED pi (matches _PI_TRUNC)
+hermite_orbit = _LLT.hermite_orbit
+hermite_c_1d_numba = _LLT.hermite_c_1d_numba  # numba general path
+hermite_c_1d = _LLT.hermite_c_1d              # pure-numpy general path
+presample_orbit = _LLT.presample_orbit
+goldop_batch = _LLT.goldop_batch
+polyfit_c = _LLT.polyfit_c
+_HAS_NUMBA = getattr(_LLT, "_HAS_NUMBA", False)
+
+
+# ---------------------------------------------------------- Constants ---
+# gmtsar.h:13 — full M_PI used by find_alpha_degrees / find_parallel_perp.
+# math.pi == 3.141592653589793 which is the IEEE-754 closest representable
+# double of the full π, identical to C's M_PI 3.14159265358979323846 after
+# rounding to double. We verify in tests.
+# NB: this is DISTINCT from _PI_TRUNC (the truncated 14-digit llt2xyz.h:61
+# value used by plh2xyz / xyz2plh, imported above from utils.vector). DO NOT
+# unify the two.
+_M_PI = math.pi
+
+# Helpers for PRM scalar access — mirror SAT_llt2rat_py's
+def _prm_f(prm: dict, key: str, default: float = 0.0) -> float:
+    v = prm.get(key, "").split()
+    return float(v[0]) if v else default
+
+
+def _prm_i(prm: dict, key: str, default: int = 0) -> int:
+    return int(_prm_f(prm, key, default))
+
+
+def _prm_s(prm: dict, key: str, default: str = "") -> str:
+    v = prm.get(key, "").split()
+    return v[0] if v else default
+
+
+# ---------------------------------------------------------- B2 geometry ---
+def find_unit_vectors(x: float, y: float, z: float
+                      ) -> tuple[float, float, float, float]:
+    """Port of utils.c find_unit_vectors / SAT_baseline.c L626-631.
+
+    Returns (ru, xu, yu, zu) where ru = |v| and xu/yu/zu are the
+    unit-vector components.
+    """
+    ru = math.sqrt(x * x + y * y + z * z)
+    return ru, x / ru, y / ru, z / ru
+
+
+def cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Thin wrapper around utils.vector.cross_3 (out-param @njit kernel).
+
+    Returns a fresh (3,) ndarray to keep the existing call sites
+    (cross3(a, b) -> ndarray) unchanged. The C component formulae
+    (`c[1] = -a[0]*b[2] + a[2]*b[0]`, left-to-right) live in
+    utils.vector.cross_3 and are pinned by test_vector.TestCross3.
+    """
+    c = np.empty(3, dtype=np.float64)
+    _cross_3_njit(np.ascontiguousarray(a, dtype=np.float64),
+                  np.ascontiguousarray(b, dtype=np.float64),
+                  c)
+    return c
+
+
+def find_dist(xs: float, ys: float, zs: float,
+              x: float, y: float, z: float) -> float:
+    """Port of SAT_baseline.c L605-616 (3D Euclidean distance).
+
+    C operation order matters at 1-ULP level:
+        dx = xs - x; dy = ys - y; dz = zs - z
+        ds = sqrt(dx*dx + dy*dy + dz*dz)
+    """
+    dx = xs - x
+    dy = ys - y
+    dz = zs - z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def find_alpha_degrees(bv: float, bh: float) -> float:
+    """Port of SAT_baseline.c L594-603. NB: uses full M_PI, not the
+    truncated π that plh2xyz uses.
+
+        rad = M_PI / 180.0
+        a = atan2(bv, bh) / rad
+    """
+    rad = _M_PI / 180.0
+    return math.atan2(bv, bh) / rad
+
+
+def get_sign(orbdir: str, lookdir: str,
+             x11: float, y11: float, x21: float, y21: float) -> int:
+    """Port of SAT_baseline.c L524-539.
+
+    sign = +1 by default; negated once if orbdir starts with 'D';
+    negated again if lookdir starts with 'L'; negated again if the
+    aligned longitude angle < master longitude angle.
+    """
+    rlnref = math.atan2(y11, x11)
+    rlnrep = math.atan2(y21, x21)
+    sign = 1
+    if orbdir.startswith("D"):
+        sign = -sign
+    if lookdir.startswith("L"):
+        sign = -sign
+    if rlnrep < rlnref:
+        sign = -sign
+    return sign
+
+
+def xyz2plh(xyz: np.ndarray, A: float, FL: float) -> np.ndarray:
+    """Port of plxyz.c xyz2plh() — ECEF (x, y, z) → (lat, lon, h) in
+    degrees / metres. Mirrors C exactly:
+
+      B = A*(1 - FL); if z < 0: B = -B
+      r = sqrt(x² + y²)
+      e = (B*z - (A² - B²)) / (A*r)
+      f = (B*z + (A² - B²)) / (A*r)
+      p = (4/3) * (e*f + 1)
+      q = 2 * (e² - f²)
+      d = p³ + q²
+      if d >= 0:
+          v = pow(sqrt(d) - q, 1/3) - pow(sqrt(d) + q, 1/3)
+      else:
+          v = 2 * sqrt(-p) * cos(acos(q / (p*sqrt(-p))) / 3)
+      if v² < |p|:
+          v = -(v³ + 2*q) / (3*p)
+      g = (sqrt(e² + v) + e) / 2
+      t = sqrt(g² + (f - v*g) / (2*g - e)) - g
+      lat = atan(A*(1-t²) / (2*B*t))
+      h = (r - A*t)*cos(lat) + (z - B)*sin(lat)
+      lon = atan2(y, x); if lon < 0: lon += twopi
+      → returned in DEGREES (lat, lon, h)
+
+    Uses TRUNCATED twopi = 2 * 3.14159265358979 (llt2xyz.h:63) and
+    `rad_to_deg = 360 / twopi`, NOT math constants. This is the
+    plh2xyz partner — same 1-ULP family of conversions.
+    """
+    twopi = 2.0 * _PI_TRUNC
+    rad_to_deg = 360.0 / twopi
+    x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+
+    B = A * (1.0 - FL)
+    if z < 0.0:
+        B = -B
+
+    r = math.sqrt(x * x + y * y)
+    e = (B * z - (A * A - B * B)) / (A * r)
+    f = (B * z + (A * A - B * B)) / (A * r)
+    p = (4.0 / 3.0) * (e * f + 1.0)
+    q = 2.0 * (e * e - f * f)
+    d = p * p * p + q * q
+
+    if d >= 0.0:
+        # C: pow(sqrt(d) - q, 1/3) - pow(sqrt(d) + q, 1/3)
+        # For negative bases, C `pow(neg, 1/3)` returns NaN — but we
+        # mirror C semantics for parity. Real SAR inputs always hit
+        # the d >= 0 path with sqrt(d) > |q|, so the bases are positive.
+        sd = math.sqrt(d)
+        v = math.pow(sd - q, 1.0 / 3.0) - math.pow(sd + q, 1.0 / 3.0)
+    else:
+        v = 2.0 * math.sqrt(-p) * math.cos(
+            math.acos(q / (p * math.sqrt(-p))) / 3.0)
+
+    if v * v < abs(p):
+        v = -(v * v * v + 2.0 * q) / (3.0 * p)
+
+    g = (math.sqrt(e * e + v) + e) / 2.0
+    t = math.sqrt(g * g + (f - v * g) / (2.0 * g - e)) - g
+
+    lat = math.atan((A * (1.0 - t * t)) / (2.0 * B * t))
+    h = (r - A * t) * math.cos(lat) + (z - B) * math.sin(lat)
+    zlong = math.atan2(y, x)
+    if zlong < 0.0:
+        zlong = zlong + twopi
+
+    return np.array([lat * rad_to_deg, zlong * rad_to_deg, h],
+                    dtype=np.float64)
+
+
+# ---------------------------------------------------------- B3 orbit helpers ---
+def get_seconds(prm: dict) -> tuple[float, float]:
+    """Port of utils.c get_seconds (L92-106):
+
+      start = 86400 * doy + (ashift + sub_int_a)/PRF
+              + (nrows - num_valid_az)/(2 * PRF)
+      end   = start + num_patches * num_valid_az / PRF
+    """
+    doy = _prm_f(prm, "clock_start")
+    prf = _prm_f(prm, "PRF") or _prm_f(prm, "prf")
+    ashift = _prm_f(prm, "ashift")
+    sub_int_a = _prm_f(prm, "sub_int_a")
+    nrows = _prm_i(prm, "nrows")
+    num_valid_az = _prm_i(prm, "num_valid_az")
+    num_patches = _prm_i(prm, "num_patches") or 1
+    m = nrows - num_valid_az
+    start = (86400.0 * doy
+             + (ashift + sub_int_a) / prf
+             + (1.0 * m) / (2.0 * prf))
+    end = start + num_patches * num_valid_az / prf
+    return start, end
+
+
+def _orbit_synth_times(meta: dict, n: int) -> np.ndarray:
+    """C-style synthetic time knots: pt[k] = 86400*id + sec + k*dsec.
+
+    Mirrors C calorb_alos / interpolate_SAT_orbit_slow:
+        pt0 = 86400 * orb->id + orb->sec
+        pt[k] = pt0 + k * orb->dsec
+    Using these (instead of the actual LED times) eliminates ~1e-9 s
+    ASCII roundoff drift in the orbit time-axis — see SAT_llt2rat_py's
+    presample_orbit Mira #6 fix.
+    """
+    pt0 = 86400.0 * meta["id"] + meta["sec"]
+    dsec = float(meta["dsec"])
+    return pt0 + np.arange(n, dtype=np.float64) * dsec
+
+
+def interpolate_SAT_orbit_slow(orbit: np.ndarray, meta: dict,
+                               times: np.ndarray | float
+                               ) -> np.ndarray:
+    """Port of interpolate_orbit.c interpolate_SAT_orbit_slow.
+
+    Computes (x, y, z) at each query time by 6-point Hermite
+    interpolation, using C-style synthetic time knots
+    `pt[k] = 86400*id + sec + k*dsec` (NOT the LED ASCII times — see
+    SAT_llt2rat_py Mira #6 fix). Returns (M, 3) array.
+
+    Mirrors C exactly: 3 independent 1D Hermite interpolations
+    (x, y, z) — same nval=6, same constraint that `time` is inside the
+    orbit time-axis. For multi-target queries we batch-call hermite_c_1d
+    once per axis (with numba acceleration when available).
+    """
+    times_arr = np.atleast_1d(np.asarray(times, dtype=np.float64))
+    pt = _orbit_synth_times(meta, orbit.shape[0])
+    _herm = hermite_c_1d_numba if _HAS_NUMBA else hermite_c_1d
+    xs = _herm(pt, orbit[:, 1], orbit[:, 4], times_arr, 6)
+    ys = _herm(pt, orbit[:, 2], orbit[:, 5], times_arr, 6)
+    zs = _herm(pt, orbit[:, 3], orbit[:, 6], times_arr, 6)
+    return np.column_stack([xs, ys, zs])
+
+
+def calc_height_velocity(orbit: np.ndarray, meta: dict, prm: dict,
+                         t1: float, t2: float
+                         ) -> tuple[float, float, float, float, float, str]:
+    """Port of ldr_orbit.c calc_height_velocity (L67-177).
+
+    Returns: (height, re2, vg, vtot, rdot, orbdir).
+
+    height = |r| - re (with `re` recomputed at the ground-tie point).
+    vg     = sqrt(ro * 2 * d[2]) where d is the polyfit_c coefs of
+             range² vs time over nt=100 samples spaced dt=200/PRF.
+    rdot   = d[1].
+    re2    = ellipse radius at center latitude.
+    vtot   = |v| from finite differences over ±2 s.
+    orbdir = "A" if vz > 0 else "D" (set on prm too in C; we return
+             it so caller can update prm dict).
+    """
+    ro = _prm_f(prm, "near_range")
+    ra = _prm_f(prm, "equatorial_radius") or _prm_f(prm, "ra")
+    rc = _prm_f(prm, "polar_radius") or _prm_f(prm, "rc")
+    prf = _prm_f(prm, "PRF") or _prm_f(prm, "prf")
+
+    dt = 200.0 / prf
+    nt = 100  # fixed value for TSX, ENVI (per C comment)
+
+    # C: t0 = (t1+t2)/2; t1 = t0 - 2; t2 = t0 + 2
+    t0 = (t1 + t2) / 2.0
+    t1_loc = t0 - 2.0
+    t2_loc = t0 + 2.0
+
+    # Interpolate orbit at t0, t1_loc, t2_loc
+    p_three = interpolate_SAT_orbit_slow(
+        orbit, meta, np.array([t0, t1_loc, t2_loc]))
+    xs, ys, zs = float(p_three[0, 0]), float(p_three[0, 1]), float(p_three[0, 2])
+    x1, y1, z1 = float(p_three[1, 0]), float(p_three[1, 1]), float(p_three[1, 2])
+    x2, y2, z2 = float(p_three[2, 0]), float(p_three[2, 1]), float(p_three[2, 2])
+
+    rs = math.sqrt(xs * xs + ys * ys + zs * zs)
+
+    # Velocity from finite differences over ±2 s
+    vx = (x2 - x1) / 4.0
+    vy = (y2 - y1) / 4.0
+    vz = (z2 - z1) / 4.0
+    vs = math.sqrt(vx * vx + vy * vy + vz * vz)
+    vtot = vs
+
+    orbdir = "A" if vz > 0 else "D"
+
+    # Geodetic latitude of the satellite
+    rlat = math.asin(zs / rs)
+    st = math.sin(rlat)
+    ct = math.cos(rlat)
+    arg = (ct * ct) / (ra * ra) + (st * st) / (rc * rc)
+    re = 1.0 / math.sqrt(arg)
+    re2 = re
+    height = rs - re2
+
+    # Vector orthogonal to both radial and velocity
+    a = np.array([xs / rs, ys / rs, zs / rs], dtype=np.float64)
+    b = np.array([vx / vs, vy / vs, vz / vs], dtype=np.float64)
+    c = cross3(a, b)
+
+    # Look angle (C convention)
+    ct = (rs * rs + ro * ro - re * re) / (2.0 * rs * ro)
+    st = math.sin(math.acos(ct))
+
+    # Ground tie point
+    xe = xs + ro * (-st * c[0] - ct * a[0])
+    ye = ys + ro * (-st * c[1] - ct * a[1])
+    ze = zs + ro * (-st * c[2] - ct * a[2])
+    rlat = math.asin(ze / re)
+
+    st = math.sin(rlat)
+    ct = math.cos(rlat)
+    arg = (ct * ct) / (ra * ra) + (st * st) / (rc * rc)
+    re = 1.0 / math.sqrt(arg)
+
+    # Range over time, nt=100 samples spaced dt
+    k = np.arange(nt)
+    time_arr = dt * (k - nt // 2).astype(np.float64)
+    t_query = t0 + time_arr  # absolute times
+    p_arr = interpolate_SAT_orbit_slow(orbit, meta, t_query)
+    dx = xe - p_arr[:, 0]
+    dy = ye - p_arr[:, 1]
+    dz = ze - p_arr[:, 2]
+    rng = np.sqrt(dx * dx + dy * dy + dz * dz) - ro
+
+    # Fit second-order polynomial to (time, rng). C: polyfit(time, rng, d, &nt, &nc=3)
+    d = polyfit_c(time_arr, rng, 3)
+    rdot = float(d[1])
+    vg = math.sqrt(ro * 2.0 * d[2])
+
+    return height, re2, vg, vtot, rdot, orbdir
+
+
+# ---------------------------------------------------------- B4 baseline geom ---
+def find_parallel_perp_baseline(ref_prm: dict, rep_prm: dict, dr: float,
+                                rep_baseline_start: float,
+                                rep_alpha_start: float
+                                ) -> tuple[float, float]:
+    """Port of SAT_baseline.c L565-592.
+
+    Uses FULL M_PI (not the truncated π that plh2xyz uses):
+        rad = M_PI / 180.0
+        rc = ref.RE + ref.ht
+        ra = ref.RE
+        far_range = rep.near_range + dr * rep.num_rng_bins
+        arg1 = (rep.near_range² + rc² - ra²) / (2 * rep.near_range * rc)
+        arg2 = (far_range²       + rc² - ra²) / (2 * far_range       * rc)
+        rlook = acos((arg1+arg2)/2)
+        arg1 = (-rep.near_range² + rc² + ra²) / (2 * ra * rc)
+        arg2 = (-far_range²       + rc² + ra²) / (2 * ra * rc)
+        rlook += acos((arg1+arg2)/2)
+        bpara = rep.baseline_start * sin(rlook - rep.alpha_start*rad)
+        bperp = rep.baseline_start * cos(rlook - rep.alpha_start*rad)
+    """
+    rad = _M_PI / 180.0
+    rc = _prm_f(ref_prm, "earth_radius") + _prm_f(ref_prm, "SC_height")
+    ra = _prm_f(ref_prm, "earth_radius")
+    near_range = _prm_f(rep_prm, "near_range")
+    num_rng_bins = _prm_i(rep_prm, "num_rng_bins")
+    far_range = near_range + dr * num_rng_bins
+
+    arg1 = (near_range * near_range + rc * rc - ra * ra) / (2.0 * near_range * rc)
+    arg2 = (far_range * far_range + rc * rc - ra * ra) / (2.0 * far_range * rc)
+    rlook = math.acos((arg1 + arg2) / 2.0)
+
+    arg1 = (-near_range * near_range + rc * rc + ra * ra) / (2.0 * ra * rc)
+    arg2 = (-far_range * far_range + rc * rc + ra * ra) / (2.0 * ra * rc)
+    rlook = rlook + math.acos((arg1 + arg2) / 2.0)
+
+    bpara = rep_baseline_start * math.sin(rlook - rep_alpha_start * rad)
+    bperp = rep_baseline_start * math.cos(rlook - rep_alpha_start * rad)
+    return bpara, bperp
+
+
+# ---------------------------------------------------------- B5 poly_interp ---
+def poly_interp(orbit: np.ndarray, meta: dict, t_ref: float,
+                x0: float, y0: float, z0: float, shift: float
+                ) -> tuple[float, float]:
+    """Port of SAT_baseline.c L139-162 (poly_interp).
+
+    Samples the secondary orbit at ntt=100 times in a ±0.005 s window
+    around (t_ref + shift), computes range² to (x0, y0, z0), fits a
+    2nd-order polynomial, and extracts the vertex.
+
+        time[k] = (k - ntt/2 + 0.5) * ddt    where ddt = 0.01/ntt
+        bs[k]   = |orbit(t_ref + time[k] + shift) - (x0,y0,z0)|²
+        polyfit(time, bs, d3, ntt, 3)
+        t_out = t_ref + shift - d3[1] / (2 * d3[2])
+        b_out = sqrt(d3[0] - d3[1]² / (4 * d3[2]))
+    """
+    ntt = 100
+    ddt = 0.01 / ntt
+    k = np.arange(ntt, dtype=np.float64)
+    time_arr = (k - ntt / 2 + 0.5) * ddt
+    t_query = t_ref + time_arr + shift
+    p_arr = interpolate_SAT_orbit_slow(orbit, meta, t_query)
+    dx = p_arr[:, 0] - x0
+    dy = p_arr[:, 1] - y0
+    dz = p_arr[:, 2] - z0
+    # C: bs[k] = find_dist(...); bs[k] = bs[k] * bs[k]
+    # i.e. compute distance, square it (does NOT skip sqrt).
+    bs = dx * dx + dy * dy + dz * dz
+    bs_dist = np.sqrt(bs)  # distance
+    bs_sq = bs_dist * bs_dist  # = (sqrt(x²+y²+z²))² — 1 ULP off from x²+y²+z²
+    d3 = polyfit_c(time_arr, bs_sq, 3)
+    t_out = t_ref + shift - d3[1] / (2.0 * d3[2])
+    b_out = math.sqrt(d3[0] - d3[1] * d3[1] / 4.0 / d3[2])
+    return float(t_out), float(b_out)
+
+
+# ---------- goldop_sub: mirror SAT_llt2rat_sub.c goldop ---------------------
+# SAT_llt2rat_sub.c goldop DIFFERS from SAT_llt2rat.c goldop in TWO ways:
+#   - TOL=3  (sub.c L60)        vs TOL=2 (main.c L64)
+#   - while ((x3-x0) > TOL)     vs while ((x3-x0)>TOL && x2 != x1)  (no x2!=x1 guard)
+# Both differences land different grid points near the rng-vs-tm minimum
+# (~2 grid samples / ~2 pixels off in azimuth). The Mira #2 ancestor's
+# goldop_batch in SAT_llt2rat_py mirrors SAT_llt2rat.c — we need a
+# variant here for llt2rat_sub callers (SAT_baseline.c L447-448).
+# Mira #11 (NEW for SAT_baseline_py).
+# _R_GOLD / _C_GOLD now come from utils.vector (Mira #34) — same truncated
+# C #define values: R = 0.61803399, C = 0.382 (sum = 0.99996601, NOT 1.0).
+# Identical numeric values to the previous inline `_R_GOLD = 0.61803399`
+# and `_C_GOLD = 0.382` literals.
+
+
+def goldop_sub(orb_pos: np.ndarray, xp: float, yp: float, zp: float
+               ) -> tuple[float, float]:
+    """C-faithful scalar port of SAT_llt2rat_sub.c goldop (L185-235).
+
+    Differences vs SAT_llt2rat.c goldop (the one in SAT_llt2rat_py):
+      - TOL = 3 (not 2)
+      - while loop condition is `(x3-x0) > TOL` only — no `(x2 != x1)`
+        guard. The C SHFT3 cascade has the same OLD-value capture
+        semantics.
+      - Initial bracket uses cx = stai + (endi - stai) * C  (same as main).
+
+    Returns (rng, tm).
+    """
+    nrec = orb_pos.shape[0]
+    ax = 0
+    bx = nrec - 1
+    cx = int(ax + (bx - ax) * _C_GOLD)
+    x0 = ax
+    x3 = bx
+    if abs(bx - cx) > abs(cx - ax):
+        x1 = cx
+        x2 = cx + int(abs(_C_GOLD * (bx - cx)))
+    else:
+        x2 = cx
+        x1 = cx - int(abs(_C_GOLD * (cx - ax)))
+
+    def _dist(idx: int) -> float:
+        dx = xp - orb_pos[idx, 1]
+        dy = yp - orb_pos[idx, 2]
+        dz = zp - orb_pos[idx, 3]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    f1 = _dist(x1)
+    f2 = _dist(x2)
+
+    # Sub.c: while ((x3 - x0) > 3)  — NO x2 != x1 guard
+    TOL = 3
+    while (x3 - x0) > TOL:
+        if f2 < f1:
+            # SHFT3(x0, x1, x2, (int)(R*x3 + C*x1))
+            # cascade reads x1 AFTER it was overwritten with x2_old → uses x2_old
+            new_x0 = x1
+            new_x1 = x2
+            new_x2 = int(_R_GOLD * x3 + _C_GOLD * x2)   # OLD x2
+            x0, x1, x2 = new_x0, new_x1, new_x2
+            f1 = f2
+            f2 = _dist(x2)
+        else:
+            # SHFT3(x3, x2, x1, (int)(R*x0 + C*x2))
+            # cascade reads x2 AFTER overwrite to x1_old → uses x1_old
+            new_x3 = x2
+            new_x2 = x1
+            new_x1 = int(_R_GOLD * x0 + _C_GOLD * x1)   # OLD x1
+            x3, x2, x1 = new_x3, new_x2, new_x1
+            f2 = f1
+            f1 = _dist(x1)
+
+    if f1 < f2:
+        return f1, float(orb_pos[x1, 0])
+    return f2, float(orb_pos[x2, 0])
+
+
+# ---------------------------------------------------------- B6 llt2rat_sub ---
+def llt2rat_sub(prm: dict, orbit: np.ndarray, meta: dict,
+                target_llt: np.ndarray) -> np.ndarray:
+    """Port of SAT_llt2rat_sub.c llt2rat_sub() — projects one (lat, lon, h)
+    point into (range_pixel, azimuth_pixel, height).
+
+    Mirrors the C code line-for-line:
+      - plh2xyz on (lat, lon, h)
+      - presample orbit at ts = 2/PRF over [t1, t2] padded by ±8000*ts
+      - goldop search for closest-approach index
+      - convert (range, time) to pixel space:
+          xt[0] = (rng - near_range)/dr - (rshift + sub_int_r) + chirp_ext
+          xt[1] = PRF * (tm - t1) - (ashift + sub_int_a)
+      - Doppler correction when fd1 != 0
+      - Returns (range_pix, azi_pix, height) as a 3-vector.
+    """
+    fs = _prm_f(prm, "rng_samp_rate") or _prm_f(prm, "fs")
+    ra = _prm_f(prm, "equatorial_radius") or _prm_f(prm, "ra")
+    rc = _prm_f(prm, "polar_radius") or _prm_f(prm, "rc")
+    re_radius = (_prm_f(prm, "earth_radius") or _prm_f(prm, "RE"))
+    prf = _prm_f(prm, "PRF") or _prm_f(prm, "prf")
+    near_range = _prm_f(prm, "near_range")
+
+    dr = 0.5 * SOL / fs
+    fll = (ra - rc) / ra if ra > 0 else 0.0
+
+    # NB: llt2rat_sub uses a SHORTER t1 formula than get_seconds — it does
+    # NOT include `(ashift + sub_int_a)/PRF`. The ashift offset is folded
+    # back in at the end via `xt[1] = PRF*(tm - t1) - (ashift + sub_int_a)`.
+    # See SAT_llt2rat_sub.c L106 vs utils.c get_seconds L104. Mira #10
+    # (NEW for SAT_baseline_py): if we use get_seconds() here, master is
+    # fine (ashift=0) but aligned with ashift=1 picks up an extra 1/PRF
+    # shift in t1 → ashift output drifts by 2 px on RS2 test case.
+    nrows = _prm_i(prm, "nrows")
+    num_valid_az = _prm_i(prm, "num_valid_az")
+    num_patches = _prm_i(prm, "num_patches") or 1
+    doy = _prm_f(prm, "clock_start")
+    t1 = 86400.0 * doy + (nrows - num_valid_az) / (2.0 * prf)
+    t2 = t1 + num_patches * num_valid_az / prf
+    ts = 2.0 / prf
+
+    # Pre-sample orbit (uses synthetic-knot Hermite via meta).
+    orb_pos = presample_orbit(orbit, t1, t2, ts, npad=8000, meta=meta)
+
+    # plh2xyz with truncated π (reused from SAT_llt2rat_py)
+    rlt = float(target_llt[0])
+    rln = float(target_llt[1])
+    rht = float(target_llt[2])
+    # plh2xyz signature: (lat, lon, h, ra, fll) → (..., 3)
+    xp_arr = plh2xyz(np.array([rlt]), np.array([rln]), np.array([rht]),
+                     ra, fll)[0]
+    xp = float(xp_arr[0])
+    yp = float(xp_arr[1])
+    zp = float(xp_arr[2])
+
+    # Local height
+    h_local = math.sqrt(xp * xp + yp * yp + zp * zp) - re_radius
+
+    # Goldop search via SAT_llt2rat_sub.c-faithful goldop_sub (TOL=3, no
+    # `x2 != x1` guard). Calling SAT_llt2rat_py's `goldop_batch` here
+    # would use TOL=2 and pick a different grid point on the rep PRM
+    # (Mira #11: 2-pixel azi_pix drift → wrong ashift in baseline output).
+    rng, tm = goldop_sub(orb_pos, xp, yp, zp)
+
+    # Pixel coordinates
+    xt0 = (rng - near_range) / dr \
+        - (_prm_f(prm, "rshift") + _prm_f(prm, "sub_int_r")) \
+        + _prm_f(prm, "chirp_ext")
+    xt1 = prf * (tm - t1) - (_prm_f(prm, "ashift") + _prm_f(prm, "sub_int_a"))
+
+    # Doppler correction
+    fd1 = _prm_f(prm, "fd1")
+    if fd1 != 0.0:
+        vel = _prm_f(prm, "SC_vel") or _prm_f(prm, "vel")
+        lambda_ = _prm_f(prm, "radar_wavelength") or _prm_f(prm, "lambda")
+        rdd = (vel * vel) / rng
+        daa = -0.5 * (lambda_ * fd1) / rdd
+        drr = 0.5 * rdd * daa * daa / dr
+        daa = prf * daa
+        xt0 = xt0 + drr
+        xt1 = xt1 + daa
+
+    return np.array([xt0, xt1, h_local], dtype=np.float64)
+
+
+# ---------------------------------------------------------- B7 baseline driver ---
+def baseline(ref_prm: dict, rep_prm: dict,
+             ref_orbit: np.ndarray, ref_meta: dict,
+             rep_orbit: np.ndarray, rep_meta: dict,
+             fs0: float
+             ) -> tuple[dict, float, float]:
+    """Port of SAT_baseline.c baseline() (L165-461).
+
+    Returns the updated rep_prm dict (with all baseline keys set) and
+    the (lon_tie_point, lat_tie_point) printed alongside on stdout.
+
+    The function mutates rep_prm in place (adds bperp, bpara,
+    baseline_start/center/end, alpha_start/center/end, B_offset_*,
+    SC_vel, SC_height(*), earth_radius, rshift, ashift, etc.)
+    """
+    # Master radar times
+    t11, t12 = get_seconds(ref_prm)
+    t13 = (t11 + t12) / 2.0
+
+    dr = 0.5 * SOL / fs0
+    prf = _prm_f(ref_prm, "PRF") or _prm_f(ref_prm, "prf")
+    dt = 0.5 / prf
+    ns = int((t12 - t11) / dt)
+    dt = (t12 - t11) / (ns - 1)
+
+    sc_id = _prm_i(ref_prm, "SC_identity")
+    # C L199: ns2 = ns*0.5  (note: int truncation since ns is int and 0.5
+    # promotes to double; result back-cast to int — ns2 = ns/2)
+    ns2 = int(ns * 0.5)
+    if sc_id < 3 or sc_id == 4 or sc_id == 10:
+        ns2 = int(ns * 2)
+
+    # Reference orbit start/center/end ECEF
+    p_three = interpolate_SAT_orbit_slow(
+        ref_orbit, ref_meta, np.array([t11, t12, t13]))
+    x11, y11, z11 = float(p_three[0, 0]), float(p_three[0, 1]), float(p_three[0, 2])
+    x12, y12, z12 = float(p_three[1, 0]), float(p_three[1, 1]), float(p_three[1, 2])
+    x13, y13, z13 = float(p_three[2, 0]), float(p_three[2, 1]), float(p_three[2, 2])
+
+    # Repeat orbit times
+    t21, t22 = get_seconds(rep_prm)
+    t23 = (t21 + t22) / 2.0
+
+    # Recompute heights for rep_prm via calc_height_velocity (L230-235).
+    # The C calls overwrite rep_prm->orbdir each time with the "A"/"D"
+    # determined from vz at that time — the LAST overwrite (the t21 call)
+    # is the one get_sign sees. Mirror this so ENVI / NISAR PRMs that
+    # don't carry `orbdir` in the input file get it set from orbital
+    # mechanics, not from PRM text.
+    height, re_c, vg, vtot, rdot, orbdir_rep = calc_height_velocity(
+        rep_orbit, rep_meta, rep_prm, t22, t22)
+    rep_prm["ht_end_val"] = height + re_c - _prm_f(rep_prm, "earth_radius")
+    height, re_c, vg, vtot, rdot, orbdir_rep = calc_height_velocity(
+        rep_orbit, rep_meta, rep_prm, t23, t23)
+    rep_prm["ht_val"] = height + re_c - _prm_f(rep_prm, "earth_radius")
+    height, re_c, vg, vtot, rdot, orbdir_rep = calc_height_velocity(
+        rep_orbit, rep_meta, rep_prm, t21, t21)
+    rep_prm["ht_start_val"] = height + re_c - _prm_f(rep_prm, "earth_radius")
+    # Store the LAST orbdir update (matches C: the t21 call is last).
+    rep_prm["orbdir"] = orbdir_rep
+    # SC_vel comes from the t22 calc_height_velocity (note: this matches C
+    # ldr_orbit semantics — vg from `t22, t22` call would normally set prm
+    # vel, but in SAT_baseline.c L230-235 there's no vel-write — vel comes
+    # from the PRM as-is. So we don't overwrite SC_vel here.) The C code
+    # outputs rep.vel via write_prm_baseline; this is the SC_vel that was
+    # already in the PRM file (set by an earlier ldr_orbit pass). The local
+    # `vg` is computed and DISCARDED in SAT_baseline.c. Mirror that.
+
+    # --- Roughly compute baseline by walking the rep orbit ---
+    # Sample times: ts_k = t21 + k * dt   for k in [-ns2, ns + ns2)
+    k = np.arange(-ns2, ns + ns2, dtype=np.int64)
+    ts_all = t21 + k.astype(np.float64) * dt
+    # Interpolate repeat orbit at all these times in one call (vectorised)
+    p_rep_all = interpolate_SAT_orbit_slow(rep_orbit, rep_meta, ts_all)
+
+    # Vectorised search for min-distance index for each of 3 reference points
+    ref_pts = np.array([
+        [x11, y11, z11],
+        [x12, y12, z12],
+        [x13, y13, z13],
+    ])
+    # C scans k from -ns2 to ns+ns2 with a "less than current minimum" test.
+    # Because ds < b1 (strict less-than), the FIRST index with that minimum
+    # wins. np.argmin returns the first occurrence of the minimum too —
+    # parity match.
+    b_min = np.zeros(3, dtype=np.float64)
+    p_min_arr = np.zeros((3, 3), dtype=np.float64)
+    m_arr = np.zeros(3, dtype=np.int64)
+    for j in range(3):
+        diff = p_rep_all - ref_pts[j]
+        ds_all = np.sqrt((diff * diff).sum(axis=1))
+        idx = int(np.argmin(ds_all))
+        b_min[j] = float(ds_all[idx])
+        p_min_arr[j] = p_rep_all[idx]
+        m_arr[j] = int(k[idx])
+    b1, b2, b3 = float(b_min[0]), float(b_min[1]), float(b_min[2])
+    x21, y21, z21 = (float(p_min_arr[0, 0]), float(p_min_arr[0, 1]),
+                    float(p_min_arr[0, 2]))
+    x22, y22, z22 = (float(p_min_arr[1, 0]), float(p_min_arr[1, 1]),
+                    float(p_min_arr[1, 2]))
+    x23, y23, z23 = (float(p_min_arr[2, 0]), float(p_min_arr[2, 1]),
+                    float(p_min_arr[2, 2]))
+    m1, m2, m3 = int(m_arr[0]), int(m_arr[1]), int(m_arr[2])
+
+    # --- Polynomial-fit refinement when t11 - t21 > 10 s ---
+    rep_vel = _prm_f(rep_prm, "SC_vel") or _prm_f(rep_prm, "vel")
+    dstart = abs(t11 - t21)
+    if dstart > 10.0:
+        # b1 refine
+        ts_ref, b1 = poly_interp(rep_orbit, rep_meta, t21, x11, y11, z11,
+                                 m1 * dt)
+        p1 = interpolate_SAT_orbit_slow(rep_orbit, rep_meta, ts_ref)[0]
+        x21, y21, z21 = float(p1[0]), float(p1[1]), float(p1[2])
+        rep_prm["B_offset_start"] = (ts_ref - t21) * rep_vel
+
+        ts_ref, b2 = poly_interp(rep_orbit, rep_meta, t21, x12, y12, z12,
+                                 m2 * dt)
+        p2 = interpolate_SAT_orbit_slow(rep_orbit, rep_meta, ts_ref)[0]
+        x22, y22, z22 = float(p2[0]), float(p2[1]), float(p2[2])
+        rep_prm["B_offset_end"] = (ts_ref - t22) * rep_vel
+
+        ts_ref, b3 = poly_interp(rep_orbit, rep_meta, t21, x13, y13, z13,
+                                 m3 * dt)
+        p3 = interpolate_SAT_orbit_slow(rep_orbit, rep_meta, ts_ref)[0]
+        x23, y23, z23 = float(p3[0]), float(p3[1]), float(p3[2])
+        rep_prm["B_offset_center"] = (ts_ref - t23) * rep_vel
+    else:
+        rep_prm["B_offset_start"] = 0.0
+        rep_prm["B_offset_end"] = 0.0
+        rep_prm["B_offset_center"] = 0.0
+
+    rep_prm["baseline_start"] = b1
+    rep_prm["baseline_end"] = b2
+    rep_prm["baseline_center"] = b3
+
+    # Unit vectors at reference start/center/end (radial direction)
+    _ru1, xu1, yu1, zu1 = find_unit_vectors(x11, y11, z11)
+    _ru2, xu2, yu2, zu2 = find_unit_vectors(x12, y12, z12)
+    _ru3, xu3, yu3, zu3 = find_unit_vectors(x13, y13, z13)
+
+    # Signs from orbit/look direction. C SAT_baseline.c L351-353:
+    #   get_sign(r[ii], ...)  — uses REP PRM's orbdir/lookdir (NOT ref's).
+    # ENVI / NISAR PRMs may omit `orbdir` entirely; C's null_sio_struct
+    # then leaves it as "XXXXXXXX" (gmtsar.h:52 #define NULL_CHAR). In
+    # that case `strncmp(orbdir, "D", 1) != 0` → sign stays positive.
+    # We mirror by passing empty string and letting startswith("D")
+    # return False.
+    orbdir = _prm_s(rep_prm, "orbdir")
+    lookdir = _prm_s(rep_prm, "lookdir")
+    sign1 = get_sign(orbdir, lookdir, x11, y11, x21, y21)
+    sign2 = get_sign(orbdir, lookdir, x12, y12, x22, y22)
+    sign3 = get_sign(orbdir, lookdir, x13, y13, x23, y23)
+
+    # Vertical / horizontal baseline components (C L356-363, left-assoc)
+    bv1 = (x21 - x11) * xu1 + (y21 - y11) * yu1 + (z21 - z11) * zu1
+    bh1 = sign1 * math.sqrt(b1 * b1 - bv1 * bv1)
+    bv2 = (x22 - x12) * xu2 + (y22 - y12) * yu2 + (z22 - z12) * zu2
+    bh2 = sign2 * math.sqrt(b2 * b2 - bv2 * bv2)
+    bv3 = (x23 - x13) * xu3 + (y23 - y13) * yu3 + (z23 - z13) * zu3
+    bh3 = sign3 * math.sqrt(b3 * b3 - bv3 * bv3)
+
+    rep_prm["alpha_start"] = find_alpha_degrees(bv1, bh1)
+    rep_prm["alpha_end"] = find_alpha_degrees(bv2, bh2)
+    rep_prm["alpha_center"] = find_alpha_degrees(bv3, bh3)
+
+    # bpara / bperp
+    bpara, bperp = find_parallel_perp_baseline(
+        ref_prm, rep_prm, dr,
+        rep_baseline_start=b1,
+        rep_alpha_start=rep_prm["alpha_start"])
+    rep_prm["bpara"] = bpara
+    rep_prm["bperp"] = bperp
+
+    # --- More accurate (rshift, ashift) via tie-point projection ---
+    # C L390-451: orbit at t_sta = t11 + 2.0, t_vel = t11 + 2.1, build a
+    # rotation matrix radar→ECEF, shoot the look vector forward to ground.
+    p_sta = interpolate_SAT_orbit_slow(
+        ref_orbit, ref_meta, np.array([t11 + 2.0]))[0]
+    x_sta, y_sta, z_sta = float(p_sta[0]), float(p_sta[1]), float(p_sta[2])
+
+    re_ref = _prm_f(ref_prm, "earth_radius")
+    near_range = _prm_f(ref_prm, "near_range")
+    num_rng_bins = _prm_i(ref_prm, "num_rng_bins")
+    far_range = near_range + dr * num_rng_bins
+    rho = (near_range + far_range) / 2.0
+    b_orb = _prm_f(ref_prm, "SC_height") + re_ref
+    theta = math.acos((b_orb * b_orb + rho * rho - re_ref * re_ref)
+                      / 2.0 / b_orb / rho)
+
+    radar_look = np.array([0.0, math.cos(theta), -math.sin(theta)])
+    if lookdir.startswith("L"):
+        radar_look[2] = math.sin(theta)
+
+    _ru33, xu33, yu33, zu33 = find_unit_vectors(x_sta, y_sta, z_sta)
+    o1y = np.array([-xu33, -yu33, -zu33])
+
+    p_vel = interpolate_SAT_orbit_slow(
+        ref_orbit, ref_meta, np.array([t11 + 2.1]))[0]
+    x_vel, y_vel, z_vel = float(p_vel[0]), float(p_vel[1]), float(p_vel[2])
+    _ru4, xu4, yu4, zu4 = find_unit_vectors(x_vel - x_sta, y_vel - y_sta,
+                                            z_vel - z_sta)
+    o1x = np.array([xu4, yu4, zu4])
+    o1z = cross3(o1x, o1y)
+
+    glob_look = np.array([
+        radar_look[0] * o1x[0] + radar_look[1] * o1y[0] + radar_look[2] * o1z[0],
+        radar_look[0] * o1x[1] + radar_look[1] * o1y[1] + radar_look[2] * o1z[1],
+        radar_look[0] * o1x[2] + radar_look[1] * o1y[2] + radar_look[2] * o1z[2],
+    ])
+    target = np.array([
+        x_sta + glob_look[0] * rho,
+        y_sta + glob_look[1] * rho,
+        z_sta + glob_look[2] * rho,
+    ])
+
+    ra = _prm_f(ref_prm, "equatorial_radius") or _prm_f(ref_prm, "ra")
+    rc_ref = _prm_f(ref_prm, "polar_radius") or _prm_f(ref_prm, "rc")
+    fll = (ra - rc_ref) / ra
+    target_llt = xyz2plh(target, ra, fll)
+    lon_tie = target_llt[1]
+    lat_tie = target_llt[0]
+    # Match C: `printf("lon_tie_point =  %f\n",
+    #   (target_llt[1] > 180.0) ? target_llt[1] - 360.0 : target_llt[1]);`
+    lon_tie_out = lon_tie - 360.0 if lon_tie > 180.0 else lon_tie
+
+    # llt2rat_sub on master and aligned to get reference + repeat pixel coords
+    target_rat_ref = llt2rat_sub(ref_prm, ref_orbit, ref_meta, target_llt)
+    target_rat_rep = llt2rat_sub(rep_prm, rep_orbit, rep_meta, target_llt)
+    # rshift, ashift are written as integers in C (printf "%d"). C uses
+    # truncation on the implicit float->int cast in struct PRM; rep.rshift
+    # is declared int in lib_functions.h, so the assignment
+    # `r[ii].rshift = target_rat_rep[0] - target_rat_ref[0]`
+    # truncates toward zero. Mirror this.
+    rep_prm["rshift_val"] = int(target_rat_rep[0] - target_rat_ref[0])
+    rep_prm["ashift_val"] = int(target_rat_rep[1] - target_rat_ref[1])
+
+    return rep_prm, lon_tie_out, lat_tie
+
+
+# ---------------------------------------------------------- B8 output ---
+def write_prm_baseline(rep_prm: dict) -> str:
+    """Port of SAT_baseline.c write_prm_baseline (L541-562).
+
+    The C printf format strings are reproduced byte-exact, including
+    trailing spaces before `\\n` on every line EXCEPT `ashift` which is
+    `"%d\\n"` (no trailing space).
+    """
+    out = []
+    # NB: %.12f matches C printf("%.12f", x) — 12 digits after the
+    # decimal point, default rounding. Python's "%.12f" % x is byte-
+    # identical to C's printf("%.12f", x) for IEEE-754 doubles.
+    vel = _prm_f(rep_prm, "SC_vel") or _prm_f(rep_prm, "vel")
+    out.append("SC_vel              = %.12f \n" % vel)
+    out.append("SC_height           = %.12f \n" % rep_prm["ht_val"])
+    out.append("SC_height_start     = %.12f \n" % rep_prm["ht_start_val"])
+    out.append("SC_height_end       = %.12f \n" % rep_prm["ht_end_val"])
+    out.append("earth_radius        = %.12f \n" % _prm_f(rep_prm, "earth_radius"))
+    out.append("rshift              = %d \n" % rep_prm["rshift_val"])
+    out.append("sub_int_r           = 0.0 \n")
+    out.append("ashift              = %d\n" % rep_prm["ashift_val"])
+    out.append("sub_int_a           = 0.0 \n")
+    out.append("B_parallel          = %.12f \n" % rep_prm["bpara"])
+    out.append("B_perpendicular     = %.12f \n" % rep_prm["bperp"])
+    out.append("baseline_start      = %.12f \n" % rep_prm["baseline_start"])
+    out.append("baseline_center     = %.12f \n" % rep_prm["baseline_center"])
+    out.append("baseline_end        = %.12f \n" % rep_prm["baseline_end"])
+    out.append("alpha_start         = %.12f \n" % rep_prm["alpha_start"])
+    out.append("alpha_center        = %.12f \n" % rep_prm["alpha_center"])
+    out.append("alpha_end           = %.12f \n" % rep_prm["alpha_end"])
+    out.append("B_offset_start      = %.12f \n" % rep_prm["B_offset_start"])
+    out.append("B_offset_center     = %.12f \n" % rep_prm["B_offset_center"])
+    out.append("B_offset_end        = %.12f \n" % rep_prm["B_offset_end"])
+    return "".join(out)
+
+
+def _load_orbit_for_prm(prm_path: str) -> tuple[dict, np.ndarray, dict]:
+    """Read a PRM file and its companion LED file. Returns
+    (prm_dict, orbit_array, meta_dict)."""
+    prm = read_prm(prm_path)
+    led_path = _prm_s(prm, "led_file")
+    if not led_path:
+        led_path = prm.get("led_file", "").split()[0]
+    if not os.path.isabs(led_path):
+        led_path = os.path.join(os.path.dirname(prm_path), led_path)
+    meta, orbit = read_led(led_path)
+    return prm, orbit, meta
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("prm_master")
+    p.add_argument("prm_aligned")
+    ns = p.parse_args(argv)
+
+    # C SAT_baseline.c baseline_parse_command_line L484 prints this line
+    # when not in `-input` mode. Mirror for stderr-parity tests.
+    sys.stderr.write("using command line\n")
+
+    ref_prm, ref_orbit, ref_meta = _load_orbit_for_prm(ns.prm_master)
+    rep_prm, rep_orbit, rep_meta = _load_orbit_for_prm(ns.prm_aligned)
+
+    # Check rng_samp_rate consistency (C: warns on mismatch but continues)
+    fs0 = _prm_f(ref_prm, "rng_samp_rate") or _prm_f(ref_prm, "fs")
+    fs_rep = _prm_f(rep_prm, "rng_samp_rate") or _prm_f(rep_prm, "fs")
+    if fs_rep != fs0:
+        sys.stderr.write(
+            "\nWARNING:\nRange_sampling_rate is not consistent.\nYou "
+            "need to do FBD/FBS conversion.\n\n")
+
+    # Stderr matches C SAT_baseline.c L124-126
+    sys.stderr.write("......master LED file %s \n"
+                     % _prm_s(ref_prm, "led_file"))
+    sys.stderr.write(".........aligned LED file %s \n"
+                     % _prm_s(rep_prm, "led_file"))
+
+    sc_id = _prm_i(ref_prm, "SC_identity")
+    sys.stdout.write("SC_identity = %d \n" % sc_id)
+
+    # Run baseline calculation
+    rep_prm, lon_tie, lat_tie = baseline(
+        ref_prm, rep_prm, ref_orbit, ref_meta, rep_orbit, rep_meta, fs0)
+
+    # C printf uses "%f" for lon/lat tie point (6 decimals).
+    # Matches: printf("lon_tie_point =  %f\n", ...)
+    sys.stdout.write("lon_tie_point =  %f\n" % lon_tie)
+    sys.stdout.write("lat_tie_point =  %f\n" % lat_tie)
+
+    sys.stdout.write(write_prm_baseline(rep_prm))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

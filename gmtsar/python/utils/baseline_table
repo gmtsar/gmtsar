@@ -111,7 +111,7 @@ def baseline_table():
     # and greps it. We can capture stdout directly.
     import subprocess
     result = subprocess.run(
-        ["SAT_baseline", master_prm, aligned_prm],
+        ["SAT_baseline_py", master_prm, aligned_prm],
         check=False, stdout=subprocess.PIPE
     )
     if result.returncode != 0:

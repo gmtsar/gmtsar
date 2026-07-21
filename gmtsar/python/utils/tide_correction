@@ -9,11 +9,108 @@ correction in radians.
 Usage:  tide_correction PRM1 PRM2 dem.grd
 Output: tide.grd (radar coordinates, range × azimuth, in radians)
 """
+import os
 import sys
+
+import numpy as _np
+
 from gmtsar_lib import run, grep_value
+
+# In-process gmt surface replacement (gmt_surface_py + gmt_grd_io).
+# Gated by GMTSAR_SURFACE_INPROC=1 (default ON since v2.3.0).
+# Set GMTSAR_SURFACE_INPROC=0 to fall back to the gmt subprocess.
+try:
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gmt_surface_py import gmt_surface_py as _surface_inproc
+    import gmt_grd_io as _grd_io
+    _HAVE_GMT_GRD_IO = True
+except Exception as _e:
+    _HAVE_GMT_GRD_IO = False
+
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the `dem -I0.02/0.02` downsample below. A/B vs
+# `gmt grdsample` is byte-identical (max|diff| = 0, NaN-footprint
+# identical) on a real geographic DEM. Default ON; set
+# GMTSAR_GRDSAMPLE_PY=0 to force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+# Mira GMTSAR_BLOCKMEDIAN_PY wire-in: in-process gmt_blockmedian_py via the
+# blockmedian_wrapper for the `topo.rad -I200/50 -r` ASCII blockmedian
+# below. A/B vs `gmt blockmedian -r` is byte-identical (ASCII %.12g TAB
+# output matches gmt's FORMAT_FLOAT_OUT). Default ON; set
+# GMTSAR_BLOCKMEDIAN_PY=0 to force the gmt subprocess.
+try:
+    from blockmedian_wrapper import blockmedian as _blockmedian_py
+    _HAVE_BLOCKMEDIAN_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_BLOCKMEDIAN_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
+def _blockmedian_py_on() -> bool:
+    return _HAVE_BLOCKMEDIAN_PY and os.environ.get("GMTSAR_BLOCKMEDIAN_PY", "1") == "1"
+
+
+def _surface_inproc_ascii(xyz_path: str, region_str: str, inc_str: str,
+                           tension: float, out_path: str,
+                           pixel_reg: bool = False) -> None:
+    """In-process replacement for:
+        gmt surface <xyz_path> -R<region> -I<inc> -T<tension> [-r] -G<out>
+
+    Reads xyz_path (ASCII 3-column: x y z), invokes gmt_surface_py, and
+    writes the result via gmt_grd_io.write_gmt_grd.
+
+    Raises on failure — no silent fallback (Rule 12).
+    """
+    parts = region_str.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"tide_correction: bad region '{region_str}'")
+    x0, x1, y0, y1 = (float(p) for p in parts)
+    inc_parts = inc_str.split("/")
+    if len(inc_parts) == 1:
+        dx = dy = float(inc_parts[0])
+    else:
+        dx, dy = float(inc_parts[0]), float(inc_parts[1])
+
+    data = _np.loadtxt(xyz_path, dtype=_np.float64)
+    if data.ndim != 2 or data.shape[1] < 3:
+        raise ValueError(f"tide_correction: {xyz_path} must have >= 3 columns")
+    x, y, z = data[:, 0], data[:, 1], data[:, 2]
+
+    grid = _surface_inproc(
+        x, y, z,
+        region=(x0, x1, y0, y1),
+        inc=(dx, dy),
+        tension=tension,
+        max_iter=500,
+        pixel_reg=pixel_reg,
+    )
+    ny, nx = grid.shape
+    if pixel_reg:
+        x_coord = x0 + dx / 2.0 + _np.arange(nx) * dx
+        y_coord = y0 + dy / 2.0 + _np.arange(ny) * dy
+        node_offset = 1
+    else:
+        x_coord = x0 + _np.arange(nx) * dx
+        y_coord = y0 + _np.arange(ny) * dy
+        node_offset = 0
+    history = f"gmt_surface_py (-T{tension}) -I{inc_str}"
+    _grd_io.write_gmt_grd(out_path, grid, x_coord, y_coord,
+                          node_offset=node_offset, history=history)
 
 
 def tide_correction():
+    inproc = (os.environ.get("GMTSAR_SURFACE_INPROC", "1") == "1"
+              and _HAVE_GMT_GRD_IO)
+
     if len(sys.argv) < 4:
         sys.exit(
             "Usage: tide_correction PRM1 PRM2 dem.grd\n"
@@ -29,7 +126,12 @@ def tide_correction():
     tt2  = grep_value(prm2, "SC_clock_start", 3)
     print(f"Computing tidal correction for dates {tt1} {tt2} ...")
 
-    run(f"gmt grdsample {dem} -I{inc1} -Gtmp_dem.grd")
+    if _grdsample_py_on():
+        _inc1 = inc1.split("/")
+        _grdsample_py(dem, "tmp_dem.grd",
+                      x_inc=float(_inc1[0]), y_inc=float(_inc1[-1]))
+    else:
+        run(f"gmt grdsample {dem} -I{inc1} -Gtmp_dem.grd")
     run("gmt grd2xyz tmp_dem.grd | awk '{print $1,$2}' > topo.ll")
     run(f"solid_tide {tt1} < topo.ll > topo1.llenu")
     run(f"solid_tide {tt2} < topo.ll > topo2.llenu")
@@ -49,8 +151,16 @@ def tide_correction():
     # -ph_correction = -tide_LOS * 4π / λ
     run(f"paste topo.ratll topo.d | "
         f"awk '{{printf(\"%.6f %.6f %.12f\\n\", $1,$2,-$6*2.0*2.0*3.141592653/{wave})}}' > topo.rad")
-    run(f"gmt blockmedian topo.rad -R0/{rng}/0/{azi} -I{inc2} -r > tmp.rad")
-    run(f"gmt surface tmp.rad -R0/{rng}/0/{azi} -I{inc2} -T0.5 -r -Gtide.grd")
+    if _blockmedian_py_on():
+        _blockmedian_py("topo.rad", "tmp.rad",
+                        region=f"0/{rng}/0/{azi}", inc=inc2)
+    else:
+        run(f"gmt blockmedian topo.rad -R0/{rng}/0/{azi} -I{inc2} -r > tmp.rad")
+    if inproc:
+        _surface_inproc_ascii("tmp.rad", f"0/{rng}/0/{azi}", inc2,
+                              0.5, "tide.grd", pixel_reg=True)
+    else:
+        run(f"gmt surface tmp.rad -R0/{rng}/0/{azi} -I{inc2} -T0.5 -r -Gtide.grd")
 
     run("rm -f tmp_dem.grd tmp.rad topo*")
 

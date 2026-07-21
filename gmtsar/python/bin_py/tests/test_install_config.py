@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""test_install_config.py — cheap, static regression guards for install.py's
+config constants. No conda/network/subprocess needed (milliseconds), so
+these run on every pytest pass and catch a real bug from silently coming
+back if someone edits a version pin or a dependency list without
+re-running a full clean-room test_install.py verification.
+
+Each guard here maps to a real bug found by a genuine clean-room run on
+2026-07-14 -- see install.py's own comments for the full incident writeup.
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+_UTILS = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_UTILS))
+
+import install  # noqa: E402
+
+
+def test_hdf5_pinned_to_1_12_not_1_14_plus():
+    """conda-forge's HDF5 1.14.3 h5cc fails this repo's own configure.ac/
+    ax_lib_hdf5.m4 compile-test, producing a broken HDF5_LIBS (missing
+    the base -lhdf5/-lhdf5_cpp) that fails to LINK make_slc_nsr/
+    make_slc_csk entirely. 1.12.x is proven working."""
+    hdf5_pins = [p for p in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
+                 if p.startswith("hdf5")]
+    assert hdf5_pins, "hdf5 must be in CONDA_FORGE_BOOTSTRAP_PACKAGES"
+    assert hdf5_pins[0] == "hdf5=1.12.*", (
+        f"hdf5 pin changed to {hdf5_pins[0]!r} -- if this wasn't "
+        "deliberately re-verified against a real clean-room build "
+        "(test_install.py --system conda --full), it will silently "
+        "reintroduce the 1.14.x link failure")
+
+
+def test_flex_in_apt_system_deps():
+    """preproc/ERS_preproc/ers_line_fixer/ers_line_fixer.l is the only
+    .l/.y source in the repo and needs flex/lex to generate its .c file.
+    Without it: silent empty .c, compiles fine, fails to LINK with
+    'undefined reference to main' -- no obvious connection to "flex is
+    missing" from the error text alone."""
+    assert "flex" in install.APT_SYSTEM_DEPS
+
+
+def test_flex_bootstrapped_via_conda_and_lex_overridden():
+    """flex is missing from a real host's system PATH even after being
+    documented as 'assumed present' -- confirmed live (--system conda,
+    ERS_Hector_EQ zero-comparison failure). Since flex has no ABI/
+    linkage implications (unlike gfortran/g++, which deliberately stay
+    system-provided), it's bootstrapped via conda-forge directly. But
+    GNU Make's implicit .l.c rule invokes $(LEX), which defaults to the
+    LITERAL name "lex" -- not "flex" -- so conda-forge's flex package
+    must ALSO be paired with an explicit LEX=flex override; otherwise
+    installing flex alone doesn't guarantee `make`'s lex rule finds it
+    (no lex-alias guarantee across conda-forge builds/channels)."""
+    assert "flex" in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
+    import inspect
+    src = inspect.getsource(install.do_conda_setup)
+    assert '"LEX": "flex"' in src
+
+
+def test_conda_setup_extra_env_includes_path():
+    """do_conda_setup()'s extra_env must prepend the conda env's own
+    bin/ to PATH -- otherwise configure's HDF5 detection (which shells
+    out to find h5cc/h5pcc via a plain PATH search, not CPPFLAGS/
+    LDFLAGS) can silently resolve an unrelated conda install's h5cc on
+    a host with multiple conda installs on PATH, producing a header/
+    library version mismatch with no hard error until run time."""
+    import inspect
+    src = inspect.getsource(install.do_conda_setup)
+    assert '"PATH"' in src, (
+        "do_conda_setup no longer sets PATH in extra_env -- this will "
+        "silently reintroduce the h5cc-resolves-to-the-wrong-conda-"
+        "install bug")
+
+
+def test_gshhg_gmt_not_gshhg_gmt_nc4():
+    """gshhg-gmt-nc4 is not a real conda-forge package name -- `conda
+    create` fails outright with PackagesNotFoundError on a truly fresh
+    env. The correct package is gshhg-gmt."""
+    assert "gshhg-gmt" in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
+    assert "gshhg-gmt-nc4" not in install.CONDA_FORGE_BOOTSTRAP_PACKAGES
+
+
+def test_defuse_fake_lex_sources_exists_and_runs_in_do_build():
+    """preproc/ERS_preproc/ers_line_fixer/ers_line_fixer.l is a troff man
+    page, not lex source, but shares a basename with the real committed
+    ers_line_fixer.c. GNU Make's implicit `.l.c:` rule can fire whenever
+    it thinks .l is newer than .c (confirmed live twice: once via mtime
+    ordering after a fresh git clone, and again even after touching .c
+    forward -- most likely NFS attribute-cache staleness defeating the
+    touch), destroying the real source and cascading into
+    ERS_Hector_EQ failing downstream with zero comparisons. do_build()
+    must call the defuse step before running make."""
+    import inspect
+    assert hasattr(install, "_defuse_fake_lex_sources")
+    do_build_src = inspect.getsource(install.do_build)
+    assert "_defuse_fake_lex_sources()" in do_build_src
+
+
+def test_defuse_fake_lex_sources_renames_the_l_file(tmp_path):
+    """Functional check (not just a call-site check): given a fixture .l
+    file with a real .c sibling, _defuse_fake_lex_sources() must rename
+    the .l file so it can never match Make's `%.l` implicit-rule
+    pattern again -- mtime-based fixes were tried first and proved
+    unreliable (see the function's own docstring), so this test
+    specifically checks the rename outcome, not a timestamp."""
+    sub = tmp_path / "preproc" / "ERS_preproc" / "ers_line_fixer"
+    sub.mkdir(parents=True)
+    c_file = sub / "ers_line_fixer.c"
+    l_file = sub / "ers_line_fixer.l"
+    c_file.write_text("int main(){return 0;}")
+    l_file.write_text(".TH fake manpage")
+
+    orig_repo_root = install.REPO_ROOT
+    install.REPO_ROOT = tmp_path
+    try:
+        install._defuse_fake_lex_sources()
+    finally:
+        install.REPO_ROOT = orig_repo_root
+
+    assert not l_file.exists(), ".l file must no longer exist under its original name"
+    renamed = sub / "ers_line_fixer.l.not-lex-source"
+    assert renamed.is_file(), "renamed file must exist"
+    assert c_file.is_file(), "the real .c source must be untouched"
+    assert c_file.read_text() == "int main(){return 0;}"
+
+
+def test_defuse_fake_lex_sources_works_when_repo_root_under_work_dir(tmp_path):
+    """Real bug found live (2026-07-14): the skip-guard used to do a
+    substring check ("/work/" in str(l_file)) against the ABSOLUTE
+    path, meant to skip files under a repo's own work/ subdirectory.
+    But test_install.py's own clean-room clones live under
+    gmtsar/python/work/install_test/clone_.../ -- REPO_ROOT itself
+    nested under a directory named "work" -- so EVERY file's absolute
+    path matched that substring, silently skipping the real fix on
+    every single test run while never affecting a normal user's clone
+    (which has no "work" in its path). The first functional test above
+    used tmp_path, which happens not to contain "/work/", so it never
+    caught this. This test deliberately nests the fixture repo under a
+    "work" directory to reproduce the exact failure mode."""
+    fake_repo = tmp_path / "work" / "install_test" / "clone_fake"
+    sub = fake_repo / "preproc" / "ERS_preproc" / "ers_line_fixer"
+    sub.mkdir(parents=True)
+    c_file = sub / "ers_line_fixer.c"
+    l_file = sub / "ers_line_fixer.l"
+    c_file.write_text("int main(){return 0;}")
+    l_file.write_text(".TH fake manpage")
+
+    orig_repo_root = install.REPO_ROOT
+    install.REPO_ROOT = fake_repo
+    try:
+        install._defuse_fake_lex_sources()
+    finally:
+        install.REPO_ROOT = orig_repo_root
+
+    assert not l_file.exists(), (
+        "still not renamed when REPO_ROOT is nested under a 'work' dir "
+        "-- the substring-vs-path-component bug is back")
+    assert (sub / "ers_line_fixer.l.not-lex-source").is_file()
+
+
+def test_phasefilt_py_in_bin_py_names():
+    """phasefilt_py was MISSING from BIN_PY_NAMES -- utils/filter:275
+    calls `run('phasefilt_py ' + args)` by bare name, so every fresh
+    install broke on the filter pipeline stage (rc=127; fails loudly
+    since gmtsar_lib.run() raises on rc=127). Invisible on the dev host
+    only because its bin/phasefilt_py symlink predated this rewrite."""
+    assert "phasefilt_py" in install.BIN_PY_NAMES
+
+
+def test_bin_py_names_covers_every_bare_name_call_site():
+    """General regression guard, not just phasefilt_py specifically:
+    grep every bin_py/*_py tool against every bare `run(f"<name> ...")`/
+    subprocess `['<name>', ...]` call site in utils/, and assert every
+    tool that's actually invoked by bare name is in BIN_PY_NAMES. This
+    is the exact audit done by hand on 2026-07-14 that found the
+    phasefilt_py gap, now automated so a NEW bare-name call site
+    without a matching BIN_PY_NAMES entry fails a test instead of
+    silently breaking a fresh install."""
+    import re
+    utils_dir = _UTILS / "utils"
+    bin_py_dir = _UTILS / "bin_py"
+    tool_names = sorted(p.name for p in bin_py_dir.glob("*_py") if p.is_file())
+    assert tool_names, "no bin_py/*_py tools found -- check test setup"
+
+    missing = []
+    for name in tool_names:
+        # \b on BOTH sides -- without the leading boundary, "surface_py"
+        # would wrongly match inside "gmt_surface_py" (a DIFFERENT,
+        # unrelated in-process module referenced only in comments).
+        pat = re.compile(r"\b" + re.escape(name) + r"\b")
+        invoked_bare = False
+        for f in utils_dir.glob("*"):
+            if not f.is_file():
+                continue
+            try:
+                text = f.read_text(errors="ignore")
+            except Exception:
+                continue
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue  # comment-only line, not a real call site
+                if pat.search(line) and ("run(" in line or "subprocess" in line):
+                    invoked_bare = True
+                    break
+            if invoked_bare:
+                break
+        if invoked_bare and name not in install.BIN_PY_NAMES:
+            missing.append(name)
+
+    assert not missing, (
+        f"{missing} are invoked by bare name in utils/ but missing from "
+        "BIN_PY_NAMES -- a fresh install will fail with rc=127 the first "
+        "time this pipeline stage runs")
+
+
+def test_pytest_in_requirements_txt():
+    """A fresh --system conda install had no way to run bin_py/tests/ at
+    all without a manual `pip install pytest` -- requirements.txt never
+    listed it, even though running that suite is part of the documented
+    dev workflow (README.md's "Testing for developers")."""
+    requirements = (_UTILS / "requirements.txt").read_text()
+    assert re.search(r"^pytest\b", requirements, re.MULTILINE), (
+        "pytest missing from requirements.txt -- a fresh install can't "
+        "run its own test suite")
+
+
+def test_locate_conda_env_creates_when_missing_at_resolved_base(tmp_path, monkeypatch):
+    """locate_conda_env() used to only ever FIND an existing env under
+    the fixed CONDA_SEARCH_BASES list and error if missing, assuming a
+    pre-populated env. It must now CREATE the env via `conda create`
+    when missing, using whatever conda_base locate_conda_base()
+    resolves -- which may be OUTSIDE CONDA_SEARCH_BASES (see the next
+    test for the specific bug that caused)."""
+    fake_conda_base = tmp_path / "fakeconda"
+    (fake_conda_base / "bin").mkdir(parents=True)
+    conda_bin = fake_conda_base / "bin" / "conda"
+    conda_bin.write_text("#!/bin/sh\necho fake\n")
+    conda_bin.chmod(0o755)
+
+    monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
+    monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == [str(conda_bin), "create"]:
+            (fake_conda_base / "envs" / "gmtsar_regress_test").mkdir(parents=True)
+    monkeypatch.setattr(install, "run", fake_run)
+
+    prefix = install.locate_conda_env("gmtsar_regress_test")
+    assert prefix == fake_conda_base / "envs" / "gmtsar_regress_test"
+    assert calls, "conda create was never invoked"
+    assert "conda-forge" in calls[0]
+
+
+def test_locate_conda_env_finds_env_outside_conda_search_bases(tmp_path, monkeypatch):
+    """Real bug: the post-`conda create` existence check used to
+    re-scan the fixed CONDA_SEARCH_BASES list instead of looking under
+    the SAME conda_base locate_conda_base() actually resolved -- on a
+    host with multiple conda installs (this dev host has 50+), the env
+    genuinely got created but the check couldn't find it, incorrectly
+    erroring "conda create exited 0 but the env still doesn't exist"
+    on a real success. Also covers the case where the env already
+    exists under a non-standard base (no create should be attempted)."""
+    fake_conda_base = tmp_path / "fakeconda"
+    (fake_conda_base / "envs" / "gmtsar_existing").mkdir(parents=True)
+    (fake_conda_base / "bin").mkdir()
+    (fake_conda_base / "bin" / "conda").write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
+    monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+
+    calls = []
+    monkeypatch.setattr(install, "run", lambda cmd, **kw: calls.append(cmd))
+
+    prefix = install.locate_conda_env("gmtsar_existing")
+    assert prefix == fake_conda_base / "envs" / "gmtsar_existing"
+    assert not calls, "should NOT have called conda create -- env already exists"
+
+
+if __name__ == "__main__":
+    import pytest
+    sys.exit(pytest.main([__file__, "-v"]))

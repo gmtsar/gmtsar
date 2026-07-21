@@ -16,9 +16,50 @@ getIntfSubDirName) used by multiple stages.
 
 Imported into the p2p_processing entry script via `from p2p_stages import *`.
 """
+import shutil
 import sys, os, re
 import subprocess, glob
+import time
 from gmtsar_lib import *
+from phase_profile import time_run, _BINARY_TIMES
+from snaphu import snaphu_unwrap, snaphu_interp_unwrap
+from grdsample_wrapper import grdsample as _grdsample_inproc
+
+
+def _snaphu_py_enabled():
+    """Native Python snaphu wrapper is ON by default. `GMTSAR_SNAPHU_PY=0`
+    reverts to the legacy `snaphu.py` shell shim — useful for A/B parity
+    debugging if a regression is suspected."""
+    return os.environ.get("GMTSAR_SNAPHU_PY", "1") != "0"
+
+
+def _iono_py_enabled():
+    """Python `estimate_ionospheric_phase` wrapper is ON by default.
+    `GMTSAR_IONO_PY=0` reverts to upstream `estimate_ionospheric_phase.csh`
+    for A/B parity debugging. The Python wrapper preserves byte-identity
+    to csh by delegating the math to the same `gmt grdmath/grdfilter/surface`
+    subprocess chain — see Mira parity-investigation note in
+    `utils/estimate_ionospheric_phase` for why `scipy.ndimage` was NOT
+    substituted for `gmt grdfilter -Fg`. The iono path is not exercised
+    by the regression test sweep (Rule 8.8 carve-out: documented gap)."""
+    return os.environ.get("GMTSAR_IONO_PY", "1") != "0"
+
+
+def _call_snaphu(threshold, defomax, near_interp):
+    """Dispatch to native Python snaphu (default) or shell shim (env override).
+    Either path is timed under the `snaphu` profiler bucket so phase timings
+    stay comparable across A/B runs."""
+    if _snaphu_py_enabled():
+        t0 = time.time()
+        try:
+            if near_interp == 1:
+                return snaphu_interp_unwrap(threshold, defomax)
+            return snaphu_unwrap(threshold, defomax)
+        finally:
+            _BINARY_TIMES.setdefault("snaphu", []).append(time.time() - t0)
+    interp_flag = 1 if near_interp == 1 else 0
+    time_run(f"snaphu.py {threshold} {defomax} {interp_flag}", "snaphu")
+    return None
 
 
 
@@ -98,7 +139,7 @@ def P2P1Preprocess(SAT, master, aligned, skip_master, cmdAppendix):
         run(f"pre_proc_nsr {sys.argv2}.h5 ../config.py")
         run(f"pre_proc_nsr {sys.argv3}.h5 ../config.py")
     else:
-        run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix)
+        time_run('pre_proc '+SAT +' '+master+' '+aligned+' '+cmdAppendix, "pre_proc")
 
     print('P2P 1: exiting directory raw/')
     os.chdir('..')
@@ -188,7 +229,7 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
     other SATs use default xcorr params, with fitoffset polynomial degree 3
     for .raw-input SATs and 2 for everything else."""
     if SAT == "ALOS2_SCAN":
-        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM {_XCORR_ALOS2_SCAN_PARAMS}", "xcorr_py")
         # Median-filter the azimuth-shift column of freq_xcorr.dat, keep rows
         # within median±3, then fit a 2-rng/3-az polynomial with SNR≥10.
         # Mirrors gmtsar/csh/align_ALOS2_SCAN.csh lines 80-86.
@@ -204,10 +245,10 @@ def _xcorr_and_fitoffset(SAT, master, aligned):
         # 40x40 grid and fitoffset_ra with 10/10 polynomial.
         run("rm -f amp*.grd")
         run(f"slc2amp {master}.PRM 4 amp-{master}.grd")
-        run(f"xcorr {master}.PRM {aligned}.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40")
-        run("fitoffset_ra 10 10 freq_xcorr.dat 20")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40", "xcorr_py")
+        time_run("fitoffset_ra 10 10 freq_xcorr.dat 20", "fitoffset_ra")
     else:
-        run(f"xcorr {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}")
+        time_run(f"xcorr_py {master}.PRM {aligned}.PRM {_XCORR_DEFAULT_PARAMS}", "xcorr_py")
         fit_dim = "3 3" if SAT in _SAT_RAW_INPUT else "2 2"
         run(f"fitoffset.py {fit_dim} freq_xcorr.dat 18 >> {aligned}.PRM")
 
@@ -217,9 +258,9 @@ def _resamp_and_swap(master, aligned, SAT=None):
     For NSR_A/NSR_B: uses resamp factor 5 with r.grd/a.grd alignment grids
     (produced by fitoffset_ra). Other SATs use factor 4 without those grids."""
     if SAT in _NSR_FAMILY:
-        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 5 r.grd a.grd")
+        time_run(f"resamp_py {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 5 r.grd a.grd", "resamp_py")
     else:
-        run(f"resamp {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4")
+        time_run(f"resamp_py {master}.PRM {aligned}.PRM {aligned}.PRMresamp {aligned}.SLCresamp 4", "resamp_py")
     delete(f"{aligned}.SLC")
     file_shuttle(f"{aligned}.SLCresamp", f"{aligned}.SLC", 'mv')
     file_shuttle(f"{aligned}.PRMresamp", f"{aligned}.PRM", 'cp')
@@ -312,7 +353,7 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
 
         if skip_master in (0, 1):
             file_shuttle(f"{aligned}.PRM", f"{aligned}.PRM0", 'cp')
-            run(f"SAT_baseline {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
+            run(f"SAT_baseline_py {master}.PRM {aligned}.PRM0 >> {aligned}.PRM")
             _xcorr_and_fitoffset(SAT, master, aligned)
             _resamp_and_swap(master, aligned, SAT)
             
@@ -366,7 +407,7 @@ def P2P2FocusAlign(SAT, master, aligned, skip_master, iono):
                 file_shuttle("../raw/offset*dat", ".", "link")
             
             if (skip_master == 0):
-                run("align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1")
+                time_run("align_tops "+sys.argv[1]+" "+sys.argv[1]+".EOF "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1", "align_tops")
             elif (skip_master == 1):
                 cmd = "align_tops "+sys.argv[1]+" 0 "+sys.argv[2]+" "+sys.argv[2]+".EOF dem.grd 1"
                 run(cmd)
@@ -481,7 +522,7 @@ def P2P3MakeTopo(master, aligned, topo_phase, topo_interp_mode, shift_topo):
     if not check_file_report('dem.grd'):
         sys.exit("no DEM file found: dem.grd")
     interp_arg = " 1" if topo_interp_mode == 1 else ""
-    run(f"dem2topo_ra master.PRM dem.grd{interp_arg}")
+    time_run(f"dem2topo_ra master.PRM dem.grd{interp_arg}", "dem2topo_ra")
 
     os.chdir('..')
     print('P2P 3: DEM2TOPO_RA - END')
@@ -526,14 +567,15 @@ def _intf_and_filter(ref, rep, topo_phase, shift_topo, filter_cmd_callable):
     if topo_phase == 1:
         topo_file = "topo_shift.grd" if shift_topo == 1 else "topo_ra.grd"
         run(f"ln -sf ../../topo/{topo_file} .")
-        run(f"intf {ref}.PRM {rep}.PRM -topo {topo_file}")
+        time_run(f"intf {ref}.PRM {rep}.PRM -topo {topo_file}", "intf")
     else:
         print('P2P 4: NO TOPOGRAPHIC PHASE REMOVAL PERFORMED')
-        run(f"intf {ref}.PRM {rep}.PRM")
+        time_run(f"intf {ref}.PRM {rep}.PRM", "intf")
     filter_cmd_callable()
 
 
 def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly):
     """One of the three nearly-identical iono blocks (intf_h, intf_l, intf_o).
     Stages SLCs from slc_dir, runs intf+filter, snaphu_interp if requested.
@@ -547,7 +589,7 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
     _stage_intf_inputs('../../SLC', cp_exts=('params*',))
 
     def _iono_filter():
-        run(f"filter {ref}.PRM {rep}.PRM 500 {dec} {new_incx} {new_incy}")
+        time_run(f"filter {ref}.PRM {rep}.PRM 500 {dec} {new_incx} {new_incy}", "filter")
     _intf_and_filter(ref, rep, topo_phase, shift_topo, _iono_filter)
 
     file_shuttle('phase.grd', 'phasefilt.grd', 'cp')
@@ -565,12 +607,15 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
                 run(f"landmask {rcut}")
                 os.chdir(f"../iono_phase/{side}")
                 file_shuttle('../../topo/landmask_ra.grd', '.', 'link')
-        run('snaphu.py 0.05 0 1')
+        # iono path uses interp=1, threshold=0.05, defomax=0 (always).
+        _call_snaphu(0.05, 0, near_interp=1)
     os.chdir('..')
 
 
 def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, azimuth_dec,
-                                dec, filter, compute_phase_gradient, iono, iono_dsamp):
+                                dec, filter, compute_phase_gradient, iono, iono_dsamp,
+                                iono_skip_est=1, iono_filt_rng=200, iono_filt_azi=200,
+                                mask_water=0, switch_land=0):
     """Form and filter the interferogram. Main path produces a single
     intf/<sub>/phasefilt.grd; iono=1 additionally produces high/low/orig
     interferograms in iono_phase/intf_{h,l,o}/ and a final corrected
@@ -614,20 +659,37 @@ def P2P4MakeFilterInterferograms(ref, rep, topo_phase, shift_topo, range_dec, az
     new_incy = int(azimuth_dec) * int(iono_dsamp)
 
     _iono_intf_block('intf_h', '../../SLC_H', ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=False)
     _iono_intf_block('intf_l', '../../SLC_L', ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=True)
     _iono_intf_block('intf_o', '../../SLC',   ref, rep, dec, new_incx, new_incy,
+                     iono_skip_est, mask_water, switch_land,
                      topo_phase, shift_topo, link_landmask_directly=True)
 
     os.chdir('iono_correction')
     if iono_skip_est == 0:
-        run(f"estimate_ionospheric_phase ../intf_h ../intf_l ../intf_o "
+        # GMTSAR_IONO_PY=0 → upstream csh script (parity oracle fallback).
+        # Default = Python wrapper (byte-identical via gmt grdmath/grdfilter
+        # subprocess chain). The wrapper achieves "removes csh shell-out
+        # from p2p_stages.py" at the orchestration layer; full algorithmic
+        # native-Python port is blocked on parity-validated `gmt grdfilter
+        # -Fg` replacement — see Mira parity note in utils/estimate_ionospheric_phase.
+        iono_bin = "estimate_ionospheric_phase" if _iono_py_enabled() else "estimate_ionospheric_phase.csh"
+        run(f"{iono_bin} ../intf_h ../intf_l ../intf_o "
             f"../../intf/{intfSubDirName} {iono_filt_rng} {iono_filt_azi}")
         os.chdir(f"../../intf/{intfSubDirName}")
         file_shuttle('phasefilt.grd', 'phasefilt_non_corrected.grd', 'mv')
-        run('grdsample ../../iono_phase/iono_correction/ph_iono_orig.grd '
-            '-Rphasefilt_non_corrected.grd -Gph_iono.grd')
+        # GMTSAR_GRDSAMPLE_PY default ON since Mira #65; the in-process
+        # port is byte-id AND ~9.2× faster than gmt C on this iono-shape
+        # (200k → 800k, no NaN). The iono path is not exercised by any
+        # regression case (no correct_iono=1 fixture); byte-id parity
+        # verified by unit test
+        # bin_py/tests/test_grdsample_wrapper.py:TestIonoWireIn.
+        _grdsample_inproc('../../iono_phase/iono_correction/ph_iono_orig.grd',
+                          'ph_iono.grd',
+                          ref_grd='phasefilt_non_corrected.grd')
         run('grdmath phasefilt_non_corrected.grd ph_iono.grd SUB PI ADD '
             '2 PI MUL MOD PI SUB = phasefilt.grd')
         run('grdimage phasefilt.grd -JX6.5i -Bxaf+lRange -Byaf+lAzimuth '
@@ -691,11 +753,12 @@ def P2P5Unwrap(ref, rep, threshold_snaphu, mask_water, switch_land, near_interp,
         _ensure_landmask(sub)
 
     print(f'P2P 5: SNAPHU - START, threshold_snaphu={threshold_snaphu}')
-    # Python snaphu unifies snaphu/snaphu_interp; the 3rd arg is interp flag.
-    # Use snaphu.py (Python wrapper) explicitly. The bare name `snaphu` is
-    # the upstream C binary which has a different CLI; collision with our
-    # wrapper was the root cause of ALOS_haiti's silent snaphu failure.
-    run(f"snaphu.py {threshold_snaphu} {defomax} {1 if near_interp == 1 else 0}")
+    # Native Python snaphu wrappers (utils/snaphu.py), env-gated by
+    # GMTSAR_SNAPHU_PY (default ON). Setting GMTSAR_SNAPHU_PY=0 falls back
+    # to the legacy `snaphu.py` shell shim. The bare name `snaphu` is the
+    # third-party C binary with a different CLI — never call that directly
+    # (collision was ALOS_haiti's silent-failure root cause).
+    _call_snaphu(threshold_snaphu, defomax, near_interp)
     print('P2P 5: SNAPHU - END')
     os.chdir("../..")
 
@@ -717,7 +780,7 @@ def P2P6Geocode(ref, rep, threshold_geocode, topo_phase):
 
     file_shuttle("../../topo/trans.dat", ".", "link")
     print(f"threshold_geocode: {threshold_geocode}")
-    run(f"geocode {threshold_geocode}")
+    time_run(f"geocode {threshold_geocode}", "geocode")
     print('P2P 6: GEOCODE - END')
     os.chdir('../..')
         

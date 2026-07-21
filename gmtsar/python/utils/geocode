@@ -10,7 +10,141 @@
 
 import sys, os, re, configparser
 import subprocess, glob, shutil
-from gmtsar_lib import * 
+import numpy as _np
+from gmtsar_lib import *
+
+# In-process replacement for the proj_ra2ll subprocess chain. Eliminates
+# `gmt grd2xyz | gmt grdtrack | gmt gmtconvert` per call (~0.5 s/file),
+# plus caches `gmt surface` raln/ralt, `m2s.csh`, and `gmt gmtinfo`
+# across the 5+ files we project per geocode invocation (~3 s saved on
+# RS2 small case, 1.87× speedup vs the original proj_ra2ll subprocess
+# chain — verified bit-exact). See proj_ra2ll_lib.py for the math.
+try:
+    from proj_ra2ll_lib import proj_ra2ll_fast
+    _HAVE_FAST_PROJ = True
+except ImportError as _e:
+    print(f"GEOCODE: WARN: proj_ra2ll_lib import failed ({_e}); "
+          "falling back to subprocess proj_ra2ll.", file=sys.stderr)
+    _HAVE_FAST_PROJ = False
+
+# Mira #36 (2026-05-22): Tier-1 in-process grdmath A B MUL = C wire-in.
+# Replaces the per-file `gmt grdmath A B MUL = C` subprocess (~150-300 ms
+# fork+launch+netCDF read each) with a numpy multiply through
+# gmt_grd_io.{read,write}_gmt_grd. Five sites in geocode use this pattern:
+#   - phase.grd      x mask2.grd  -> phase_mask.grd
+#   - xphase.grd     x mask2.grd  -> xphase_mask.grd   (conditional)
+#   - yphase.grd     x mask2.grd  -> yphase_mask.grd   (conditional)
+#   - unwrap.grd     x mask3.grd  -> unwrap_mask.grd   (conditional)
+#   - phasefilt.grd  x mask2.grd  -> phasefilt_mask.grd (conditional)
+# All five operate on same-shape grids produced earlier in the pipeline,
+# so a strict shape/coord match is the in-process precondition; on any
+# mismatch we fall through to gmt subprocess. Set GMTSAR_GMT_INPROC=0 to
+# disable the wire-in entirely (debug/regression A/B path).
+try:
+    from gmt_grd_io import read_gmt_grd as _read_gmt_grd
+    from gmt_grd_io import write_gmt_grd as _write_gmt_grd
+    _HAVE_GMT_GRD_IO = True
+except ImportError as _e:
+    print(f"GEOCODE: WARN: gmt_grd_io import failed ({_e}); "
+          "using gmt grdmath subprocess.", file=sys.stderr)
+    _HAVE_GMT_GRD_IO = False
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+# Covers geocode:161 GE NAN MUL pattern (corr threshold → mask2.grd).
+# The existing _grdmath_mul_grid_grid handles the simple MUL sites (Mira #36).
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
+
+def _inproc_enabled() -> bool:
+    """Match the master switch used by other in-process wire-ins
+    (utils/dem2topo_ra, etc.). GMTSAR_GMT_INPROC=0 disables in-process."""
+    return os.environ.get("GMTSAR_GMT_INPROC", "1") != "0"
+
+
+def _grdmath_mul_grid_grid(a_grd: str, b_grd: str, out_grd: str,
+                            V: str = "") -> None:
+    """Replacement for `gmt grdmath <a> <b> MUL = <out>` (grid * grid).
+
+    In-process path: read a + b via gmt_grd_io.read_gmt_grd, assert
+    shape + coord-array equality, multiply element-wise, write via
+    gmt_grd_io.write_gmt_grd preserving node_offset and geographic
+    flags. NaNs propagate (numpy: NaN * anything = NaN), matching
+    GMT's grdmath MUL semantics on _FillValue cells.
+
+    Falls back to `gmt grdmath ...` subprocess when:
+      - GMTSAR_GMT_INPROC=0
+      - gmt_grd_io / netCDF4 not importable
+      - the two grids disagree on shape or coord arrays (extension/
+        broadcast semantics are not implemented; gmt handles those)
+      - any read/write raises (fail-soft to subprocess)
+    """
+    use_inproc = _HAVE_GMT_GRD_IO and _inproc_enabled()
+    if use_inproc:
+        try:
+            a_data, a_x, a_y, a_info = _read_gmt_grd(a_grd)
+            b_data, b_x, b_y, b_info = _read_gmt_grd(b_grd)
+            # Strict shape/coord match — gmt grdmath also extends and
+            # broadcasts, but the five geocode sites all use co-produced
+            # grids (same RAD pipeline → identical layout). Anything else
+            # means we hit a usage we haven't audited.
+            if (a_data.shape != b_data.shape or
+                not _np.array_equal(a_x, b_x) or
+                not _np.array_equal(a_y, b_y)):
+                raise ValueError(
+                    f"shape/coord mismatch: {a_grd}{a_data.shape} vs "
+                    f"{b_grd}{b_data.shape}; falling back to gmt grdmath")
+            # numpy float32 mul with NaN propagation = grdmath MUL.
+            out = a_data * b_data
+            # Preserve A's registration; mask grids are produced with the
+            # same node_offset as the phase grids so this is correct.
+            _write_gmt_grd(
+                out_grd, out, a_x, a_y,
+                node_offset=int(a_info.get("node_offset", 0)),
+                geographic=bool(a_info.get("geographic", False)),
+                history=f"gmt grdmath {a_grd} {b_grd} MUL = {out_grd} "
+                        "[gmt_grd_io in-process]",
+            )
+            return
+        except Exception as exc:
+            print(f"GEOCODE: WARN: in-process MUL {a_grd} x {b_grd} "
+                  f"failed ({exc!r}); falling back to gmt grdmath.",
+                  file=sys.stderr)
+    # Fallback: classic gmt subprocess (preserves -V verbose flag).
+    suffix = (" " + V) if V else ""
+    run(f"gmt grdmath {a_grd} {b_grd} MUL = {out_grd}{suffix}")
+
+
+def _make_los(phase_grd: str, wavel: float, out_grd: str) -> None:
+    """Replacement for `gmt grdmath <phase> <wavel> MUL -79.58 MUL = <out>`.
+
+    Mira #41 wire-in (2026-05-22): calls bin_py/make_los_py via PATH
+    (subprocess), which honors the truncated `-79.58` factor verbatim from
+    geocode.csh:77,139 (do NOT substitute the mathematically exact
+    -1000/(4*pi) — that biases LOS by 0.003% vs the csh pipeline). The
+    py port has been verified byte-identical to `gmt grdmath A wavel MUL
+    -79.58 MUL = B` on RS2 Hawaii unwrap_mask{,_ll}.grd.
+
+    Gate: GMTSAR_MAKE_LOS_PY=0 → fall back to gmt grdmath subprocess.
+    """
+    use_py = os.environ.get("GMTSAR_MAKE_LOS_PY", "1") != "0"
+    if use_py:
+        try:
+            run(f"make_los_py {phase_grd} {wavel} {out_grd}")
+            return
+        except Exception as exc:
+            print(f"GEOCODE: WARN: make_los_py failed ({exc!r}); "
+                  "falling back to gmt grdmath.", file=sys.stderr)
+    run(f"gmt grdmath {phase_grd} {wavel} MUL -79.58 MUL = {out_grd}")
+
 
 def geocode():
     
@@ -38,22 +172,27 @@ def geocode():
     
     print('GEOCODE: first mask the phase and phase gradient using the correlation ... ...')
     print(' ')
-    cmd = 'gmt grdmath corr.grd '+sys.argv[1]+' GE 0 NAN mask.grd MUL = mask2.grd '+V
-    run(cmd)
+    if _grdmath_py_on():
+        _gm.grdmath_ge_nan_mul('corr.grd', float(sys.argv[1]), 'mask.grd',
+                               'mask2.grd', ctx='geocode:GE_NAN_MUL')
+    else:
+        cmd = 'gmt grdmath corr.grd '+sys.argv[1]+' GE 0 NAN mask.grd MUL = mask2.grd '+V
+        run(cmd)
     
-    cmd = 'gmt grdmath phase.grd mask2.grd MUL = phase_mask.grd'
-    run(cmd)
-    
+    # Mira #36 wire-in: in-process A B MUL via numpy + gmt_grd_io.
+    # GMTSAR_GMT_INPROC=0 forces the gmt subprocess fallback.
+    _grdmath_mul_grid_grid('phase.grd', 'mask2.grd', 'phase_mask.grd')
+
     if check_file_report('xphase.grd')==True:
-        run('gmt grdmath xphase.grd mask2.grd MUL = xphase_mask.grd')
-        run('gmt grdmath yphase.grd mask2.grd MUL = yphase_mask.grd')
-    
+        _grdmath_mul_grid_grid('xphase.grd', 'mask2.grd', 'xphase_mask.grd')
+        _grdmath_mul_grid_grid('yphase.grd', 'mask2.grd', 'yphase_mask.grd')
+
     if check_file_report('unwrap.grd')==True:
         run('''gmt grdsample mask2.grd `gmt grdinfo unwrap.grd -I-` `gmt grdinfo unwrap.grd -I` -Gmask3.grd''')
-        run('gmt grdmath unwrap.grd mask3.grd MUL = unwrap_mask.grd')
-    
+        _grdmath_mul_grid_grid('unwrap.grd', 'mask3.grd', 'unwrap_mask.grd')
+
     if check_file_report('phasefilt.grd')==True:
-        run('gmt grdmath phasefilt.grd mask2.grd MUL = phasefilt_mask.grd')
+        _grdmath_mul_grid_grid('phasefilt.grd', 'mask2.grd', 'phasefilt_mask.grd')
         
     print(' ')
     print('GEOCODE: look at the masked phase ... ...')
@@ -104,8 +243,9 @@ def geocode():
         if not prm_files:
             raise FileNotFoundError("geocode: no *.PRM files in current dir for wavelength lookup")
         wavel = grep_value(prm_files[0], 'wavelength', 3)
-        cmd = 'gmt grdmath unwrap_mask.grd '+str(wavel)+' MUL -79.58 MUL = los.grd'
-        run(cmd)
+        # Mira #41 wire-in: make_los_py replaces `gmt grdmath A wavel MUL -79.58 MUL`.
+        # GMTSAR_MAKE_LOS_PY=0 forces gmt grdmath fallback.
+        _make_los('unwrap_mask.grd', wavel, 'los.grd')
         run('gmt grdgradient los.grd -Nt.9 -A0. -Glos_grad.grd')
         
         cmd_grdinfo = ["gmt","grdinfo","-C","-L2","los.grd"]
@@ -136,32 +276,47 @@ def geocode():
     # interpolation.
     remarked = ''
     pwd_basename = os.path.basename(os.getcwd())
-    run('proj_ra2ll trans.dat corr.grd corr_ll.grd')
+
+    # Shared cache for the batched fast path (raln/ralt grids in numpy,
+    # m2s.csh output, gmt gmtinfo bbox — see proj_ra2ll_lib.proj_ra2ll_fast).
+    # Disable by setting GMTSAR_GEOCODE_NOFAST=1 to fall back to the original
+    # subprocess proj_ra2ll for every file (useful for A/B regression test).
+    _proj_cache = {}
+    _use_fast = _HAVE_FAST_PROJ and not os.environ.get("GMTSAR_GEOCODE_NOFAST")
+
+    def _project(in_grd, out_grd):
+        if _use_fast:
+            print(f"\nGEOCODE: proj_ra2ll_fast {in_grd} -> {out_grd}")
+            proj_ra2ll_fast('trans.dat', in_grd, out_grd, cache=_proj_cache)
+        else:
+            run(f'proj_ra2ll trans.dat {in_grd} {out_grd}')
+
+    _project('corr.grd', 'corr_ll.grd')
     run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} geocoded correlation"/"{remarked}"  corr_ll.grd')
 
-    run('proj_ra2ll trans.dat phasefilt.grd   phasefilt_ll.grd')
+    _project('phasefilt.grd', 'phasefilt_ll.grd')
     run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after filtering"/"{remarked}"  phasefilt_ll.grd')
-    run('proj_ra2ll trans.dat phase_mask.grd  phase_mask_ll.grd')
+    _project('phase_mask.grd', 'phase_mask_ll.grd')
     run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} wrapped phase after masking"/"{remarked}"  phase_mask_ll.grd')
-    run('proj_ra2ll trans.dat display_amp.grd display_amp_ll.grd')
+    _project('display_amp.grd', 'display_amp_ll.grd')
     run(f'gmt grdedit -D//"dimensionless"/1///"{pwd_basename} amplitude"/"{remarked}"  display_amp_ll.grd')
 
     if check_file_report('xphase_mask.grd')==True:
-        run('proj_ra2ll trans.dat xphase_mask.grd xphase_mask_ll.grd')
+        _project('xphase_mask.grd', 'xphase_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} xphase"/"{remarked}"  xphase_mask_ll.grd')
-        run('proj_ra2ll trans.dat yphase_mask.grd yphase_mask_ll.grd')
+        _project('yphase_mask.grd', 'yphase_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} yphase"/"{remarked}"  yphase_mask_ll.grd')
 
     if check_file_report('unwrap_mask.grd')==True:
-        run('proj_ra2ll trans.dat unwrap_mask.grd unwrap_mask_ll.grd')
+        _project('unwrap_mask.grd', 'unwrap_mask_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped, masked phase"/"{remarked}"  unwrap_mask_ll.grd')
 
     if check_file_report('unwrap.grd')==True:
-        run('proj_ra2ll trans.dat unwrap.grd unwrap_ll.grd')
+        _project('unwrap.grd', 'unwrap_ll.grd')
         run(f'gmt grdedit -D//"radians"/1///"{pwd_basename} unwrapped phase"/"{remarked}"  unwrap_ll.grd')
 
     if check_file_report('phasefilt_mask.grd')==True:
-        run('proj_ra2ll trans.dat phasefilt_mask.grd phasefilt_mask_ll.grd')
+        _project('phasefilt_mask.grd', 'phasefilt_mask_ll.grd')
         run(f'gmt grdedit -D//"phase in radians"/1///"{pwd_basename} wrapped phase masked filtered"/"{remarked}"   phasefilt_mask_ll.grd')
 
     print(' ')
@@ -192,7 +347,8 @@ def geocode():
         # numerically wrong (never noticed because compare.py didn't check
         # los_ll.grd until v1.12.1). The Python `wavel` is in scope from
         # the unwrap_mask block above; interpolate it directly.
-        run(f'gmt grdmath unwrap_mask_ll.grd {wavel} MUL -79.58 MUL = los_ll.grd')
+        # Mira #41 wire-in: make_los_py replaces `gmt grdmath A wavel MUL -79.58 MUL`.
+        _make_los('unwrap_mask_ll.grd', wavel, 'los_ll.grd')
         run(f'gmt grdedit -D//"mm"/1///"{pwd_basename} LOS displacement"/"equals negative range" los_ll.grd')
         run('grd2kml los_ll los.cpt')
 
