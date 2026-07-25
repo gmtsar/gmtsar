@@ -601,7 +601,7 @@ def _iono_intf_block(side, slc_dir, ref, rep, dec, new_incx, new_incy,
             else:
                 # First block: compute landmask region from phase.grd then
                 # produce landmask_ra.grd via the landmask binary.
-                output = subprocess.check_output('gmt grdinfo phase.grd -I-', shell=True)
+                output = shell_check_output('gmt grdinfo phase.grd -I-')
                 rcut = output[2:20].decode('utf-8')
                 os.chdir('../../topo')
                 run(f"landmask {rcut}")
@@ -733,8 +733,8 @@ def _ensure_landmask(sub):
     output of `gmt grdinfo phase.grd -I-` (cols 3-20); legacy code stored
     the command string itself. landmask_ra.grd existence check now uses a
     string literal (legacy code referenced an undefined identifier)."""
-    output = subprocess.check_output('gmt grdinfo phase.grd -I- | cut -c3-20',
-                                     shell=True).decode('utf-8').strip()
+    output = shell_check_output('gmt grdinfo phase.grd -I- | cut -c3-20'
+                                     ).decode('utf-8').strip()
     os.chdir("../../topo")
     if not check_file_report('landmask_ra.grd'):
         run(f"landmask {output}")

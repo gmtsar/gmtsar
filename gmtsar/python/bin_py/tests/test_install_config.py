@@ -35,6 +35,42 @@ def test_hdf5_pinned_to_1_12_not_1_14_plus():
         "reintroduce the 1.14.x link failure")
 
 
+def _requirements_txt_lines():
+    req = install.REPO_ROOT / "gmtsar" / "python" / "requirements.txt"
+    return req.read_text().splitlines()
+
+
+def test_numpy_pinned_ge2_not_reverted():
+    """numpy<2 was pinned with NO documented reason (unlike every other
+    pin in requirements.txt) until a real external report (InSARHub,
+    a downstream consumer wanting numpy>=2 for its own dependencies)
+    prompted actually testing it instead of assuming it was needed.
+    Confirmed via a genuine clean-room build: fresh env, numpy 2.4.6,
+    full bin_py/tests/ suite (562 passed/59 skipped/0 failed) INCLUDING
+    the real C-vs-Python xcorr parity test against real data --
+    bit/float-exact, no numerical drift. See release_notes_v2.12.0.md."""
+    numpy_lines = [l for l in _requirements_txt_lines() if l.startswith("numpy")]
+    assert numpy_lines, "numpy must be pinned in requirements.txt"
+    assert numpy_lines[0].split()[0] == "numpy>=2", (
+        f"numpy pin changed to {numpy_lines[0]!r} -- if this reverts to "
+        "numpy<2 without a real reason, it silently drops a real, "
+        "tested compatibility improvement for downstream consumers")
+
+
+def test_numba_floor_ge_0_60_for_numpy2_abi():
+    """numba<0.60 caps numpy well below 2.0 in its own PyPI metadata
+    (0.56.4: numpy<1.24; 0.59.x: numpy<1.27) -- numba only gained real
+    numpy 2.x ABI support at 0.60.0. Doesn't bite in today's normal
+    resolve (nothing else forces an old numba), but a real risk in an
+    offline/locked install pinning numba<0.60 alongside numpy>=2."""
+    numba_lines = [l for l in _requirements_txt_lines() if l.startswith("numba")]
+    assert numba_lines, "numba must be pinned in requirements.txt"
+    assert numba_lines[0].split()[0] == "numba>=0.60", (
+        f"numba floor changed to {numba_lines[0]!r} -- if this drops "
+        "below 0.60 while numpy stays >=2, an offline/locked install "
+        "can silently pick a numpy2-incompatible numba")
+
+
 def test_flex_in_apt_system_deps():
     """preproc/ERS_preproc/ers_line_fixer/ers_line_fixer.l is the only
     .l/.y source in the repo and needs flex/lex to generate its .c file.
@@ -223,7 +259,11 @@ def test_pytest_in_requirements_txt():
     all without a manual `pip install pytest` -- requirements.txt never
     listed it, even though running that suite is part of the documented
     dev workflow (README.md's "Testing for developers")."""
-    requirements = (_UTILS / "requirements.txt").read_text()
+    # encoding pinned: read_text() without one uses the LOCALE codepage
+    # (e.g. GBK on a zh-locale Windows host), which chokes on this
+    # UTF-8 file's non-ASCII chars -- real failure hit 2026-07-23 on the
+    # conda-windows-full clean-room host.
+    requirements = (_UTILS / "requirements.txt").read_text(encoding="utf-8")
     assert re.search(r"^pytest\b", requirements, re.MULTILINE), (
         "pytest missing from requirements.txt -- a fresh install can't "
         "run its own test suite")
@@ -244,6 +284,15 @@ def test_locate_conda_env_creates_when_missing_at_resolved_base(tmp_path, monkey
 
     monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
     monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+    # Force the classic `conda create` path this test actually exercises --
+    # without this, a REAL micromamba on the test host's own PATH (installed
+    # separately, unrelated to this test) gets preferred by locate_conda_env's
+    # real logic, bypassing fake_run's `cmd[:2] == [conda_bin, "create"]`
+    # check entirely since the command becomes ["micromamba", "create", ...].
+    # Found as a genuine regression 2026-07-23 when a real clean-room
+    # test_install.py --full run hit this on a host that happened to have
+    # micromamba installed.
+    monkeypatch.setattr(install.shutil, "which", lambda name: None)
 
     calls = []
     def fake_run(cmd, **kwargs):
@@ -255,6 +304,41 @@ def test_locate_conda_env_creates_when_missing_at_resolved_base(tmp_path, monkey
     prefix = install.locate_conda_env("gmtsar_regress_test")
     assert prefix == fake_conda_base / "envs" / "gmtsar_regress_test"
     assert calls, "conda create was never invoked"
+    assert "conda-forge" in calls[0]
+
+
+def test_locate_conda_env_prefers_micromamba_when_present(tmp_path, monkeypatch):
+    """Real bug found 2026-07-23 (a genuine clean-room test_install.py
+    --full run): classic conda's solver hung 28+ minutes unsolved on
+    the real CONDA_FORGE_BOOTSTRAP_PACKAGES set on a host with an old,
+    pre-libmamba-solver conda. locate_conda_env() now prefers
+    micromamba for the actual create call when present on PATH."""
+    fake_conda_base = tmp_path / "fakeconda"
+    (fake_conda_base / "bin").mkdir(parents=True)
+    conda_bin = fake_conda_base / "bin" / "conda"
+    conda_bin.write_text("#!/bin/sh\necho fake\n")
+    conda_bin.chmod(0o755)
+    fake_micromamba = tmp_path / "fake_micromamba"
+    fake_micromamba.write_text("#!/bin/sh\necho fake\n")
+    fake_micromamba.chmod(0o755)
+
+    monkeypatch.setattr(install, "CONDA_SEARCH_BASES", [str(tmp_path / "unrelated")])
+    monkeypatch.setattr(install, "locate_conda_base", lambda: fake_conda_base)
+    monkeypatch.setattr(install.shutil, "which",
+                        lambda name: str(fake_micromamba) if name == "micromamba" else None)
+
+    calls = []
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:1] == [str(fake_micromamba)]:
+            (fake_conda_base / "envs" / "gmtsar_mamba_test").mkdir(parents=True)
+    monkeypatch.setattr(install, "run", fake_run)
+
+    prefix = install.locate_conda_env("gmtsar_mamba_test")
+    assert prefix == fake_conda_base / "envs" / "gmtsar_mamba_test"
+    assert calls, "micromamba create was never invoked"
+    assert calls[0][0] == str(fake_micromamba)
+    assert "create" in calls[0]
     assert "conda-forge" in calls[0]
 
 

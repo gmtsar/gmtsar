@@ -270,8 +270,16 @@ def _locate_fresh_conda_prefix(conda_env: str) -> Path | None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--system", choices=["ubuntu", "conda"], required=True,
-                    help="passed straight to install.py --system")
+    p.add_argument("--system", choices=["ubuntu", "conda", "conda-linux-full"], required=True,
+                    help="passed straight to install.py --system. "
+                         "conda-windows-full deliberately not included -- this "
+                         "script is POSIX-only throughout (hardcoded "
+                         "python3, /bin/ paths, gmtsar_sharedir.csh "
+                         "invoked directly), and conda-windows-full's conda env "
+                         "layout differs entirely (prefix/python.exe, not "
+                         "prefix/bin/python3) -- adding it to --choices "
+                         "without also fixing those would silently pretend "
+                         "coverage that isn't real.")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--smoke", action="store_true",
                        help="(default) fresh install + gmtsar_sharedir.csh "
@@ -325,7 +333,7 @@ def main() -> int:
 
     install_cmd = ["python3", str(clone_python_dir / "install.py"),
                    "--system", args.system]
-    if args.system == "conda":
+    if args.system in ("conda", "conda-linux-full"):
         install_cmd += ["--conda-env", conda_env]
     ok, dt = _run(install_cmd, "install", cwd=str(clone_python_dir))
     results.append(("install.py --system " + args.system, ok, dt))
@@ -340,7 +348,7 @@ def main() -> int:
     env["GMTSAR"] = str(clone_dir)
     env["PATH"] = f"{clone_dir}/bin:{env.get('PATH', '')}"
     py_exe = "python3"
-    if args.system == "conda":
+    if args.system in ("conda", "conda-linux-full"):
         prefix = _locate_fresh_conda_prefix(conda_env)
         if prefix is not None:
             env["PATH"] = f"{prefix}/bin:{env['PATH']}"

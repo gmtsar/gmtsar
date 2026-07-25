@@ -25,13 +25,13 @@ else:
 # get the Python recipe, no csh at all (see case_runner.sh). Named ref_test/
 # new_test in that mode so the folders aren't misleadingly labeled "csh".
 if os.environ.get('TOPO_MODE_AB') == '1':
-    cshRefRoot    = workAbsoluteDir + 'ref_test/'      # mode=0 (baseline)
-    pythonRunRoot = workAbsoluteDir + 'new_test/'       # mode=1 (variant)
+    cshRefRoot    = workAbsoluteDir + 'ref_test' + os.sep      # mode=0 (baseline)
+    pythonRunRoot = workAbsoluteDir + 'new_test' + os.sep       # mode=1 (variant)
 else:
-    pythonRunRoot = workAbsoluteDir + 'python_test/'   # Python-framework outputs
-    cshRefRoot    = workAbsoluteDir + 'csh_test/'      # legacy csh reference outputs
-datasetRoot   = workAbsoluteDir + 'dataset/'       # downloaded raw tarballs
-recipesDir    = workAbsoluteDir + 'recipes/'
+    pythonRunRoot = workAbsoluteDir + 'python_test' + os.sep   # Python-framework outputs
+    cshRefRoot    = workAbsoluteDir + 'csh_test' + os.sep      # legacy csh reference outputs
+datasetRoot   = workAbsoluteDir + 'dataset' + os.sep       # downloaded raw tarballs
+recipesDir    = workAbsoluteDir + 'recipes' + os.sep
 
 # Frozen csh reference (gitignored, ~5.8 GB). When present, compare.py runs
 # three pairs per file: py-vs-csh, csh-vs-frozen, py-vs-frozen.

@@ -19,7 +19,13 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils"))
+_utils_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils")
+if not os.path.isdir(_utils_dir) and os.environ.get("GMTSAR"):
+    # Windows staging COPIES this file flatly into bin/ (no symlink, see
+    # install.py's stage_execs) -- ../utils then resolves to bin/../utils,
+    # which doesn't exist. Fall back to the real source tree via $GMTSAR.
+    _utils_dir = os.path.join(os.environ["GMTSAR"], "gmtsar", "python", "utils")
+sys.path.insert(0, _utils_dir)
 
 from s1a_preproc_lib import make_slc_s1a  # noqa: E402
 

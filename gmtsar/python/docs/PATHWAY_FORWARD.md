@@ -1,5 +1,129 @@
 # Pathway forward — what's ported, what's not, and why
 
+## Landed 2026-07-23 (v2.10.x): native Windows — `install.py --system conda-windows-full`
+
+GMTSAR now builds and runs natively on Windows — no WSL, no
+MSYS2/Cygwin toolchain, no admin. CMake/Ninja build against a
+conda-provided MinGW-w64 toolchain (`m2w64-toolchain`); the Python
+framework and `.csh` scripts stage into `bin/` as flat copies (no
+reliable unprivileged symlink on Windows — so `--rebuild` is required
+to pick up source edits, unlike POSIX's live symlinks). Git for
+Windows is the one external prerequisite (`gmtsar_lib.py` routes all
+POSIX-syntax shell-outs through Git Bash; `GMTSAR_WIN_BASH` overrides
+the location).
+
+**Verified state (Rule 13 vocabulary): wired ON and clean-room
+proven for RS2_SLC_Hawaii only.** Two full clean-room runs 2026-07-23
+(fresh clone + fresh conda env `gmtsar_cr`, tarball cache reused per
+Rule 14): install rc=0 end-to-end including from-scratch
+`conda create` and `pip -r requirements.txt`, then `sweep.py --fast
+--cases RS2_SLC_Hawaii --topo-mode-ab` → 6/6 comparisons SUCCESS
+(SSIM ≥0.999, grd RMS ≤7e-4), matching a same-commit Linux
+py-vs-csh run's numbers. Regression guards:
+`bin_py/tests/test_windows_port.py` (one test per real bug found in
+the bring-up — cmd metacharacter parsing, missing pip, `_win_bash`
+race, WSL-stub bash, os.sep tree-name collapse, conv.c text-mode
+fopen).
+
+**Real upstream C bug found by this port**: `gmtsar/conv.c` opened
+binary SLC/`.grd=bf` files with `fopen(..., "r")` — text mode, a
+silent-corruption no-op on POSIX but catastrophic on Windows
+(correlation collapsed to ~0 over 85% of a real RS2 swath). Fix
+staged at `c_fixes/conv.c` per the v2.9.0 convention, applied at
+build time on every platform by `_apply_c_fixes()` (now called from
+`do_windows_build()` too).
+
+**Not done / honest gaps** (per Rule 13, "verified for one case" is
+not "verified"):
+- No py-vs-csh comparison possible on Windows at all — no `csh`/`tcsh`
+  interpreter exists for native Windows; `--topo-mode-ab` (py mode0 vs
+  py mode1) is the documented substitute. The C-oracle ground truth
+  can only ever come from a POSIX run.
+- Only RS2_SLC_Hawaii exercised; the other 20 cases, `bin_py/tests/`
+  as a suite on Windows, and `tests/test_install.py` coverage for
+  `conda-windows-full` (that script is POSIX-only throughout) are all
+  open.
+- `distribute_gmtsar_windows.py` (self-contained user bundle): PROVEN
+  2026-07-23 (v2.10.3). Root cause of the earlier 27/38 verify failure
+  was export FORWARDERS — conda-forge's win-64 libblas/liblapack shims
+  forward to mkl_rt.N.dll, invisible to any import-table walk; fixed by
+  walking forwarders (`_pe_forwarder_targets`, stdlib PE parse), pinning
+  the openblas BLAS variant (`WINDOWS_CONDA_BOOTSTRAP_PACKAGES`), and a
+  fail-loud MKL guard. Four more bundle-smoke-found fixes: bundle the
+  REAL `usr\bin\bash.exe` (Git's `bin\bash.exe` is a launcher stub),
+  launcher PATH gains `pyenv\Library\bin` (the `gmt.exe` CLI lives
+  there), `GMT_SHAREDIR` pinned (the gmt.dll copy has the build env's
+  share path baked in), and the `gmtsar/python/{utils,bin_py}` tree
+  bundled (the `$GMTSAR` import fallback needs it). Evidence: 3-layer
+  isolated-PATH verify passes (38/38 exes, bundled python imports,
+  bundled bash), AND a full RS2 p2p run from the bundle alone —
+  no conda, no Git for Windows in the environment — completed with
+  `phasefilt.grd` **bit-identical** (complex-rms 0.0) to the clean-room
+  sweep's mode0 reference. Remaining caveat: all runs were on the dev
+  host; a physically different bare machine hasn't executed the bundle
+  yet. v2.11.0 adds the license-collation step (`do_write_licenses`:
+  THIRD_PARTY_NOTICES.md from the env's conda-meta, GMTSAR GPL-3 text,
+  Git-for-Windows license, AGPL/ghostscript callout) and publishes the
+  zip as a GitHub release asset.
+
+## Explored 2026-07-23: full conda toolchain isolation for `install.py --system conda`
+
+Today's `--system conda` deliberately keeps the SYSTEM's own compiler
+chain (gfortran, g++, make, autoconf, csh, ghostscript) rather than
+provisioning it via conda — see `do_conda_setup`'s docstring in
+`install.py`. User asked whether full isolation (conda providing the
+compiler too, nothing system-level required) is actually possible.
+
+**Real answer: yes, confirmed by an actual clean-room build.** Fresh
+`git clone`, a genuinely new conda env built with `micromamba` (classic
+`conda`'s solver hung 28+ min unsolved on the same package set — a real,
+separate finding: this host's conda is old, 4.14.0, pre-libmamba-solver;
+switch to `micromamba`/`conda-libmamba-solver` for any future from-conda
+bootstrap) from `gfortran_linux-64`, `gxx_linux-64`, `make`, `autoconf`,
+`ghostscript`, `tcsh`, plus the existing `CONDA_FORGE_BOOTSTRAP_PACKAGES`
+(`gmt=6.4`, `gshhg-gmt`, `dcw-gmt`, `flex`, `hdf5=1.12.*`, `libtiff`,
+`liblapack`). Real binaries (`esarp`, `xcorr`, `phasefilt`, ...) built,
+linked, and ran correctly — `ldd` showed zero missing shared libraries.
+
+Two real things needed beyond just installing packages:
+
+1. **conda-forge ships no `csh` package**, only `tcsh` — Debian/Ubuntu's
+   `csh` is itself just a `tcsh` wrapper. A `csh -> tcsh` symlink inside
+   the env's `bin/` is the fix; confirmed sufficient for what GMTSAR's
+   Python framework actually needs (per project direction, a real `csh`
+   package isn't required, only that csh invocations work).
+2. **A genuine GMTSAR source bug, found here for the first time**:
+   `gmtsar/fitoffset.c` calls `strlcpy()` with no include/declaration
+   anywhere. Implicit-declaration is only a *warning* on GCC < 14 (the
+   system's Ubuntu GCC 11.4.0, which today's `--system conda` uses) but
+   a **hard error** on GCC 14+ (conda-forge's `gxx_linux-64` is 15.2.0 —
+   GCC 14 promoted implicit function declarations to an error by default
+   as part of C23 alignment). This is NOT conda-specific — it will also
+   break `--system ubuntu` on any host with GCC 14+ (Ubuntu 24.10+,
+   Fedora 40+, Arch already ship it). Fix (`strlcpy` -> `snprintf`,
+   identical behavior for the fixed short literals involved) is staged
+   at `gmtsar/python/c_fixes/fitoffset.c` — NOT applied to the real
+   `gmtsar/gmtsar/fitoffset.c` yet (outside `gmtsar/python/`, this
+   repo's "everything else stays untouched for clean upstream merges"
+   rule) — apply manually or via a proper upstream PR when ready.
+
+`install.py`'s existing `patch_config_mk()` (TIFF/HDF5/GMT path fixup +
+`-Wl,-z,muldefs` for GCC 10+'s `-fno-common` default) already handles
+the rest correctly once the env is genuinely activated — no new code
+needed there, it was just easy to miss applying by hand during manual
+clean-room testing (cost real debugging time here).
+
+**Since wired into `install.py` as a real mode**: `--system
+conda-linux-full` (v2.9.0), using real env activation and the
+target-triplet compiler names (`x86_64-conda-linux-gnu-{cc,c++,gfortran}`),
+not plain `gcc`/`g++`/`gfortran` — see `do_conda_setup`'s docstring.
+
+Also landed independently of this exploration: `install.py` now fails
+fast with a clear message if `gfortran`/`g++`/`make`/`autoconf`/`csh`/
+`ghostscript` are missing under today's `--system conda`, instead of
+surfacing as a cryptic `autoconf`/`make` error deep in the build
+(`_check_system_build_tools()`, commit `8c169eb`).
+
 ## Fixed 2026-07-13: `write_gmt_grd` broke GMT's symlink-follow semantics
 
 Found by a real full 21-case regression sweep (`ALOS_haiti` FAIL:

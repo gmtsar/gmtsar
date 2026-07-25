@@ -3,13 +3,30 @@
 # tagged release if exact reproducibility is required.
 #
 # Pip-installable:
-numpy<2
+numpy>=2         # confirmed working 2026-07-23 via a genuine clean-room test:
+                 # fresh env, numpy 2.4.6, full bin_py/tests/ suite (562
+                 # passed/59 skipped/0 failed) INCLUDING the real C-vs-Python
+                 # xcorr parity test against real data -- bit/float-exact,
+                 # no numerical drift. Both Cython extensions
+                 # (build_surface_kernel.py, snaphu_py's build script)
+                 # rebuild cleanly against numpy2 headers. Previously pinned
+                 # <2 with no documented reason; raised after a real
+                 # external report (InSARHub, a downstream consumer, wants
+                 # numpy>=2 for its own dependencies) prompted actually
+                 # testing it instead of assuming.
 scipy>=1.10
 scikit-image>=0.19
 matplotlib>=3.5
 xarray>=2022.11
 netCDF4>=1.6
-numba>=0.56      # JIT kernels: xcorr_py, resamp_py, SAT JIT path, snaphu_py
+numba>=0.60      # JIT kernels: xcorr_py, resamp_py, SAT JIT path, snaphu_py.
+                 # Floor raised from >=0.56 (2026-07-23): numba<0.60 caps
+                 # numpy far below 2.0 in its own PyPI metadata (0.56.4:
+                 # numpy<1.24; 0.59.x: numpy<1.27) -- doesn't bite today
+                 # since pip's resolver picks a modern numba anyway with no
+                 # other cap forcing it low, but an offline/locked install
+                 # pinning numba<0.60 alongside numpy>=2 would fail outright.
+                 # numba only gained real numpy 2.x ABI support at 0.60.0.
 cython>=3.0      # builds utils/_surface_kernel (gmt_surface_py default-ON path)
 h5py>=3.0        # make_slc_nsr_py (GMTSAR_NSR_PREPROC_PY, default ON since 2026-07-13) — reads NISAR RSLC HDF5
 pytest>=7.0      # runs bin_py/tests/ (2026-07-14: a fresh --system conda

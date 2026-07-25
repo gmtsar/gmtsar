@@ -40,6 +40,7 @@ writes the output grd with the same coords / registration.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -47,6 +48,12 @@ import numpy as np
 
 _HERE = Path(__file__).resolve().parent
 _UTILS = _HERE.parent / "utils"
+if not _UTILS.is_dir() and os.environ.get("GMTSAR"):
+    # Windows staging COPIES this file flatly into bin/ (no symlink, see
+    # install.py's stage_execs) -- _HERE.parent/"utils" then resolves to
+    # bin/../utils, which doesn't exist. Fall back to the real source
+    # tree via $GMTSAR.
+    _UTILS = Path(os.environ["GMTSAR"]) / "gmtsar" / "python" / "utils"
 if str(_UTILS) not in sys.path:
     sys.path.insert(0, str(_UTILS))
 

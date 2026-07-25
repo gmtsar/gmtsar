@@ -8,26 +8,71 @@ Install location: the existing clone. This script never re-clones and
 never installs system-wide. `make install` lands in <repo>/bin via
 --prefix=<repo>.
 
-Both --system choices work on a brand-new box (nothing pre-installed
-beyond the OS package manager, or an already-installed Miniconda/Anaconda):
+All four --system choices work on a brand-new box (nothing
+pre-installed beyond the OS package manager, or an already-installed
+Miniconda/Anaconda):
 
 --system (pick exactly one):
-    ubuntu    apt-install system deps (REQUIRES SUDO). Provisions
-              everything: gmt, gfortran, g++, make, autoconf, csh,
-              ghostscript, libtiff, libhdf5, liblapack, ...
-    conda     use a conda env (no sudo). Set CONDA_GMTSAR_ENV (or
-              --conda-env) to pick which env (default: 'gmtsar'). If the
-              env doesn't exist yet, it's created via `conda create -c
-              conda-forge gmt hdf5 libtiff liblapack ...` (network
-              required, also bootstraps flex -- see do_conda_setup's
-              docstring for why flex specifically is conda-provisioned
-              rather than assumed). Still assumes the system already
-              has basic build tools (gfortran, g++, make, autoconf,
-              csh, ghostscript) -- --system conda deliberately keeps the
-              SYSTEM compiler in use rather than conda's (see
-              do_conda_setup's docstring), so it is not a fully
-              from-scratch bootstrap on a bare OS image the way
-              --system ubuntu is.
+    ubuntu      apt-install system deps (REQUIRES SUDO). Provisions
+                everything: gmt, gfortran, g++, make, autoconf, csh,
+                ghostscript, libtiff, libhdf5, liblapack, ...
+    conda       use a conda env (no sudo). NOT restricted to Linux --
+                unlike conda-linux-full below, this defers entirely to
+                whatever compiler is already on the system's PATH
+                (Homebrew's gfortran/gcc on macOS works just as well as
+                a Linux distro's apt-installed ones), and every package
+                in CONDA_FORGE_BOOTSTRAP_PACKAGES has cross-platform
+                conda-forge builds -- it was just never documented
+                which platforms this actually covers until now. Set
+                CONDA_GMTSAR_ENV (or --conda-env) to pick which env
+                (default: 'gmtsar'). If the env doesn't exist yet, it's
+                created via `conda create -c conda-forge gmt hdf5
+                libtiff liblapack ...` (network required, also
+                bootstraps flex -- see do_conda_setup's docstring for
+                why flex specifically is conda-provisioned rather than
+                assumed). Still assumes the system already has basic
+                build tools (gfortran, g++, make, autoconf, csh,
+                ghostscript) -- --system conda deliberately keeps the
+                SYSTEM compiler in use rather than conda's (see
+                do_conda_setup's docstring), so it is not a fully
+                from-scratch bootstrap on a bare OS image the way
+                --system ubuntu or conda-linux-full are.
+    conda-linux-full
+                like conda, but the compiler/build-tool chain is ALSO
+                conda-provided (gfortran_linux-64, gxx_linux-64, make,
+                autoconf, ghostscript, tcsh) -- genuinely no system
+                packages required at all beyond a bare conda/miniconda
+                install. LINUX x86_64 ONLY -- conda-forge's compiler
+                packages are per-target (gfortran_linux-64 etc; macOS
+                would need entirely different package names, e.g.
+                clang_osx-64/gfortran_osx-64, not implemented here).
+                Fails fast with a clear error on any other platform
+                rather than silently trying wrong package names.
+                Confirmed working via a real clean-room build,
+                2026-07-23 (see docs/PATHWAY_FORWARD.md). No plain `csh`
+                package exists on conda-forge (only `tcsh`, which
+                Debian/Ubuntu's own `csh` package itself just wraps) --
+                a `csh -> tcsh` symlink is created inside the env's
+                bin/ automatically. See do_conda_setup's docstring for
+                what "full isolation" actually means here (real env
+                activation, not just extra PATH/CPPFLAGS/LDFLAGS).
+    conda-windows-full
+                native Windows -- no WSL, no MSYS2/Cygwin toolchain, no
+                admin/sudo. Named to match conda-linux-full: like that
+                mode, the compiler/build-tool chain is ALSO conda-
+                provided (m2w64-toolchain, cmake, ninja), since a bare
+                Windows box has no "system gfortran/g++" to fall back
+                on the way --system conda does on Linux/macOS -- there
+                is no partial/non-full Windows variant. Builds via
+                CMake/Ninja (this repo's ./configure && make path is
+                POSIX-shell/Makefile-only) against the conda env's
+                MinGW-w64 toolchain. Still requires Git for Windows
+                installed separately (for a real POSIX shell --
+                gmtsar_lib.py shells out via Git Bash for syntax
+                cmd.exe can't run) -- gmtsar/python/
+                distribute_gmtsar_windows.py packages a fully self-
+                contained bundle (bundled Git Bash included) for
+                machines without it.
 
 `--system` alone installs everything for that system: dependencies, Python
 packages, and the in-place build. Two optional add-ons:
@@ -46,7 +91,10 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
+import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -112,6 +160,14 @@ BIN_PY_NAMES = [
 ]
 
 CONDA_SEARCH_BASES = ["~/anaconda3", "~/miniconda3", "/opt/conda"]
+
+IS_WINDOWS = sys.platform == "win32"
+# Extra search bases beyond CONDA_SEARCH_BASES for --system conda-windows-full:
+# ~/anaconda3 etc. still apply (expands to C:\Users\<user>\anaconda3), but
+# Windows installs are commonly placed elsewhere (e.g. a non-system drive)
+# with no shell init sourced, so $CONDA_EXE/`conda` on PATH may be unset --
+# check the usual non-home install roots too.
+WINDOWS_CONDA_SEARCH_BASES = [r"C:\ProgramData\Anaconda3", r"C:\ProgramData\miniconda3"]
 
 
 def _utc_now() -> str:
@@ -179,7 +235,10 @@ def require_apt() -> None:
 
 
 def _find_existing_conda_env(envname: str) -> Path | None:
-    for base in CONDA_SEARCH_BASES:
+    bases = list(CONDA_SEARCH_BASES)
+    if IS_WINDOWS:
+        bases += WINDOWS_CONDA_SEARCH_BASES
+    for base in bases:
         candidate = Path(os.path.expanduser(base)) / "envs" / envname
         if candidate.is_dir():
             return candidate
@@ -197,9 +256,15 @@ def locate_conda_base() -> Path:
     found = shutil.which("conda")
     if found:
         return Path(found).resolve().parent.parent
-    for base in CONDA_SEARCH_BASES:
+    bases = list(CONDA_SEARCH_BASES)
+    if IS_WINDOWS:
+        bases += WINDOWS_CONDA_SEARCH_BASES
+    for base in bases:
         b = Path(os.path.expanduser(base))
-        if (b / "bin" / "conda").is_file():
+        # Windows conda installs a launcher at condabin\conda.bat (Scripts\
+        # conda.exe also exists but only works once the env is active) --
+        # bin/conda is the POSIX layout.
+        if (b / "bin" / "conda").is_file() or (b / "condabin" / "conda.bat").is_file():
             return b
     sys.exit(
         "ERROR: no conda installation found (checked $CONDA_EXE, PATH, "
@@ -262,14 +327,81 @@ def locate_conda_base() -> Path:
 CONDA_FORGE_BOOTSTRAP_PACKAGES = [
     "gmt=6.4", "gshhg-gmt", "dcw-gmt", "flex",
     "hdf5=1.12.*", "libtiff>=4.5,<5", "liblapack>=3.9",
+    # Real bug found 2026-07-23 (a genuine --system conda-linux-full clean-room
+    # env creation, not a fixture): python itself is pulled in
+    # transitively (via gdal's python bindings, a gmt dependency), but
+    # pip is NOT -- do_python_deps's `pip install -r requirements.txt`
+    # then fails with FileNotFoundError on bin/pip. Only went unnoticed
+    # on plain --system conda so far because every real test this
+    # session reused a pre-existing env that already had pip from an
+    # earlier, unrelated setup -- a genuinely fresh env for EITHER mode
+    # hits this. Listed explicitly rather than relying on transitive
+    # pull-in, which is not guaranteed to include pip on every channel/
+    # solver combination.
+    "pip",
+]
+
+# --system conda-linux-full only: the compiler/build-tool chain --system conda
+# otherwise assumes the system already provides. conda-forge names its
+# compiler-activation packages per-target (gfortran_linux-64 etc, not
+# plain "gfortran") -- see do_conda_setup's docstring for why activation
+# is required to actually use them. No plain "csh" package exists on
+# conda-forge (confirmed 2026-07-23: only "tcsh" is published) -- a
+# csh -> tcsh symlink is created in the env's bin/ separately, not
+# listed here since it isn't a package.
+CONDA_FORGE_FULL_ISOLATION_PACKAGES = [
+    "gfortran_linux-64", "gxx_linux-64", "make", "autoconf",
+    "ghostscript", "tcsh",
 ]
 
 
-def locate_conda_env(envname: str) -> Path:
+def _resolve_current_conda_env() -> tuple[str, Path]:
+    """Resolve --conda-env current to (name, exact prefix path) of
+    whatever conda env is already active in this shell, via
+    $CONDA_DEFAULT_ENV (set by `conda activate`/`micromamba activate`,
+    not just $CONDA_PREFIX -- the latter is set even for 'base' with no
+    real activation) and $CONDA_PREFIX (the authoritative real path --
+    see locate_conda_env's known_prefix param for why this is used
+    directly instead of re-deriving the path by searching for the name).
+
+    Real feature request (2026-07-23, a downstream consumer -- InSARHub
+    -- testing this project): install.py always created/used a separate
+    'gmtsar'-named env, even when the caller was already inside a conda
+    env they wanted GMTSAR installed into directly (e.g. to share one
+    env across two projects' dependencies, avoiding version conflicts
+    between two separate envs each pinning their own numpy/gdal)."""
+    name = os.environ.get("CONDA_DEFAULT_ENV")
+    prefix = os.environ.get("CONDA_PREFIX")
+    if not name or name == "base" or not prefix:
+        sys.exit(
+            "ERROR: --conda-env current requires an activated (non-base) "
+            f"conda env in this shell -- $CONDA_DEFAULT_ENV is {name!r}, "
+            f"$CONDA_PREFIX is {prefix!r}. Run `conda activate <env>` "
+            "first, or pass a real env name instead of 'current'."
+        )
+    print(f"==> --conda-env current resolved to '{name}' at {prefix} "
+          f"(from $CONDA_DEFAULT_ENV/$CONDA_PREFIX)")
+    return name, Path(prefix)
+
+
+def locate_conda_env(envname: str, packages: list[str] | None = None,
+                      known_prefix: Path | None = None) -> Path:
     """Find an existing conda env named `envname`; if none exists, create
     it via `conda create -c conda-forge ...` so --system conda works on a
     brand-new host that already has *some* conda install but not yet the
-    'gmtsar' env (network required for the create step).
+    'gmtsar' env (network required for the create step). `packages`
+    defaults to CONDA_FORGE_BOOTSTRAP_PACKAGES; --system conda-linux-full passes
+    the extended list (+ CONDA_FORGE_FULL_ISOLATION_PACKAGES).
+
+    known_prefix: --conda-env current's exact path (from $CONDA_PREFIX),
+    used AS-IS instead of re-searching CONDA_SEARCH_BASES by name. The
+    search-by-name path below only checks a fixed set of common conda
+    install locations (see the incident this docstring already documents
+    for locate_conda_base) -- a currently-active env could legitimately
+    live under a completely different, non-standard root (a custom conda
+    install, a project-specific micromamba root, etc.), so re-deriving
+    its path by name when the real path is already known via activation
+    is both unnecessary and a real way to silently pick the wrong env.
 
     Real bug fixed 2026-07-13 (found by a genuine clean-room test, not
     a fixture): _find_existing_conda_env() only ever checks the fixed
@@ -282,22 +414,42 @@ def locate_conda_env(envname: str) -> Path:
     exited 0 but the env still doesn't exist" even though it does. The
     post-create check (and a pre-create check) must look under the
     SAME conda_base that locate_conda_base() actually resolved, not a
-    separately-guessed list."""
+    separately-guessed list.
+
+    Prefers `micromamba` for the actual create call, if present on PATH,
+    over classic `conda create`. Real bug found 2026-07-23 (a genuine
+    clean-room --system conda-linux-full attempt, not a fixture): classic
+    conda's solver (pre-libmamba-solver conda, e.g. 4.14.0) fell back
+    from the fast repodata index to the full one and hung 28+ minutes
+    with zero output solving this exact package set -- a known classic-
+    solver failure mode, not specific to any one package. micromamba
+    solved and installed the same set in well under a minute."""
+    if known_prefix is not None:
+        if not known_prefix.is_dir():
+            sys.exit(f"ERROR: known_prefix {known_prefix} does not exist.")
+        return known_prefix
     existing = _find_existing_conda_env(envname)
     if existing is not None:
         return existing
+    packages = packages if packages is not None else CONDA_FORGE_BOOTSTRAP_PACKAGES
     conda_base = locate_conda_base()
     # conda_base may not be one of CONDA_SEARCH_BASES -- check its own
     # envs/ dir directly before assuming a fresh create is needed.
     candidate = conda_base / "envs" / envname
     if candidate.is_dir():
         return candidate
+    creator = shutil.which("micromamba")
+    creator_desc = f"{creator} create" if creator else f"{conda_base}/bin/conda create"
     print(f"==> conda env '{envname}' not found; creating it via "
-          f"{conda_base}/bin/conda create -c conda-forge "
-          f"{' '.join(CONDA_FORGE_BOOTSTRAP_PACKAGES)} "
-          "(this downloads packages -- needs network, may take a while)...")
-    run([str(conda_base / "bin" / "conda"), "create", "-n", envname, "-y",
-         "-c", "conda-forge"] + CONDA_FORGE_BOOTSTRAP_PACKAGES)
+          f"{creator_desc} -c conda-forge {' '.join(packages)} "
+          "(this downloads packages -- needs network, may take a while"
+          f"{'' if creator else ', and classic conda can be SLOW -- consider installing micromamba if this hangs'})...")
+    if creator:
+        run([creator, "create", "-y", "-r", str(conda_base), "-n", envname,
+             "-c", "conda-forge"] + packages)
+    else:
+        run([str(conda_base / "bin" / "conda"), "create", "-n", envname, "-y",
+             "-c", "conda-forge"] + packages)
     if not candidate.is_dir():
         sys.exit(
             f"ERROR: conda create exited 0 but {candidate} still doesn't "
@@ -306,10 +458,27 @@ def locate_conda_env(envname: str) -> Path:
     return candidate
 
 
+def _stage_one_windows(src: Path, dst: Path) -> None:
+    """Windows has no reliable unprivileged symlink (needs Developer Mode
+    or admin, neither guaranteed) -- copy instead. Also normalizes CRLF
+    to LF: `git config core.autocrlf=true` (this checkout's setting)
+    rewrites every text file's line endings on checkout, which breaks
+    the `#!/usr/bin/env python3` shebang line real Windows tools (Git
+    Bash) use to exec these extensionless scripts -- `python3\\r` is not
+    a valid interpreter name. Copying is also why --rebuild exists: a
+    Windows install does NOT pick up source edits live the way the
+    symlink-based POSIX path does."""
+    data = src.read_bytes()
+    if b"\r\n" in data[:4096]:  # cheap check: only touch text-ish files
+        data = data.replace(b"\r\n", b"\n")
+    dst.write_bytes(data)
+
+
 def stage_execs(paths: list[Path], bin_dir: Path) -> None:
     """chmod +x each existing regular file, then symlink it into bin_dir
     (not copy, so edits to the source tree are picked up live). Shared by
-    every "stage these onto PATH" step in --build.
+    every "stage these onto PATH" step in --build. On Windows, copies
+    instead (see _stage_one_windows).
 
     Directories in `paths` (e.g. utils/__pycache__, utils/build -- a glob
     over utils/* picks these up too) are skipped, not staged: they were
@@ -328,7 +497,11 @@ def stage_execs(paths: list[Path], bin_dir: Path) -> None:
                   "exists as a real directory, not a symlink; remove it "
                   "manually if it shouldn't be there.", file=sys.stderr)
             continue
-        dst.symlink_to(f)
+        if IS_WINDOWS:
+            _stage_one_windows(f, dst)
+            dst.chmod(dst.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        else:
+            dst.symlink_to(f)
 
 
 def do_ubuntu_deps() -> None:
@@ -339,24 +512,130 @@ def do_ubuntu_deps() -> None:
     run(sudo + ["apt", "install", "-y"] + APT_SYSTEM_DEPS)
 
 
-def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
+# Real system build tools --system conda deliberately assumes are already
+# present (see do_conda_setup's docstring for why) rather than provisioning
+# them itself the way --system ubuntu does via apt. Checked up front so a
+# missing one fails fast with a clear message, instead of surfacing as a
+# cryptic autoconf/make error deep inside the build.
+REQUIRED_SYSTEM_BUILD_TOOLS = ("gfortran", "g++", "make", "autoconf", "csh", "gs")
+# "gs" is the actual binary name for ghostscript.
+
+def _check_system_build_tools() -> None:
+    missing = [t for t in REQUIRED_SYSTEM_BUILD_TOOLS if shutil.which(t) is None]
+    if missing:
+        sys.exit(
+            "ERROR: --system conda still requires these system build tools "
+            f"on PATH (not provisioned by conda): {', '.join(missing)}. "
+            "Install them via your OS package manager (e.g. on Ubuntu: "
+            "apt install gfortran g++ make autoconf csh ghostscript), then "
+            "re-run. See install.py's --system conda docstring for why "
+            "these aren't conda-provisioned."
+        )
+
+
+def _find_conda_compiler(prefix: Path, kind: str) -> str | None:
+    """Find conda-forge's target-triplet-prefixed compiler binary (e.g.
+    x86_64-conda-linux-gnu-gcc) under prefix/bin -- conda-forge's
+    *_linux-64 compiler-activation packages don't install plain-named
+    gcc/g++/gfortran, only these (meant to be picked up via env
+    activation, which sets CC/CXX/F77 to them -- see this function's
+    caller). `kind` is one of "gcc", "g++", "gfortran"."""
+    matches = sorted((prefix / "bin").glob(f"*-{kind}"))
+    return str(matches[0]) if matches else None
+
+
+def _check_conda_linux_full_platform() -> None:
+    """--system conda-linux-full only works on Linux x86_64:
+    CONDA_FORGE_FULL_ISOLATION_PACKAGES names conda-forge's per-target
+    compiler-activation packages (gfortran_linux-64, gxx_linux-64) --
+    macOS needs entirely different package names (e.g. clang_osx-64,
+    gfortran_osx-64), not implemented here. Checked up front so this
+    fails with a clear message instead of `conda create` silently
+    erroring on unknown package names for the wrong platform."""
+    system = platform.system()
+    machine = platform.machine()
+    if system != "Linux" or machine not in ("x86_64", "AMD64"):
+        sys.exit(
+            f"ERROR: --system conda-linux-full only supports Linux x86_64 "
+            f"(detected {system} {machine}). Its compiler packages "
+            f"(gfortran_linux-64, gxx_linux-64) are Linux-specific conda-forge "
+            f"names -- macOS/ARM would need different packages, not "
+            f"implemented here. Use --system conda instead (assumes the "
+            f"system's own compiler, which works on any platform)."
+        )
+
+
+def _check_conda_full_isolation_tools(prefix: Path) -> dict[str, str]:
+    """Verify the env actually has the full-isolation compiler/build-tool
+    set (whether just-created or a pre-existing env being reused), and
+    return the resolved {CC, CXX, F77} paths. Ensures a csh -> tcsh
+    symlink exists in prefix/bin (no plain csh package on conda-forge --
+    see CONDA_FORGE_FULL_ISOLATION_PACKAGES's comment)."""
+    cc = _find_conda_compiler(prefix, "gcc")
+    cxx = _find_conda_compiler(prefix, "g++")
+    f77 = _find_conda_compiler(prefix, "gfortran")
+    missing = []
+    if cc is None:
+        missing.append("gfortran_linux-64/gxx_linux-64 (C compiler)")
+    if cxx is None:
+        missing.append("gxx_linux-64 (C++ compiler)")
+    if f77 is None:
+        missing.append("gfortran_linux-64 (Fortran compiler)")
+    for tool in ("make", "autoconf", "gs"):
+        if not (prefix / "bin" / tool).is_file():
+            missing.append(tool)
+    if missing:
+        sys.exit(
+            f"ERROR: conda env at {prefix} is missing full-isolation "
+            f"build tools: {', '.join(missing)}. Either recreate the env "
+            f"(delete it and re-run --system conda-linux-full) or manually "
+            f"`conda install -n <env> -c conda-forge "
+            f"{' '.join(CONDA_FORGE_FULL_ISOLATION_PACKAGES)}`."
+        )
+    csh_link = prefix / "bin" / "csh"
+    if not csh_link.exists():
+        tcsh = prefix / "bin" / "tcsh"
+        if not tcsh.is_file():
+            sys.exit(f"ERROR: {tcsh} not found -- conda env is missing tcsh.")
+        csh_link.symlink_to(tcsh)
+        print(f"==> Created {csh_link} -> tcsh (no plain csh package on conda-forge)")
+    return {"CC": cc, "CXX": cxx, "F77": f77}
+
+
+def do_conda_setup(conda_env: str, full_isolation: bool = False,
+                    known_prefix: Path | None = None) -> tuple[Path, dict[str, str]]:
     """Locate (or create, if missing -- see locate_conda_env) the conda
     env, then return its libs/includes as an explicit env-var dict for
     do_build to pass ONLY to the subprocess calls that need them --
     WITHOUT activating the env or mutating this process's own
-    os.environ, so system gfortran/gcc stay in use (full conda
-    activation pollutes CC/F77 and breaks configure) and so these
-    build flags don't silently leak into every other subprocess this
-    script runs. This is why --system conda still assumes the system's
-    own compiler/build-tool chain (gfortran, g++, make, autoconf, csh,
-    ghostscript) is already present, unlike --system ubuntu which
-    provisions all of that itself via apt. flex is the one exception --
-    bootstrapped via conda-forge instead of assumed present, since
-    (unlike a compiler) it has no ABI/linkage implications for the rest
-    of the build -- see CONDA_FORGE_BOOTSTRAP_PACKAGES's comment."""
-    prefix = locate_conda_env(conda_env)
+    os.environ, so system gfortran/gcc stay in use by default (full
+    conda activation pollutes CC/F77 and breaks configure UNLESS the
+    conda env's own compilers are what you actually want -- see
+    full_isolation below) and so these build flags don't silently leak
+    into every other subprocess this script runs. This is why plain
+    --system conda still assumes the system's own compiler/build-tool
+    chain (gfortran, g++, make, autoconf, csh, ghostscript) is already
+    present, unlike --system ubuntu which provisions all of that itself
+    via apt. flex is the one exception -- bootstrapped via conda-forge
+    instead of assumed present even in plain conda mode, since (unlike a
+    compiler) it has no ABI/linkage implications for the rest of the
+    build -- see CONDA_FORGE_BOOTSTRAP_PACKAGES's comment.
+
+    full_isolation=True (--system conda-linux-full): confirmed working via a
+    real clean-room build, 2026-07-23 (docs/PATHWAY_FORWARD.md). Uses
+    conda-forge's own gfortran_linux-64/gxx_linux-64 packages -- these
+    install target-triplet-prefixed binaries (x86_64-conda-linux-gnu-gcc
+    etc), not plain gcc/g++/gfortran, so CC/CXX/F77 are set explicitly
+    to those resolved paths (real activation-equivalent), same
+    subprocess-only-env-dict mechanism as the rest of this function --
+    still never mutates this process's own os.environ."""
+    packages = (CONDA_FORGE_BOOTSTRAP_PACKAGES + CONDA_FORGE_FULL_ISOLATION_PACKAGES
+                if full_isolation else CONDA_FORGE_BOOTSTRAP_PACKAGES)
+    prefix = locate_conda_env(conda_env, packages=packages, known_prefix=known_prefix)
     print(f"==> Using conda env at {prefix} (no sudo)")
+    compiler_env = _check_conda_full_isolation_tools(prefix) if full_isolation else {}
     extra_env = {
+        **compiler_env,
         "CPPFLAGS": f"-I{prefix}/include -I{prefix}/include/gmt",
         "LDFLAGS": f"-L{prefix}/lib -Wl,-rpath,{prefix}/lib",
         "PKG_CONFIG_PATH": f"{prefix}/lib/pkgconfig",
@@ -389,6 +668,252 @@ def do_conda_setup(conda_env: str) -> tuple[Path, dict[str, str]]:
     return prefix, extra_env
 
 
+# ------------------------------------------------------ conda-windows-full ----
+# Bootstrap set for --system conda-windows-full: same rationale as
+# CONDA_FORGE_BOOTSTRAP_PACKAGES (gmt pinned for numerical parity; libtiff
+# pinned since it's linked into the C build), PLUS the actual Windows-
+# native build toolchain (m2w64-toolchain: MinGW-w64 gcc/gfortran/make;
+# cmake+ninja: this repo's C build goes through CMake on Windows, not
+# ./configure && make -- see do_windows_build). No hdf5/flex: RS2/NISAR
+# (the only sensors this Windows path has been verified against) default
+# to their Python preprocessors (GMTSAR_RS2_PREPROC_PY / GMTSAR_NSR_
+# PREPROC_PY = 1 -- NISAR's HDF5 read goes through h5py, a pip package,
+# not the C libhdf5), never touching preproc/ERS_preproc's lex-generated
+# ers_line_fixer.c. openblas, NOT the default libblas/liblapack (those
+# resolve to an MKL build whose DLLs ship with no import .lib MinGW can
+# link against -- and even openblas needs a real workaround, a MinGW
+# binutils bug triggered by its huge symbol table; see gmtsar/CMakeLists.
+# txt's WIN32 block).
+WINDOWS_CONDA_BOOTSTRAP_PACKAGES = [
+    "gmt=6.4", "gshhg-gmt", "dcw-gmt", "libtiff>=4.5,<5", "openblas",
+    # Variant pins, not just the openblas package: on win-64, conda-forge's
+    # DEFAULT libblas/liblapack shim DLLs are the MKL variant -- their
+    # EXPORTS are forwarders to mkl_rt.N.dll, so anything linking the shims
+    # (conda's own gmt.dll does) needs the MKL runtime at load time even
+    # when openblas is co-installed. Real bug found 2026-07-23 by
+    # distribute_gmtsar_windows.py's isolated-PATH verify: gmt.dll failed
+    # STATUS_DLL_NOT_FOUND with every *import-table* dependency present,
+    # because forwarders live in the export table where no import walk
+    # sees them. MKL also can't be bundled statically (mkl_rt dispatches
+    # to mkl_core/mkl_avx*/... via runtime LoadLibrary). Pinning the
+    # openblas variant makes the shims forward to openblas.dll -- which
+    # this build already links directly (see gmtsar/CMakeLists.txt's
+    # WIN32 openblas import-lib workaround) -- and drops MKL from the
+    # env entirely (smaller, self-containable).
+    "libblas=*=*openblas", "liblapack=*=*openblas", "libcblas=*=*openblas",
+    "m2w64-toolchain", "cmake", "ninja",
+    # Same class of bug CONDA_FORGE_BOOTSTRAP_PACKAGES fixed in v2.9.0
+    # (see its own "pip" entry): python arrives transitively (gmt -> gdal
+    # -> python bindings) but pip is NOT guaranteed to -- and
+    # do_python_deps runs `python.exe -m pip install -r requirements.txt`,
+    # which dies with "No module named pip" on a genuinely fresh env.
+    # Every dev-machine test so far reused an env that already had pip
+    # from unrelated prior setup, masking this. Listing pip explicitly
+    # also guarantees python itself (pip depends on it).
+    "pip",
+]
+
+
+def _windows_env_paths(prefix: Path) -> dict[str, Path]:
+    """Windows conda envs use a different layout than POSIX: libraries/
+    headers/native binaries live under <prefix>/Library/, not <prefix>/
+    {lib,include,bin}; the env's own Python is <prefix>/python.exe (not
+    <prefix>/bin/python3); pip-installed console scripts land in
+    <prefix>/Scripts/, not <prefix>/bin/."""
+    library = prefix / "Library"
+    return {
+        "python": prefix / "python.exe",
+        "scripts": prefix / "Scripts",
+        "bin": library / "bin",
+        "include": library / "include",
+        "lib": library / "lib",
+        "mingw_bin": library / "mingw-w64" / "bin",
+        "cmake": library / "bin" / "cmake.exe",
+        "ninja": library / "bin" / "ninja.exe",
+    }
+
+
+def _windows_conda_exe(conda_base: Path) -> Path:
+    """Prefer Scripts\\conda.exe (a real PE executable, directly
+    CreateProcess-able) over condabin\\conda.bat. Real bug found
+    2026-07-23 by the first genuinely-fresh env creation (every earlier
+    run reused an existing env, so the create branch never executed):
+    the .bat route goes through `cmd /c`, and cmd PARSES the command
+    line -- a bare package spec like `libtiff>=4.5,<5` is read as
+    redirection operators (stdout to a file named `=4.5,`, stdin from a
+    file named `5`), failing in milliseconds with cmd's opaque 'The
+    system cannot find the file specified'. And it can't be cleanly
+    quoted from a subprocess argv list either: list2cmdline escapes
+    embedded quotes as \\", which cmd forwards through the .bat's %*
+    so the final conda argv gets LITERAL quote characters in the spec.
+    conda.exe sidesteps the whole class: no cmd, no metacharacter
+    parsing, list2cmdline handles it like any normal argv. (An earlier
+    docstring here claimed Scripts\\conda.exe 'only works once the env
+    is active' -- tested false on conda 26.5.3: --version, env list
+    --json, and create all work standalone.)"""
+    conda_scripts_exe = conda_base / "Scripts" / "conda.exe"
+    if conda_scripts_exe.is_file():
+        return conda_scripts_exe
+    return conda_base / "condabin" / "conda.bat"
+
+
+def _windows_conda_cmd(conda_exe: Path, args: list[str]) -> list[str]:
+    """conda.exe: direct argv, no shell involved. conda.bat (fallback
+    for exotic installs with no Scripts\\conda.exe): must go through
+    cmd /c -- CreateProcess can't exec a .bat -- which re-parses the
+    command line; package specs containing cmd metacharacters (>,<,,)
+    CANNOT be passed reliably through that route (see
+    _windows_conda_exe's docstring), so fail loudly up front rather
+    than let cmd misparse them into redirections."""
+    if conda_exe.suffix.lower() == ".exe":
+        return [str(conda_exe)] + args
+    bad = [a for a in args if re.search(r'[><|&^]', a)]
+    if bad:
+        sys.exit(
+            f"ERROR: only condabin\\conda.bat was found ({conda_exe}), and "
+            f"these arguments cannot be passed reliably through cmd /c: "
+            f"{bad}. Install a conda providing Scripts\\conda.exe, or "
+            "create the env manually and re-run.")
+    return ["cmd", "/c", str(conda_exe)] + args
+
+
+def _windows_conda_env_paths(conda_exe: Path) -> dict[str, str]:
+    """{env_name: env_path} via `conda env list --json` -- the
+    AUTHORITATIVE source, not directory-guessing. Real bug found
+    2026-07-23: conda's default envs_dirs includes ~/.conda/envs, a
+    location independent of where conda ITSELF is installed (e.g. conda
+    at D:\\anaconda but the env at C:\\Users\\<user>\\.conda\\envs\\gmtsar)
+    -- CONDA_SEARCH_BASES-style guessing (~/anaconda3, ~/miniconda3, ...)
+    missed a genuinely-existing env on the exact host this was built on."""
+    cmd = _windows_conda_cmd(conda_exe, ["env", "list", "--json"])
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if out.returncode != 0:
+        sys.exit(f"ERROR: `conda env list --json` failed (rc={out.returncode}): {out.stderr}")
+    envs = json.loads(out.stdout).get("envs", [])
+    return {Path(p).name: p for p in envs}
+
+
+def _ensure_python3_shim(conda_prefix: Path) -> None:
+    """Every staged Python tool (utils/*, bin_py/*) starts with `#!/usr/
+    bin/env python3` -- and conda's Windows envs only ship python.exe,
+    never a `python3` alias. Without this, Git Bash's `env` resolves
+    `python3` to Windows' Microsoft-Store app-execution-alias stub
+    instead (a fake python3.exe that just prints "Python was not found;
+    run without arguments to install from the Microsoft Store" -- a
+    real, confirmed failure mode, not a hypothetical one), silently
+    breaking every single staged tool's shebang line. Copying python.exe
+    to python3.exe alongside it in the env root fixes this permanently:
+    that directory is exactly what `conda activate <env>` puts on PATH,
+    ahead of the WindowsApps alias directory."""
+    python3_exe = conda_prefix / "python3.exe"
+    if not python3_exe.is_file():
+        shutil.copy2(conda_prefix / "python.exe", python3_exe)
+        print(f"==> Created {python3_exe} (python3 shim -- see "
+              "_ensure_python3_shim)")
+
+
+def do_windows_conda_setup(conda_env: str) -> Path:
+    """Locate (or create) the conda env for --system conda-windows-full.
+    Unlike do_conda_setup (Linux), this does NOT keep a separate system
+    compiler in use -- a bare Windows box has no "system gfortran/gcc"
+    equivalent to fall back on, so the conda env supplies the WHOLE
+    toolchain (m2w64-toolchain) via WINDOWS_CONDA_BOOTSTRAP_PACKAGES."""
+    conda_base = locate_conda_base()
+    conda_exe = _windows_conda_exe(conda_base)
+
+    envs = _windows_conda_env_paths(conda_exe)
+    if conda_env in envs:
+        existing = Path(envs[conda_env])
+        print(f"==> Using conda env at {existing} (no sudo/admin)")
+        _ensure_python3_shim(existing)
+        return existing
+
+    print(f"==> conda env '{conda_env}' not found; creating it via "
+          f"{conda_exe} create -c conda-forge "
+          f"{' '.join(WINDOWS_CONDA_BOOTSTRAP_PACKAGES)} "
+          "(this downloads packages -- needs network, may take a while)...")
+    run(_windows_conda_cmd(conda_exe, ["create", "-n", conda_env, "-y",
+        "-c", "conda-forge"] + WINDOWS_CONDA_BOOTSTRAP_PACKAGES))
+
+    envs = _windows_conda_env_paths(conda_exe)
+    if conda_env not in envs:
+        sys.exit(
+            f"ERROR: conda create exited 0 but env '{conda_env}' still "
+            "doesn't show up in `conda env list --json` -- check the "
+            "conda output above."
+        )
+    new_prefix = Path(envs[conda_env])
+    _ensure_python3_shim(new_prefix)
+    return new_prefix
+
+
+def do_windows_build(conda_prefix: Path) -> None:
+    """Windows equivalent of do_build(): this repo's ./configure && make
+    path is POSIX-shell/Makefile-only and doesn't target Windows library
+    layouts -- build via the repo's CMakeLists.txt (Ninja generator)
+    against the conda env's MinGW-w64 toolchain instead. Only covers the
+    C/CMake side; RS2/NISAR/etc's actual pipelines run through the
+    Python framework (utils/), staged below same as do_build's tail."""
+    paths = _windows_env_paths(conda_prefix)
+    for label in ("cmake", "ninja"):
+        if not paths[label].is_file():
+            sys.exit(f"ERROR: {paths[label]} not found -- was "
+                      f"'{label}' installed into the '{conda_prefix.name}' "
+                      "conda env? (see WINDOWS_CONDA_BOOTSTRAP_PACKAGES)")
+
+    _apply_c_fixes()
+    print(f"==> Building gmtsar (CMake/Ninja) in {REPO_ROOT} ...")
+    build_dir = REPO_ROOT / "build-win"
+    build_dir.mkdir(exist_ok=True)
+
+    build_env = dict(os.environ)
+    # mingw_bin first: cc.exe's own subprocess tools (cc1.exe, as.exe,
+    # ...) must resolve from the SAME toolchain install, or the compiler
+    # can intermittently ICE -- a real bug hit during this port's own
+    # bring-up (cc.exe invoked without mingw-w64/bin on PATH crashed
+    # compiling a file it compiles fine otherwise).
+    build_env["PATH"] = os.pathsep.join([
+        str(paths["mingw_bin"]), str(paths["bin"]),
+        build_env.get("PATH", ""),
+    ])
+
+    run([str(paths["cmake"]), "-G", "Ninja",
+         "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+         f"-DCMAKE_INSTALL_PREFIX={REPO_ROOT}",
+         str(REPO_ROOT)], cwd=str(build_dir), env=build_env)
+    run([str(paths["ninja"])], cwd=str(build_dir), env=build_env)
+    run([str(paths["cmake"]), "--install", str(build_dir)], env=build_env)
+
+    bin_dir = REPO_ROOT / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    py_utils = REPO_ROOT / "gmtsar" / "python" / "utils"
+    stage_execs(sorted(py_utils.iterdir()), bin_dir)
+
+    bin_py_dir = REPO_ROOT / "gmtsar" / "python" / "bin_py"
+    stage_execs([bin_py_dir / name for name in BIN_PY_NAMES], bin_dir)
+    # phasediff_py dynamically loads _gmt_native_bf.py from its own
+    # directory (importlib.util.spec_from_file_location(..., _HERE /
+    # "_gmt_native_bf.py")) -- on POSIX that resolves through the
+    # bin/phasediff_py symlink back to bin_py/, where the file already
+    # lives; Windows COPIES phasediff_py flatly into bin/ instead (see
+    # stage_execs/_stage_one_windows), so the sibling file has to be
+    # staged alongside it explicitly.
+    if (bin_py_dir / "_gmt_native_bf.py").is_file():
+        stage_execs([bin_py_dir / "_gmt_native_bf.py"], bin_dir)
+
+    csh_dir = REPO_ROOT / "gmtsar" / "csh"
+    stage_execs(sorted(csh_dir.glob("*.csh")), bin_dir)
+    csh_shims_dir = REPO_ROOT / "gmtsar" / "python" / "csh_shims"
+    if csh_shims_dir.is_dir():
+        stage_execs(sorted(csh_shims_dir.glob("*.csh")), bin_dir)
+
+    # fftw_force_serial.so is an LD_PRELOAD shim -- meaningless on
+    # Windows (no LD_PRELOAD mechanism); sweep.py/case_runner.py still
+    # set the env var when present, which is simply ignored. Not built
+    # here.
+
+
 def do_python_deps(use_conda: bool, conda_prefix: Path | None) -> None:
     if use_conda:
         requirements_txt = REPO_ROOT / "gmtsar" / "python" / "requirements.txt"
@@ -402,8 +927,14 @@ def do_python_deps(use_conda: bool, conda_prefix: Path | None) -> None:
         # install via this path left the framework broken out of the box.
         # Read from requirements.txt directly so the two lists can't
         # diverge again.
-        run([str(conda_prefix / "bin" / "pip"), "install", "--upgrade",
-             "-r", str(requirements_txt)])
+        if IS_WINDOWS:
+            # No bin/pip on Windows -- `python -m pip` is the portable
+            # invocation, works whether or not Scripts/pip.exe exists yet.
+            run([str(conda_prefix / "python.exe"), "-m", "pip", "install",
+                 "--upgrade", "-r", str(requirements_txt)])
+        else:
+            run([str(conda_prefix / "bin" / "pip"), "install", "--upgrade",
+                 "-r", str(requirements_txt)])
     else:
         require_apt()
         print("==> Installing Python packages via apt...")
@@ -519,6 +1050,47 @@ def _defuse_fake_lex_sources() -> None:
               f"committed {c_file.name}; see _defuse_fake_lex_sources)")
 
 
+# Real GMTSAR source bug found 2026-07-23 (a genuine --system conda-linux-full
+# clean-room build, not a fixture): gmtsar/fitoffset.c calls strlcpy()
+# with no declaration/include anywhere. Implicit-declaration is only a
+# WARNING on GCC < 14 (e.g. a system compiler), a HARD ERROR on GCC 14+
+# (conda-forge's gxx_linux-64 package is 15.2.0) -- GCC 14 promoted
+# implicit function declarations to an error by default, part of C23
+# alignment. NOT --system conda-linux-full-specific: will also break --system
+# ubuntu on any host with GCC 14+ (Ubuntu 24.10+, Fedora 40+, Arch
+# already do). Applying this fix universally, not just under
+# conda-linux-full, since it's a genuine correctness/portability fix with
+# identical behavior on old compilers too (confirmed: compiles clean on
+# both GCC 11.4.0 and 15.2.0). See gmtsar/python/c_fixes/README.md.
+#
+# Kept as a build-time patch (copied over the real file, not committed
+# there) rather than editing gmtsar/fitoffset.c directly, per this
+# repo's "everything outside gmtsar/python/ is upstream and stays
+# untouched for clean merges" rule -- the real fix belongs in
+# gmtsar/python/c_fixes/ under version control instead.
+C_FIXES = {
+    REPO_ROOT / "gmtsar" / "python" / "c_fixes" / "fitoffset.c":
+        REPO_ROOT / "gmtsar" / "fitoffset.c",
+    REPO_ROOT / "gmtsar" / "python" / "c_fixes" / "conv.c":
+        REPO_ROOT / "gmtsar" / "conv.c",
+}
+
+
+def _apply_c_fixes() -> None:
+    for src, dst in C_FIXES.items():
+        if not src.is_file():
+            continue
+        if dst.is_file() and dst.read_bytes() == src.read_bytes():
+            continue
+        if not dst.is_file():
+            print(f"WARN: c_fixes target {dst} does not exist -- skipping "
+                  f"(upstream file layout may have changed)", file=sys.stderr)
+            continue
+        shutil.copyfile(src, dst)
+        print(f"==> applied c_fixes: {dst.relative_to(REPO_ROOT)} "
+              f"(from {src.relative_to(REPO_ROOT)})")
+
+
 def do_build(use_conda: bool, conda_prefix: Path | None,
              extra_env: dict[str, str] | None = None) -> None:
     """extra_env (from do_conda_setup, empty for --system ubuntu) is
@@ -527,6 +1099,7 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
     so it can't silently affect any other command this script runs."""
     print(f"==> Building gmtsar in {REPO_ROOT} ...")
     os.chdir(REPO_ROOT)
+    _apply_c_fixes()
     _defuse_fake_lex_sources()
     build_env = None
     if extra_env:
@@ -587,10 +1160,20 @@ def do_build(use_conda: bool, conda_prefix: Path | None,
     # runtime (LD_PRELOAD'd by runner.py). Without it, libgmt's
     # pthread-based FFTW spawns 14-19 threads per process and contends
     # across pipelines.
+    #
+    # Real gap found 2026-07-23 (--system conda-linux-full clean-room build):
+    # this used to hardcode literal "gcc" with no env= passed, so it
+    # silently used the ambient PATH's (system) gcc even under
+    # conda-linux-full -- on a box with genuinely no system compiler at all,
+    # that would fail despite conda-linux-full's whole point being not to need
+    # one. Uses the resolved CC from build_env when set (conda-linux-full),
+    # else falls back to "gcc" (plain conda / ubuntu, where the system
+    # compiler is assumed present anyway).
     py_dir = REPO_ROOT / "gmtsar" / "python"
-    run(["gcc", "-shared", "-fPIC", "-O2",
+    cc = (build_env or {}).get("CC", "gcc")
+    run([cc, "-shared", "-fPIC", "-O2",
          "-o", str(py_dir / "fftw_force_serial.so"),
-         str(py_dir / "fftw_force_serial.c")])
+         str(py_dir / "fftw_force_serial.c")], env=build_env)
 
 
 def do_orbits() -> None:
@@ -639,6 +1222,32 @@ def _setup_log(args: argparse.Namespace) -> None:
 
 
 def print_summary(conda_env: str) -> None:
+    if IS_WINDOWS:
+        print(f"""
+All requested steps completed.
+
+This pipeline shells out using POSIX syntax (ln -sf, rm -rf, mkdir -p,
+&&, ...) that cmd.exe/PowerShell can't run -- gmtsar_lib.py routes those
+through Git Bash (bash.exe) instead. Set GMTSAR_WIN_BASH if it isn't at
+the default C:\\Program Files\\Git\\bin\\bash.exe.
+
+To use gmtsar from this checkout, run in an Anaconda Prompt (cmd.exe):
+  conda activate {conda_env}
+  set GMTSAR={REPO_ROOT}
+  set PATH=%GMTSAR%\\bin;%PATH%
+
+(PowerShell: $env:GMTSAR="{REPO_ROOT}"; $env:PATH="$env:GMTSAR\\bin;$env:PATH")
+
+Sanity check:
+  where p2p_processing
+  gmt --version        # confirms gmt is reachable (needed for actual runs)
+  conv.exe             # should print usage, not crash -- if it segfaults,
+                        # the openblas link workaround (gmtsar/CMakeLists.txt,
+                        # WIN32 block) didn't take; re-run --rebuild.
+
+Full log of this run (every command, timestamped, with real output): {_LOG_PATH}
+""")
+        return
     print(f"""
 All requested steps completed.
 
@@ -663,14 +1272,26 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--system", choices=["ubuntu", "conda"],
+    parser.add_argument("--system", choices=["ubuntu", "conda", "conda-linux-full", "conda-windows-full"],
                         help="install everything for this system: system "
                              "deps (apt for ubuntu, a conda env -- created "
-                             "if missing -- for conda), Python packages, "
-                             "and the in-place build")
+                             "if missing -- for conda/conda-linux-full/"
+                             "conda-windows-full), Python packages, and the "
+                             "in-place build. conda-linux-full additionally "
+                             "provisions the compiler/build-tool chain via "
+                             "conda instead of assuming the system has it "
+                             "(see --system conda-linux-full in this "
+                             "script's own docstring). conda-windows-full is "
+                             "native Windows (no WSL, no sudo/admin) -- see "
+                             "do_windows_build")
     parser.add_argument("--conda-env", default="gmtsar",
-                        help="conda env name for --system conda "
-                             "(default: 'gmtsar')")
+                        help="conda env name for --system conda/conda-linux-full "
+                             "(default: 'gmtsar'). Pass 'current' to install into "
+                             "whatever conda env is already active in this shell "
+                             "(detected via $CONDA_DEFAULT_ENV) instead of "
+                             "creating/using a separate 'gmtsar'-named env -- "
+                             "errors clearly if no env is currently active "
+                             "(e.g. base, or no conda activation at all)")
     parser.add_argument("--rebuild", action="store_true",
                         help="skip the dependency steps, just rebuild + "
                              "re-stage (requires --system, for its build "
@@ -685,13 +1306,25 @@ def main() -> None:
         return
 
     if args.rebuild and args.system is None:
-        sys.exit("ERROR: --rebuild requires --system ubuntu or --system conda "
-                  "(needed to resolve build flags, e.g. the conda env's "
-                  "include/lib paths)")
+        sys.exit("ERROR: --rebuild requires --system ubuntu, conda, "
+                  "conda-linux-full, or conda-windows-full (needed to resolve "
+                  "build flags, e.g. the conda env's include/lib paths)")
+
+    if args.system == "conda-windows-full" and not IS_WINDOWS:
+        sys.exit("ERROR: --system conda-windows-full only makes sense when "
+                  f"running on Windows (sys.platform={sys.platform!r})")
+    if args.system in ("ubuntu", "conda", "conda-linux-full") and IS_WINDOWS:
+        sys.exit(f"ERROR: --system {args.system} targets POSIX (uses "
+                  "./configure && make, apt, etc.) -- use --system "
+                  "conda-windows-full on native Windows instead")
+
+    current_conda_prefix: Path | None = None
+    if args.conda_env == "current":
+        args.conda_env, current_conda_prefix = _resolve_current_conda_env()
 
     _setup_log(args)
 
-    use_conda = args.system == "conda"
+    use_conda = args.system in ("conda", "conda-linux-full", "conda-windows-full")
     conda_prefix: Path | None = None
     extra_env: dict[str, str] = {}
 
@@ -699,12 +1332,31 @@ def main() -> None:
         if not args.rebuild:
             do_ubuntu_deps()
     elif args.system == "conda":
-        conda_prefix, extra_env = do_conda_setup(args.conda_env)
+        _check_system_build_tools()
+        conda_prefix, extra_env = do_conda_setup(args.conda_env, known_prefix=current_conda_prefix)
+    elif args.system == "conda-linux-full":
+        # No _check_system_build_tools() -- conda-linux-full provisions the
+        # compiler/build-tool chain itself; do_conda_setup's own
+        # _check_conda_full_isolation_tools() verifies THAT instead.
+        _check_conda_linux_full_platform()
+        conda_prefix, extra_env = do_conda_setup(args.conda_env, full_isolation=True,
+                                                 known_prefix=current_conda_prefix)
+    elif args.system == "conda-windows-full":
+        # known_prefix/--conda-env current not wired into
+        # do_windows_conda_setup() yet -- it doesn't share
+        # locate_conda_env()'s machinery at all (see its own docstring:
+        # Windows can't fall back to a system compiler, so the whole
+        # toolchain comes from the env). Real follow-up, not done here.
+        conda_prefix = do_windows_conda_setup(args.conda_env)
 
-    if args.system is not None:
+    if args.system in ("ubuntu", "conda", "conda-linux-full"):
         if not args.rebuild:
             do_python_deps(use_conda, conda_prefix)
         do_build(use_conda, conda_prefix, extra_env)
+    elif args.system == "conda-windows-full":
+        if not args.rebuild:
+            do_python_deps(use_conda, conda_prefix)
+        do_windows_build(conda_prefix)
 
     if args.orbits:
         do_orbits()
