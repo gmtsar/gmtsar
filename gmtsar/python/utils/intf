@@ -26,17 +26,21 @@ def Error_Message():
 
 def extractSatBaselineOutputToPrm(refPrm, repPrm):
     # csh command: SAT_baseline $1 $2 | tail -n9 >> $2
-    out = subprocess.run(['SAT_baseline_py', refPrm, repPrm], stdout=subprocess.PIPE)
-    output = out.stdout.decode('utf-8').split('\n')[-10:]
+    # Routed through shell_check_output (bash -c on Windows) rather than
+    # subprocess.run([...]) directly: SAT_baseline_py is an extensionless
+    # shebang script -- Windows' CreateProcess can't exec it (it can only
+    # auto-append ".exe" to a bare name, and there is no SAT_baseline_py.exe).
+    out = shell_check_output(f'SAT_baseline_py {refPrm} {repPrm}')
+    output = out.decode('utf-8').split('\n')[-10:]
     print('INTF: SAT_baseline $1 $2 output is ', out)
     print('INTF: tail -n9 the above output is ', output)
     print('INTF: insert the tail results to file ', repPrm)
     with open(repPrm, 'a') as f:
         f.write('\n'.join(output))
-        
+
     # csh command: SAT_baseline $1 $1 | grep height >> $1
-    out = subprocess.run(['SAT_baseline_py', refPrm, refPrm], stdout=subprocess.PIPE)
-    output = out.stdout.decode('utf-8')
+    out = shell_check_output(f'SAT_baseline_py {refPrm} {refPrm}')
+    output = out.decode('utf-8')
     output = '\n'.join(line for line in output.split('\n') if 'height' in line)
     with open(refPrm, 'a') as f:
         f.write(output)

@@ -11,25 +11,147 @@
 """
 
 import sys, os, re, configparser
-import subprocess, glob
+import subprocess, glob, shutil, threading
+
+_WIN_BASH = None
+_WIN_BASH_RESOLVED = False
+_WIN_BASH_LOCK = threading.Lock()
+
+
+def _win_bash():
+    """Locate Git-for-Windows' bash.exe (memoized). subprocess's shell=True
+    invokes cmd.exe on Windows, which understands none of the POSIX shell
+    syntax (&&, ln -sf, rm -rf, mkdir -p, backticks, pipes to /dev/null,
+    ...) used throughout this pipeline -- Git Bash (near-universally
+    present alongside a Windows git install, and this repo already
+    requires git) provides a real POSIX shell without needing WSL/sudo."""
+    global _WIN_BASH, _WIN_BASH_RESOLVED
+    if _WIN_BASH_RESOLVED:
+        return _WIN_BASH
+    with _WIN_BASH_LOCK:
+        # Re-check inside the lock: another thread may have finished
+        # resolving while this one was waiting on the lock. Without the
+        # lock (and with the old code's _WIN_BASH_RESOLVED=True set
+        # BEFORE _WIN_BASH itself was assigned), two threads racing here
+        # -- as case_runner.py's csh_slot()/py_slot() do -- could see
+        # _WIN_BASH_RESOLVED already True but _WIN_BASH still None,
+        # silently falling through shell_run() to its shell=True/cmd.exe
+        # fallback instead of Git Bash. Real bug hit standing this up:
+        # one of two concurrent `cleanup all` calls failed with cmd.exe's
+        # "'cleanup' is not recognized ..." while the other succeeded.
+        if _WIN_BASH_RESOLVED:
+            return _WIN_BASH
+        if os.name == 'nt':
+            path_bash = shutil.which('bash')
+            # Windows 10+ ships a System32\bash.exe stub that launches WSL --
+            # NOT a real shell (this project is native-Windows-only, no WSL),
+            # and it'd otherwise shadow Git Bash whenever System32 precedes
+            # Git\bin on PATH. Reject it explicitly rather than trusting
+            # PATH order.
+            if path_bash and 'system32' in path_bash.lower():
+                path_bash = None
+            for candidate in (
+                os.environ.get('GMTSAR_WIN_BASH'),
+                r'C:\Program Files\Git\bin\bash.exe',
+                r'C:\Program Files (x86)\Git\bin\bash.exe',
+                path_bash,
+            ):
+                if candidate and os.path.isfile(candidate):
+                    _WIN_BASH = candidate
+                    break
+            else:
+                sys.exit(
+                    "gmtsar_lib: running on Windows but no Git-for-Windows "
+                    "bash.exe found (checked $GMTSAR_WIN_BASH, PATH, "
+                    "C:\\Program Files\\Git\\bin\\bash.exe) -- this pipeline "
+                    "shells out using POSIX syntax (ln -sf, rm -rf, mkdir -p, "
+                    "&&) that cmd.exe cannot run. Install Git for Windows, or "
+                    "set GMTSAR_WIN_BASH to a bash.exe path.")
+        _WIN_BASH_RESOLVED = True
+    return _WIN_BASH
+
+
+_WIN_PATH_VAR = 'GMTSAR_WIN_PATH'
+# Carries the pristine Windows-style PATH through nested bash/python hops
+# (p2p_processing -> bash -c 'pre_proc ...' -> pre_proc.py -> bash -c
+# 'extend_orbit ...' -> ...), as a defensive fallback only -- see
+# _bash_env(). Deliberately NOT used to convert PATH to POSIX/MSYS form:
+# an earlier version of this function did exactly that (rewriting each
+# entry to /c/... form for bash's own env=), which seemed right (bash's
+# *own* command lookup does need a POSIX-style PATH) but broke every
+# single gmtsar .exe launched from within that bash -- confirmed via a
+# direct CreateProcess repro (bypassing bash entirely) that returned
+# 0xC0000135 / STATUS_DLL_NOT_FOUND with a POSIX PATH and rc=0 with a
+# Windows-style one. Reason: those .exes dynamically link gmt.dll /
+# openblas.dll / tiff.dll from the conda env's Library/bin, and the
+# WINDOWS PE LOADER (not bash) resolves that at process-create time --
+# it cannot parse a colon-separated /c/... PATH at all. Git Bash/MSYS
+# already handles the POSIX-view-internally / Windows-view-to-children
+# duality correctly on its own (that's why the ORIGINAL, unmodified
+# gmtsar_lib.py -- no env override whatsoever -- ran extend_orbit fine
+# even nested inside pre_proc.py); the fix here is limited to making
+# sure a Windows-style PATH is what gets fed in, never re-deriving one
+# ourselves.
+
+
+def _bash_env(kwargs):
+    """Pop/build the env= to hand to a bash -c subprocess: caller-supplied
+    env (or a copy of os.environ), with a Windows-style PATH guaranteed
+    (see _WIN_PATH_VAR module comment for why this must NOT be POSIX-
+    converted). Git Bash's own MSYS runtime does the POSIX-vs-Windows
+    translation in both directions from here."""
+    env = dict(kwargs.pop('env', None) or os.environ)
+    win_path = env.get(_WIN_PATH_VAR) or env.get('PATH', '')
+    env[_WIN_PATH_VAR] = win_path
+    env['PATH'] = win_path
+    return env
+
+
+def shell_run(cmd, **kwargs):
+    """subprocess.run() for a POSIX-shell-syntax command string. On POSIX,
+    plain shell=True. On Windows, routes through Git Bash's `bash -c`
+    instead of shell=True's cmd.exe (see _win_bash())."""
+    bash = _win_bash()
+    if bash:
+        return subprocess.run([bash, '-c', cmd], env=_bash_env(kwargs), **kwargs)
+    return subprocess.run(cmd, shell=True, **kwargs)
+
+
+def shell_check_output(cmd, **kwargs):
+    """subprocess.check_output() for a POSIX-shell-syntax command string
+    (pipes, redirections, ...) -- Windows equivalent of shell_run()."""
+    bash = _win_bash()
+    if bash:
+        return subprocess.check_output([bash, '-c', cmd], env=_bash_env(kwargs), **kwargs)
+    return subprocess.check_output(cmd, shell=True, **kwargs)
 
 
 def resolve_sharedir():
     """Return the GMTSAR shared data directory ($GMTSAR/share/gmtsar).
     First tries $GMTSAR env var; falls back to walking up from this file's
-    location looking for share/gmtsar. Raises SystemExit if not found."""
+    location looking for share/gmtsar. Raises SystemExit if not found.
+
+    Returned path always uses forward slashes, even on Windows: callers
+    (filter, fitoffset.py, ...) embed this directly into shell command
+    STRINGS run via shell_run()/run() (e.g. f'conv ... {sharedir}/filters/
+    gauss15x5 ...'), and that string is handed to `bash -c` unquoted --
+    bash's own escaping rules treat backslash+letter as an escape
+    sequence and silently DROP the backslash, corrupting any embedded
+    Windows-style path (D:\\...\\share\\gmtsar becomes D:...sharegmtsar).
+    Forward slashes are valid path separators to both Windows file APIs
+    and bash, so they survive either consumer intact."""
     gmtsar = os.environ.get('GMTSAR')
     if gmtsar:
         candidate = os.path.join(gmtsar, 'share', 'gmtsar')
         if os.path.isdir(candidate):
-            return candidate
+            return candidate.replace('\\', '/')
 
     # Walk up from this file's location (handles direct + symlinked installs).
     cur = os.path.dirname(os.path.realpath(__file__))
     for _ in range(5):
         candidate = os.path.join(cur, 'share', 'gmtsar')
         if os.path.isdir(candidate):
-            return candidate
+            return candidate.replace('\\', '/')
         parent = os.path.dirname(cur)
         if parent == cur:
             break
@@ -126,7 +248,7 @@ def file_shuttle(fn0, fn1, opt):
     else:
         raise ValueError(f"file_shuttle: unknown opt {opt!r}")
     print(cmd)
-    rc = subprocess.run(cmd, shell=True).returncode
+    rc = shell_run(cmd).returncode
     if rc != 0:
         print(f"WARN: file_shuttle exited {rc}: {cmd}", file=sys.stderr)
 
@@ -134,7 +256,7 @@ def delete(fn):
     """Remove a file or directory tree by name. Shells out to preserve glob
     semantics: delete('amp*.grd') must still work. Silent on rm -rf failures
     (matches prior behavior)."""
-    subprocess.run(f"rm -rf {fn}", shell=True)
+    shell_run(f"rm -rf {fn}")
     
 def assign_arg(arg, str):
     # arg is the list that contains arguments from a terminal input.
@@ -175,7 +297,7 @@ def run(cmd):
     print(" ")
     print(f"[{_utc_now()}] {cmd}")
     _t0 = _t.time()
-    rc = subprocess.run(cmd, shell=True).returncode
+    rc = shell_run(cmd).returncode
     _dt = _t.time() - _t0
     print(f"[{_utc_now()}] done in {_dt:.3f}s (rc={rc})")
     try:

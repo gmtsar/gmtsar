@@ -54,6 +54,8 @@ import time
 
 import numpy as np
 
+from gmtsar_lib import shell_run
+
 try:
     import xarray as xr
 except ImportError as e:
@@ -235,7 +237,7 @@ def _ensure_raln_ralt(trans_dat: str, region: str, verbose: bool = False) -> Non
                                       out_path="raln.grd")
         else:
             cmd = f"gmt surface {trans_dat} -i0,1,3 -bi5d {region} -I16/32 -T.50 -Graln.grd {Vflag}"
-            subprocess.run(cmd, shell=True, check=False)
+            shell_run(cmd, check=False)
     if not os.path.isfile("ralt.grd"):
         if inproc:
             _run_surface_inproc_5col(trans_dat, region, col_z=4,
@@ -243,7 +245,7 @@ def _ensure_raln_ralt(trans_dat: str, region: str, verbose: bool = False) -> Non
                                       out_path="ralt.grd")
         else:
             cmd = f"gmt surface {trans_dat} -i0,1,4 -bi5d {region} -I16/32 -T.50 -Gralt.grd {Vflag}"
-            subprocess.run(cmd, shell=True, check=False)
+            shell_run(cmd, check=False)
 
 
 def _region_from_corr_extent(z, x_coord, y_coord) -> str:
@@ -411,12 +413,12 @@ def proj_ra2ll_fast(trans_dat: str, in_grd: str, out_grd: str,
 
     # ---- 6. blockmedian -> xyz2grd (UNCHANGED, parity-stable) ----
     t = time.time()
-    subprocess.run(
+    shell_run(
         f"gmt blockmedian llp {R} -bi3f -bo3f -I{fine_inc} -r {Vflag} > llpb",
-        shell=True, check=False)
-    subprocess.run(
+        check=False)
+    shell_run(
         f"gmt xyz2grd llpb {R} -I{fine_inc} -r -fg -G{out_grd} -bi3f",
-        shell=True, check=False)
+        check=False)
     times["blockmedian_xyz2grd"] = time.time() - t
 
     # ---- 7. cleanup ----

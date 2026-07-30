@@ -27,6 +27,7 @@ import argparse
 import glob
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,22 @@ from datetime import datetime, timezone
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.join(_HERE, os.pardir, "utils"))
 from cases import CASES  # noqa: E402
+import gmtsar_lib as _gmtsar_lib  # noqa: E402
+
+
+def _run_script(args, **kwargs):
+    """subprocess.run() for a command whose argv[0] is an extensionless
+    shebang script (pop_config, cleanup, ...) staged into bin/, or an
+    explicit .csh file. Windows' CreateProcess can exec neither directly
+    (no shebang support, and a bare name only gets ".exe" auto-appended)
+    -- route through Git Bash via gmtsar_lib.shell_run() there, same as
+    the main pipeline does; plain subprocess.run() elsewhere."""
+    if os.name == 'nt':
+        cmd = ' '.join(shlex.quote(a) for a in args)
+        return _gmtsar_lib.shell_run(cmd, **kwargs)
+    return subprocess.run(args, **kwargs)
 
 
 def _repo_root() -> str:
@@ -155,7 +171,7 @@ def _stage_config(case: str, tree_dir: str, staged_config: str, topo_mode: int |
     elif topo_mode is not None and not os.path.exists(cfg_path):
         sat = CASES[case]["satellite"]
         with open(cfg_path, "w") as f:
-            subprocess.run(["pop_config", sat], cwd=tree_dir, env=env, check=True, stdout=f)
+            _run_script(["pop_config", sat], cwd=tree_dir, env=env, check=True, stdout=f)
     if topo_mode is not None and os.path.exists(cfg_path):
         _force_topo_interp_mode(cfg_path, topo_mode)
 
@@ -243,7 +259,7 @@ def _run_subprocess_env(preload_shim: str | None, gmtsar_bin: str | None,
     if repo_root:
         prefix.append(os.path.join(repo_root, "bin"))
     if prefix:
-        env["PATH"] = ":".join(prefix) + ":" + env.get("PATH", "")
+        env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
     if profile:
         env["GMTSAR_PROFILE"] = "1"
         env["GMTSAR_PROFILE_CASE"] = case
@@ -260,10 +276,20 @@ def _run_recipe(tree_dir: str, case: str, env: dict) -> subprocess.CompletedProc
     `"./README_x.txt"` from inside bash, which silently falls back to
     /bin/sh on an ENOEXEC (POSIX "looks like a text script" convention).
     subprocess.run() does execve() directly with no such fallback, so we
-    invoke via bash explicitly instead of relying on it."""
+    invoke via bash explicitly instead of relying on it.
+
+    Resolves bash via gmtsar_lib._win_bash() rather than a bare "bash" on
+    Windows: a plain ["bash", ...] trusts PATH order, and Windows 10+
+    ships a System32\\bash.exe stub that launches WSL -- if that resolves
+    first, the recipe silently runs against a WSL prompt ("Windows
+    Subsystem for Linux has no installed distributions...") instead of
+    Git Bash. Real bug hit standing this up: both the ref and new trees'
+    entire recipe runs no-opped against that WSL stub with zero real
+    pipeline output, while case_runner.py still reported success."""
+    bash = _gmtsar_lib._win_bash() if os.name == 'nt' else 'bash'
     log_path = os.path.join(tree_dir, "log.txt")
     with open(log_path, "w") as logf:
-        return subprocess.run(["bash", f"README_{case}.txt"], cwd=tree_dir, env=env,
+        return subprocess.run([bash, f"README_{case}.txt"], cwd=tree_dir, env=env,
                                stdout=logf, stderr=subprocess.STDOUT)
 
 
@@ -320,7 +346,7 @@ def run_case(case: str, csh_dir: str, py_dir: str, tarball: str, py_readme: str,
         if topo_mode_ab:
             # Mode-AB "baseline" slot: run the Python recipe (not csh) into
             # csh_dir, forced to topo_interp_mode=0.
-            subprocess.run(["cleanup", "all"], cwd=csh_dir, env=env)
+            _run_script(["cleanup", "all"], cwd=csh_dir, env=env)
             shutil.copy(py_readme, os.path.join(csh_dir, os.path.basename(py_readme)))
             readme_path = os.path.join(csh_dir, os.path.basename(py_readme))
             os.chmod(readme_path, 0o755)
@@ -364,7 +390,7 @@ def run_case(case: str, csh_dir: str, py_dir: str, tarball: str, py_readme: str,
             _check_config_drift(case, bundled_cfg, staged_config)
 
         t0 = time.time()
-        subprocess.run(["cleanup", "all"], cwd=py_dir, env=env)
+        _run_script(["cleanup", "all"], cwd=py_dir, env=env)
         readme_path = os.path.join(py_dir, os.path.basename(py_readme))
         shutil.copy(py_readme, readme_path)
         os.chmod(readme_path, 0o755)

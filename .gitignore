@@ -1,5 +1,8 @@
 autom4te.cache/
 bin/
+build-win/
+dist/
+lib/
 config.log
 config.mk
 config.status

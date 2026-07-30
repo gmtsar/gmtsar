@@ -35,7 +35,7 @@ Layout under `gmtsar/python/`:
 - `utils/tkGUI.gmtsar` — Tk GUI front-end
 - `tests/` — regression-test framework (`sweep.py`, `case_runner.py`, `compare.py`, `cases.py`, `run_one.sh`) plus `tests/configs/<case>.py` (staged Python configs translated from bundled csh `config*.txt`) and `tests/recipes/README_<case>.txt` (per-case recipes). The old `sweep.sh`/`case_runner.sh`/`runner.py` bash implementation is archived at `tests/archive/` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `tests/archive/README.md`).
 - `docs/` — release notes archive (`release_notes_v*.md`)
-- Install script: `install.py` (`--system ubuntu|conda` installs everything for that system — deps, Python packages, build; `--rebuild` and `--orbits` are optional add-ons). Old bash version archived at `archive/install.sh` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `archive/README.md`).
+- Install script: `install.py` (`--system ubuntu|conda|conda-linux-full|conda-windows-full` installs everything for that system — deps, Python packages, build; `--rebuild` and `--orbits` are optional add-ons). `conda-linux-full` additionally provisions the compiler/build-tool chain via conda (Linux x86_64 only). `conda-windows-full` is native Windows — no WSL, no MSYS2/Cygwin toolchain — still requires Git for Windows for `gmtsar_lib.py`'s POSIX-shell routing. Old bash version archived at `archive/install.sh` (2026-07-13 rewrite — real CLI args instead of shell env vars; see `archive/README.md`).
 
 ## Syncing from upstream
 

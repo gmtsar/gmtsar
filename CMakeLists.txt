@@ -26,7 +26,7 @@ if (${srcdir} STREQUAL ${bindir})
 endif (${srcdir} STREQUAL ${bindir})
 
 # Define minimum CMake version required
-cmake_minimum_required (VERSION 2.8.5)
+cmake_minimum_required (VERSION 3.5)
 
 # Use NEW behavior with newer CMake releases
 foreach(p
@@ -62,8 +62,32 @@ include(ConfigureChecks)
 
 # Add subdirectories
 add_subdirectory (gmtsar)
-add_subdirectory (snaphu/src)
+if (EXISTS "${CMAKE_SOURCE_DIR}/snaphu/src/CMakeLists.txt")
+	add_subdirectory (snaphu/src)
+endif ()
 add_subdirectory (preproc)
+
+# Install the GMTSAR "sharedir" (filter kernels, snaphu configs, virgin PRM
+# templates) -- the CMake build's counterpart to the top-level Makefile's
+# `install:` target (see Makefile, sharedir rules). Only the traditional
+# ./configure && make path did this; the CMake path (gmtsar/CMakeLists.txt's
+# WIN32 block; this is Windows-only in practice today) never had an
+# equivalent, so filter/gmtsar_sharedir.csh-dependent tools (filter,
+# fitoffset, ...) had no share/gmtsar to resolve. Mirrors the Makefile's
+# file selection exactly: gmtsar/filters/[bfgsxy]* (kernel files), csh
+# snaphu.conf.* configs, and the two virgin PRM templates.
+install (DIRECTORY DESTINATION share/gmtsar/filters)
+install (DIRECTORY DESTINATION share/gmtsar/snaphu/config)
+file (GLOB _gmtsar_share_filters "${CMAKE_SOURCE_DIR}/gmtsar/filters/[bfgsxy]*")
+install (FILES ${_gmtsar_share_filters} DESTINATION share/gmtsar/filters)
+file (GLOB _gmtsar_share_snaphu_conf "${CMAKE_SOURCE_DIR}/gmtsar/csh/snaphu.conf.*")
+install (FILES ${_gmtsar_share_snaphu_conf} DESTINATION share/gmtsar/snaphu/config)
+file (GLOB _gmtsar_share_grds "${CMAKE_SOURCE_DIR}/gmtsar/*.grd")
+install (FILES
+	"${CMAKE_SOURCE_DIR}/preproc/ERS_preproc/scripts/virgin.PRM"
+	"${CMAKE_SOURCE_DIR}/preproc/ENVI_preproc/scripts/virgin_envisat.PRM"
+	${_gmtsar_share_grds}
+	DESTINATION share/gmtsar)
 
 # Configuration done
 message(

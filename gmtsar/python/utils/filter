@@ -70,8 +70,12 @@ def filter():
     print('FILTER: define filter and decimation variables ... ...')
     
     # Resolve sharedir dynamically (works for any install prefix — this fork
-    # installs to $REPO_ROOT/share/gmtsar, not /usr/local).
-    sharedir = subprocess.run(['gmtsar_sharedir.csh'], capture_output=True, text=True).stdout.strip()
+    # installs to $REPO_ROOT/share/gmtsar, not /usr/local). Uses
+    # resolve_sharedir() directly rather than shelling out to
+    # gmtsar_sharedir.csh: that's an extensionless/.csh script Windows'
+    # CreateProcess can't exec without going through bash, and
+    # resolve_sharedir() does the identical lookup in-process anyway.
+    sharedir = resolve_sharedir()
     filter3  = sharedir + '/filters/fill.3x3'
     filter4  = sharedir + '/filters/xdir'
     filter5  = sharedir + '/filters/ydir'

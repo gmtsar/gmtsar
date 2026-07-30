@@ -252,7 +252,7 @@ def main():
 
     gmtsar = _derive_gmtsar()
     os.environ["GMTSAR"] = gmtsar
-    os.environ["PATH"] = os.path.join(gmtsar, "bin") + ":" + os.environ.get("PATH", "")
+    os.environ["PATH"] = os.path.join(gmtsar, "bin") + os.pathsep + os.environ.get("PATH", "")
     if not shutil.which("python3"):
         print("sweep.py: python3 not on PATH — activate conda env or set PATH", file=sys.stderr)
         sys.exit(1)
@@ -331,11 +331,19 @@ def main():
 
     # Kick off a background download for every case. Reuses an already-
     # complete/partial file via `wget -c` semantics (resume, or near-instant
-    # HEAD-only check if already complete).
+    # HEAD-only check if already complete). wget isn't present on a bare
+    # native-Windows/conda install (no apt, and it's not in the
+    # WINDOWS_CONDA_BOOTSTRAP_PACKAGES set) -- fall back to curl, which
+    # ships with Git for Windows and modern Windows itself; `-C -` is
+    # curl's equivalent resume-or-redownload flag to wget's `-c`.
+    if shutil.which("wget"):
+        dl_cmd = lambda c: ["wget", "-c", "-q", "--timeout=60", "--tries=3", url[c], "-O", tarball[c]]
+    else:
+        dl_cmd = lambda c: ["curl", "-s", "-C", "-", "--connect-timeout", "60",
+                             "--retry", "3", "-L", url[c], "-o", tarball[c]]
     dl_procs: dict[str, subprocess.Popen] = {}
     for c in cases:
-        dl_procs[c] = subprocess.Popen(
-            ["wget", "-c", "-q", "--timeout=60", "--tries=3", url[c], "-O", tarball[c]])
+        dl_procs[c] = subprocess.Popen(dl_cmd(c))
         _log_line(log_path, f"DOWNLOAD start (background) {c}")
 
     preload_shim = os.path.abspath(os.path.join(tests_dir, os.pardir, "fftw_force_serial.so"))

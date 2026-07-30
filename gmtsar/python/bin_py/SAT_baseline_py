@@ -73,6 +73,12 @@ import numpy as np
 # utils/vector.py — those stay on the SourceFileLoader path below.
 _HERE = Path(__file__).resolve().parent
 _PY_ROOT = _HERE.parent
+if not (_PY_ROOT / "utils").is_dir() and os.environ.get("GMTSAR"):
+    # Windows staging COPIES this file flatly into bin/ (no symlink, see
+    # install.py's stage_execs) -- _HERE.parent then resolves to bin/..,
+    # which has no utils/ subdir. Fall back to the real source tree via
+    # $GMTSAR.
+    _PY_ROOT = Path(os.environ["GMTSAR"]) / "gmtsar" / "python"
 if str(_PY_ROOT) not in sys.path:
     sys.path.insert(0, str(_PY_ROOT))
 from utils.vector import (                                       # noqa: E402
