@@ -113,6 +113,15 @@ void null_sio_struct(struct PRM *p) {
 	p->baseline_start = NULL_DOUBLE;
 	p->baseline_center = NULL_DOUBLE;
 	p->baseline_end = NULL_DOUBLE;
+	p->bh_start = NULL_DOUBLE;
+	p->bv_start = NULL_DOUBLE;
+	p->bh_center = NULL_DOUBLE;
+	p->bv_center = NULL_DOUBLE;
+	p->bh_end = NULL_DOUBLE;
+	p->bv_end = NULL_DOUBLE;
+	p->bx_start = NULL_DOUBLE;
+	p->bx_center = NULL_DOUBLE;
+	p->bx_end = NULL_DOUBLE;
 	p->alpha_start = NULL_DOUBLE;
 	p->alpha_center = NULL_DOUBLE;
 	p->alpha_end = NULL_DOUBLE;
@@ -289,6 +298,24 @@ void get_sio_struct(FILE *fh, struct PRM *s) {
 			get_double(name, "baseline_center", value, &s->baseline_center);
 		if (strcmp(name, "baseline_end") == 0)
 			get_double(name, "baseline_end", value, &s->baseline_end);
+		if (strcmp(name, "bh_start") == 0)
+			get_double(name, "bh_start", value, &s->bh_start);
+		if (strcmp(name, "bv_start") == 0)
+			get_double(name, "bv_start", value, &s->bv_start);
+		if (strcmp(name, "bh_center") == 0)
+			get_double(name, "bh_center", value, &s->bh_center);
+		if (strcmp(name, "bv_center") == 0)
+			get_double(name, "bv_center", value, &s->bv_center);
+		if (strcmp(name, "bh_end") == 0)
+			get_double(name, "bh_end", value, &s->bh_end);
+		if (strcmp(name, "bv_end") == 0)
+			get_double(name, "bv_end", value, &s->bv_end);
+		if (strcmp(name, "bx_start") == 0)
+			get_double(name, "bx_start", value, &s->bx_start);
+		if (strcmp(name, "bx_center") == 0)
+			get_double(name, "bx_center", value, &s->bx_center);
+		if (strcmp(name, "bx_end") == 0)
+			get_double(name, "bx_end", value, &s->bx_end);
 		if (strcmp(name, "alpha_start") == 0)
 			get_double(name, "alpha_start", value, &s->alpha_start);
 		if (strcmp(name, "alpha_center") == 0)
@@ -464,6 +491,24 @@ void put_sio_struct(struct PRM prm, FILE *OUTFILE) {
 		fprintf(OUTFILE, "baseline_center          = %lf \n", prm.baseline_center);
 	if (prm.baseline_end != NULL_DOUBLE)
 		fprintf(OUTFILE, "baseline_end            = %lf \n", prm.baseline_end);
+	if (prm.bh_start != NULL_DOUBLE)
+		fprintf(OUTFILE, "bh_start                = %lf \n", prm.bh_start);
+	if (prm.bv_start != NULL_DOUBLE)
+		fprintf(OUTFILE, "bv_start                = %lf \n", prm.bv_start);
+	if (prm.bx_start != NULL_DOUBLE)
+		fprintf(OUTFILE, "bx_start                = %lf \n", prm.bx_start);
+	if (prm.bh_center != NULL_DOUBLE)
+		fprintf(OUTFILE, "bh_center               = %lf \n", prm.bh_center);
+	if (prm.bv_center != NULL_DOUBLE)
+		fprintf(OUTFILE, "bv_center               = %lf \n", prm.bv_center);
+	if (prm.bx_center != NULL_DOUBLE)
+		fprintf(OUTFILE, "bx_center               = %lf \n", prm.bx_center);
+	if (prm.bh_end != NULL_DOUBLE)
+		fprintf(OUTFILE, "bh_end                  = %lf \n", prm.bh_end);
+	if (prm.bv_end != NULL_DOUBLE)
+		fprintf(OUTFILE, "bv_end                  = %lf \n", prm.bv_end);
+	if (prm.bx_end != NULL_DOUBLE)
+		fprintf(OUTFILE, "bx_end                  = %lf \n", prm.bx_end);
 	if (prm.alpha_start != NULL_DOUBLE)
 		fprintf(OUTFILE, "alpha_start             = %lf \n", prm.alpha_start);
 	if (prm.alpha_center != NULL_DOUBLE)

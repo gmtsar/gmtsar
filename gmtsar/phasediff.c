@@ -50,6 +50,9 @@
  * 10/23/10     changed calc_phase to calc_drho and completely rewrote     *
  *              the topographic phase correction to use all the nonlinear  *
  *              terms.
+ * 05/20/20	Revise the calculation method of term1 in calc_drho to     *
+ * 		eliminate spikes in the closure error curve.
+ *
  ***************************************************************************/
 #include "gmtsar.h"
 
@@ -60,19 +63,16 @@ char *USAGE = "phasediff [GMTSAR] - Compute phase difference of two images\n\n"
               "(topo_ra and model in GMT grd format)\n";
 
 /*--------------------------------------------------------------*/
-void calc_drho(int xdim, double *range, double *topo, double avet, double re, double height, double B, double alpha, double Bx,
+void calc_drho(int xdim, double *range, double *topo, double avet, double re, double height, double Bh, double Bv, double Bx,
                double *drho) {
 	int k;
 	/* EX: changing to long double for better precision */
-	long double rho, sint, cost, cosa, sina, b;
+	long double rho, sint, cost;
 	// long double term1,term2,c,c2,ret,ret2;
 	long double term1, c, c2, ret, ret2;
 
-	sina = sin(alpha);
-	cosa = cos(alpha);
 	c = re + height;
 	c2 = c * c;
-	b = B;
 	for (k = 0; k < xdim; k++) {
 
 		/* compute the look angle using equation (C26) in Appendix C */
@@ -80,9 +80,8 @@ void calc_drho(int xdim, double *range, double *topo, double avet, double re, do
 		ret = re + avet + topo[k];
 		ret2 = ret * ret;
 		cost = ((rho * rho + c2 - ret2) / (2. * rho * c));
-		// thet = acos(cost);
 		if (cost >= 1.)
-			die("calc_drho", "cost >= 0");
+			die("calc_drho", "cost >= 1.0");
 		sint = sqrtl(1. - cost * cost);
 
 		/* compute the range change using equation (c23) in Appendic C */
@@ -93,13 +92,13 @@ void calc_drho(int xdim, double *range, double *topo, double avet, double re, do
 		/* New (Eric Lindsey, April 2015): compute the range change using the full
 		 * nonlinear equation */
 		// term1 = rho*rho + b*b - 2*rho*b*(sint*cosa-cost*sina);
-		// term1 = rho*rho + b*b - 2*rho*b*sin(thet-alpha);
-		// drho[k] = -rho + sqrtl(term1);
+		term1 = rho * rho + Bh * Bh + Bv * Bv - 2 * rho * (sint * Bh - cost * Bv) - Bx * Bx;
+		drho[k] = -rho + sqrtl(term1);
 
 		/* Compute the offset effect from non-parallel orbit */
-		term1 = rho * rho + b * b - 2 * rho * b * (sint * cosa - cost * sina) - Bx * Bx;
+		//term1 = rho * rho + b * b - 2 * rho * b * (sint * cosa - cost * sina) - Bx * Bx;
 		// term1 = rho*rho + b*b - 2*rho*b*(sint*cosa-cost*sina);
-		drho[k] = -rho + sqrtl(term1);
+		//drho[k] = -rho + sqrtl(term1);
 	}
 }
 
@@ -224,8 +223,8 @@ int main(int argc, char **argv) {
 	double *real = NULL, *imag = NULL, *range = NULL, *drho = NULL, *drho0 = NULL;
 	double drange, dt, tspan, time, time2;
 	double ht0, htc, htf, dht, ddht, height;
-	double alpha, cnst, pha, avet;
-	double B, Bh, Bv, dBh, dBv, ddBh, ddBv;
+	double cnst, pha, avet;
+	double Bh, Bv, dBh, dBv, ddBh, ddBv;
 
 	double Bx, dBx, ddBx, Bx0, Bxc, Bxf;
 
@@ -396,7 +395,6 @@ int main(int argc, char **argv) {
 	/* setup the default parameters */
 
 	drange = SOL / (2.0 * p2.fs);
-	alpha = p2.alpha_start * PI / 180.0;
 	cnst = -4.0 * PI / p2.lambda;
 
 	for (k = 0; k < xdim; k++) {
@@ -431,24 +429,40 @@ int main(int argc, char **argv) {
 	}
 	*/
 
-	Bh0 = p2.baseline_start * cos(p2.alpha_start * PI / 180.0);
-	Bv0 = p2.baseline_start * sin(p2.alpha_start * PI / 180.0);
-	Bhf = p2.baseline_end * cos(p2.alpha_end * PI / 180.0);
-	Bvf = p2.baseline_end * sin(p2.alpha_end * PI / 180.0);
+	if (p2.bh_start != NULL_DOUBLE && p2.bv_start != NULL_DOUBLE && p2.bh_end != NULL_DOUBLE && p2.bv_end != NULL_DOUBLE) {
+		Bh0 = p2.bh_start;
+		Bv0 = p2.bv_start;
+		Bhf = p2.bh_end;
+		Bvf = p2.bv_end;
+	}
+	else {
+		Bh0 = p2.baseline_start * cos(p2.alpha_start * PI / 180.0);
+		Bv0 = p2.baseline_start * sin(p2.alpha_start * PI / 180.0);
+		Bhf = p2.baseline_end * cos(p2.alpha_end * PI / 180.0);
+		Bvf = p2.baseline_end * sin(p2.alpha_end * PI / 180.0);
+	}
 	Bx0 = p2.B_offset_start;
 	Bxf = p2.B_offset_end;
 
 	/* first case is quadratic baseline model, second case is default linear model
 	 */
 
-	if (p2.baseline_center != NULL_DOUBLE || p2.alpha_center != NULL_DOUBLE || p2.B_offset_center != NULL_DOUBLE) {
+	if ((p2.bh_center != NULL_DOUBLE && p2.bv_center != NULL_DOUBLE) || p2.baseline_center != NULL_DOUBLE ||
+	    p2.alpha_center != NULL_DOUBLE || p2.B_offset_center != NULL_DOUBLE) {
 
-		Bhc = p2.baseline_center * cos(p2.alpha_center * PI / 180.0);
-		Bvc = p2.baseline_center * sin(p2.alpha_center * PI / 180.0);
+		if (p2.bh_center != NULL_DOUBLE && p2.bv_center != NULL_DOUBLE) {
+			Bhc = p2.bh_center;
+			Bvc = p2.bv_center;
+		}
+		else {
+			Bhc = p2.baseline_center * cos(p2.alpha_center * PI / 180.0);
+			Bvc = p2.baseline_center * sin(p2.alpha_center * PI / 180.0);
+		}
 		Bxc = p2.B_offset_center;
 
 		dBh = (-3. * Bh0 + 4 * Bhc - Bhf) / tspan;
 		dBv = (-3. * Bv0 + 4 * Bvc - Bvf) / tspan;
+
 		ddBh = (2. * Bh0 - 4 * Bhc + 2 * Bhf) / (tspan * tspan);
 		ddBv = (2. * Bv0 - 4 * Bvc + 2 * Bvf) / (tspan * tspan);
 
@@ -493,9 +507,6 @@ if (topoflag > 0) {
 		Bv = Bv0 + dBv * time + ddBv * time2;
 
 		Bx = Bx0 + dBx * time + ddBx * time2;
-
-		B = sqrt(Bh * Bh + Bv * Bv);
-		alpha = atan2(Bv, Bh);
 		height = ht0 + dht * time + ddht * time2;
 
 		for (k = 0; k < xdim; k++) {
@@ -507,7 +518,7 @@ if (topoflag > 0) {
 		}
 
 		/* calculate the combined earth curvature and topography correction if topoflag is on */
-		calc_drho(xdim, range2, topo2, avet, p1.RE, height, B, alpha, Bx, drho);
+		calc_drho(xdim, range2, topo2, avet, p1.RE, height, Bh, Bv, Bx, drho);
 
 		// if (j == 50) printf("drho = %.12f\n",drho[50]);
 
@@ -543,7 +554,7 @@ else {
 
 			/* compute the range change with no topography so the range shift can be
 			 * determined for the spline */
-			calc_drho(xdim, range, shft, avet, p1.RE, height, B, alpha, Bx, drho0);
+			calc_drho(xdim, range, shft, avet, p1.RE, height, Bh, Bv, Bx, drho0);
 
 			for (k = 0; k < xdim; k++) {
 				shft[k] = (drho0[k] - drho[k]) / drange;
