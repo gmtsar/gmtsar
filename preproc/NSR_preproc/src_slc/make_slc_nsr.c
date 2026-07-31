@@ -7,6 +7,7 @@
  * Modification history:                                                   *
  *                                                                         *
  * Date   :  11/10/25 - DTS - added functionality for real NISAR data      *
+ * Date   :  06/27/26 - DTS/ChatGPT - added SSAR/S-band path support       *
  *                                                                         *
  ***************************************************************************/
 
@@ -25,13 +26,19 @@
 char *USAGE = "\nUsage: make_slc_nsr name_of_input_file name_output output_type scale_factor [region_cut]\n"
               "         (Note region_cut for B should be the same as A.)\n"
               "\nExample: make_slc_nsr "
-              "NISAR_L1_PR_RSLC_004_091_A_021_4005_DHDH_A_20251104T120256_20251104T120331_X05004_N_F_J_001.h5 NSR_20251104A AHH 40000 30000/53000/24000/47000 \n"
-              "\nOutput: NSR_20251104A.SLC NSR_20251104A.PRM NSR_20251104A.LED \n";
+              "NISAR_L1_PR_RSLC_004_091_A_021_4005_DHDH_A_20251104T120256_20251104T120331_X05004_N_F_J_001.h5 NSR_20251104A AHH 30000 30000/53000/24000/47000 \n"
+              "Output: NSR_20251104A.SLC NSR_20251104A.PRM NSR_20251104A.LED \n"
+              "\nS-band example: make_slc_nsr NISAR_S1_PR_RSLC_...h5 NSR_20260129S SRH 20000 \n"
+              "Output: NSR_20260129S.SLC NSR_20260129S.PRM NSR_20260129S.LED \n";
 
 static inline short f32_to_i16_with_checks(float x,
                                            long long *sat_hi,
                                            long long *sat_lo,
                                            long long *zero_conv);
+
+static void get_nisar_paths(hid_t input, char *rslc_base, size_t rslc_len,
+                            char *ident_base, size_t ident_len);
+static htri_t h5_path_exists_quiet(hid_t input, const char *path);
 
 int get_range(char *str, int *xl, int *xh, int *yl, int *yh) {
         
@@ -64,7 +71,7 @@ int get_range(char *str, int *xl, int *xh, int *yl, int *yh) {
         return (1);
 }
 
-int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_attr, int c) {
+int hdf5_read(void *output, hid_t file, const char *n_group, const char *n_dset, const char *n_attr, int c) {
     hid_t memtype, type, group = -1, dset = -1, attr = -1, tmp_id, space;
     herr_t status;
     size_t sdim;
@@ -131,9 +138,9 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
     return (1);
 }
 
-int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, int *xhp, int *ylp, int *yhp) {
+int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, int *xhp, int *ylp, int *yhp, const char *rslc_base) {
 
-    int64_t i, j, ij, width, height, width2=0, height2=0i, count = 0;
+    int64_t i, j, ij, width, height, width2=0, height2=0, count = 0;
     int xl, xh, yl, yh, wt, ht;
     double tmp_d[200],rs_A,rs_B,bw_fac,sum2 = 0;
     short *tmp;
@@ -145,7 +152,7 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     long long sat_hi_count = 0;
     long long sat_lo_count = 0;
     long long zero_conv_count = 0;
-    char freq[10], type[10], Group[200];
+    char freq[10], type[10], Group[200], GroupB[200];
     freq[0] = mode[0]; freq[1] = '\0';
     xl = *xlp;
     xh = *xhp;
@@ -154,22 +161,29 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     strcpy(type,&mode[1]);
     printf("dfact %f \n", dfact);
 
-/* get the ratio of bandwidth A to bandwidth B */
+/* get the ratio of bandwidth A to bandwidth B, if frequencyB exists */
 
-    strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
-    hdf5_read(tmp_d, input, Group, "slantRangeSpacing", "", 'd'); 
+    snprintf(Group, sizeof(Group), "%s/swaths/frequencyA", rslc_base);
+    hdf5_read(tmp_d, input, Group, "slantRangeSpacing", "", 'd');
     rs_A = tmp_d[0];
-    strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyB");
-    hdf5_read(tmp_d, input, Group, "slantRangeSpacing", "", 'd'); 
-    rs_B = tmp_d[0];
-    bw_fac = rs_B/rs_A;
+    snprintf(GroupB, sizeof(GroupB), "%s/swaths/frequencyB", rslc_base);
+    bw_fac = 1.0;
+    if (h5_path_exists_quiet(input, GroupB) > 0) {
+        hdf5_read(tmp_d, input, GroupB, "slantRangeSpacing", "", 'd');
+        rs_B = tmp_d[0];
+        bw_fac = rs_B/rs_A;
+    }
     printf("bw_fac %f \n", bw_fac);
 
     if (strcmp(freq, "A") == 0) {
-      strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyA");
+      snprintf(Group, sizeof(Group), "%s/swaths/frequencyA", rslc_base);
     }
     else if (strcmp(freq, "B") == 0) {
-      strcpy(Group,"/science/LSAR/RSLC/swaths/frequencyB");
+      if (h5_path_exists_quiet(input, GroupB) <= 0) {
+        fprintf(stderr,"frequencyB is not present in this NISAR product\n");
+        exit(1);
+      }
+      snprintf(Group, sizeof(Group), "%s/swaths/frequencyB", rslc_base);
     }
     else {
       fprintf(stderr,"Invalid frequency type\n");
@@ -255,13 +269,14 @@ int write_slc_hdf5(hid_t input, FILE *slc, char *mode, double dfact, int *xlp, i
     return (1);
 }
 
-int pop_led_hdf5(hid_t input, state_vector *sv) {
+int pop_led_hdf5(hid_t input, state_vector *sv, const char *rslc_base) {
     int i, count, iy; 
-    char tmp_c[200], date[200];
+    char tmp_c[200], date[200], group[200];
     double t[200], t0, t_tmp;
     double x[600], v[600];
 
-    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/metadata/orbit", "time", "units", 'c');
+    snprintf(group, sizeof(group), "%s/metadata/orbit", rslc_base);
+    hdf5_read(tmp_c, input, group, "time", "units", 'c');
 
     cat_nums(date,tmp_c);
     str_date2JD(tmp_c, date);
@@ -270,11 +285,11 @@ int pop_led_hdf5(hid_t input, state_vector *sv) {
     date[4] = '\0';
     iy = (int)str2double(date);
 
-    hdf5_read(&count, input, "/science/LSAR/RSLC/metadata/orbit", "time", "", 'n');
+    hdf5_read(&count, input, group, "time", "", 'n');
 
-    hdf5_read(t, input, "/science/LSAR/RSLC/metadata/orbit", "time", "", 'd');
-    hdf5_read(x, input, "/science/LSAR/RSLC/metadata/orbit", "position", "", 'd');
-    hdf5_read(v, input, "/science/LSAR/RSLC/metadata/orbit", "velocity", "", 'd');
+    hdf5_read(t, input, group, "time", "", 'd');
+    hdf5_read(x, input, group, "position", "", 'd');
+    hdf5_read(v, input, group, "velocity", "", 'd');
 
     for (i = 0; i < count; i++) {
         t_tmp = t[i] / 86400.0 + t0; 
@@ -310,8 +325,8 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
     return (1);
 }
 
-int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int xl, int xh, int yl, int yh) {
-    char tmp_c[200], date[100],iy[100],freq[10],type[10],group[200];
+int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int xl, int xh, int yl, int yh, const char *rslc_base, const char *ident_base) {
+    char tmp_c[200], date[100],iy[100],freq[10],type[10],group[200],swaths_group[200];
     double tmp_d[200],yr,t[65535]; // not sure howmany time components will be available
     double c_speed = 299792458.0, t0 = 0.0;
     hsize_t dims[10];
@@ -349,10 +364,10 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->xmq = 0.0;
 
     if (strcmp(freq, "A") == 0) {
-        strcpy(group,"/science/LSAR/RSLC/swaths/frequencyA");
-    } 
+        snprintf(group, sizeof(group), "%s/swaths/frequencyA", rslc_base);
+    }
     else if (strcmp(freq, "B") == 0) {
-        strcpy(group,"/science/LSAR/RSLC/swaths/frequencyB");
+        snprintf(group, sizeof(group), "%s/swaths/frequencyB", rslc_base);
     }
     else {
         fprintf(stderr,"Invalid frequency type\n");
@@ -372,28 +387,29 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     hdf5_read(tmp_d, input, group, "processedRangeBandwidth", "", 'd'); 
     prm->chirp_slope = 0.; // this is wrong but not needed for SLC
 
-    hdf5_read(tmp_d, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTimeSpacing", "", 'd'); 
+    snprintf(swaths_group, sizeof(swaths_group), "%s/swaths", rslc_base);
+    hdf5_read(tmp_d, input, swaths_group, "zeroDopplerTimeSpacing", "", 'd'); 
     prm->prf = 1.0/tmp_d[0];
 
     hdf5_read(t, input, group, "slantRange", "", 'd'); 
     prm->near_range = t[0] + xl * c_speed/(2.*prm->fs);// * c_speed / 2;
 
-    hdf5_read(tmp_c, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "units", 'c'); 
+    hdf5_read(tmp_c, input, swaths_group, "zeroDopplerTime", "units", 'c'); 
     cat_nums(date,tmp_c);
     strcpy(iy,date);
     iy[4] = '\0';
     yr = str2double(iy);
     str_date2JD(tmp_c, date);
     t0 = str2double(tmp_c);
-    hdf5_read(t, input, "/science/LSAR/RSLC/swaths", "zeroDopplerTime", "", 'd'); 
-    hdf5_read(tmp_c, input, "/science/LSAR/identification", "zeroDopplerStartTime", "", 's'); 
+    hdf5_read(t, input, swaths_group, "zeroDopplerTime", "", 'd'); 
+    hdf5_read(tmp_c, input, ident_base, "zeroDopplerStartTime", "", 's'); 
     prm->clock_start = t0 + (t[0] + yl / prm->prf)/86400.0;
     prm->SC_clock_start = prm->clock_start + yr*1000.0;
 
     prm->fdd1 = 0.0;
     prm->fddd1 = 0.0;
 
-    hdf5_read(tmp_c, input, "/science/LSAR/identification", "orbitPassDirection", "", 's'); 
+    hdf5_read(tmp_c, input, ident_base, "orbitPassDirection", "", 's'); 
     if (strcmp(tmp_c, "Ascending") == 0) {
         strasign(prm->orbdir, "A", 0, 0);
     }
@@ -401,7 +417,7 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
         strasign(prm->orbdir, "D", 0, 0);
     }
 
-    hdf5_read(tmp_c, input, "/science/LSAR/identification", "lookDirection", "", 's'); 
+    hdf5_read(tmp_c, input, ident_base, "lookDirection", "", 's'); 
     if (strcmp(tmp_c, "Right") == 0) {
         strasign(prm->lookdir, "R", 0, 0);
     }
@@ -435,7 +451,7 @@ int main(int argc, char **argv) {
     }
 
     FILE *OUTPUT_PRM, *OUTPUT_SLC, *OUTPUT_LED;
-    char tmp_str[200],mode[10];
+    char tmp_str[200],mode[10],rslc_base[200],ident_base[200];
     struct PRM prm;
     state_vector sv[200];
     int n, xl=0, xh=0, yl=0, yh=0;
@@ -443,6 +459,10 @@ int main(int argc, char **argv) {
     hid_t file; 
 
     strcpy(mode,argv[3]);
+
+    /* Accept SRH/SRV on the command line */
+    if (strcmp(mode,"SRH")==0) strcpy(mode,"ARH");
+    if (strcmp(mode,"SRV")==0) strcpy(mode,"ARV");
 
     dfact = atof(argv[4]);
 
@@ -453,6 +473,15 @@ int main(int argc, char **argv) {
     if ((file = H5Fopen(argv[1], H5F_ACC_RDONLY, H5P_DEFAULT)) < 0)
         die("Couldn't open HDF5 file: \n", argv[1]);
 
+    get_nisar_paths(file, rslc_base, sizeof(rslc_base), ident_base, sizeof(ident_base));
+    printf("Using NISAR path: %s\n", rslc_base);
+
+    /* Rename S-band output basename from ...A to ...S */
+    if ((strcmp(mode,"ARH")==0 || strcmp(mode,"ARV")==0)) {
+        size_t l=strlen(argv[2]);
+        if (l>0 && argv[2][l-1]=='A') argv[2][l-1]='S';
+    }
+
     // generate the SLC file
     strcpy(tmp_str, argv[2]);
     strcat(tmp_str, ".SLC");
@@ -460,14 +489,14 @@ int main(int argc, char **argv) {
     if ((OUTPUT_SLC = fopen(tmp_str, "wb")) == NULL)
         die("Couldn't open tiff file: \n", tmp_str);
 
-    write_slc_hdf5(file, OUTPUT_SLC,mode,dfact,&xl,&xh,&yl,&yh);
+    write_slc_hdf5(file, OUTPUT_SLC,mode,dfact,&xl,&xh,&yl,&yh,rslc_base);
     fclose(OUTPUT_SLC);
     printf("Range after write_SLC xl, xh, yl, yh %d %d %d %d \n",xl, xh, yl, yh);
 
     null_sio_struct(&prm);
     
     // generate the PRM file
-    pop_prm_hdf5(&prm, file, argv[2], mode, xl, xh, yl, yh);
+    pop_prm_hdf5(&prm, file, argv[2], mode, xl, xh, yl, yh, rslc_base, ident_base);
 
     strcpy(tmp_str, argv[2]);
     strcat(tmp_str, ".PRM");
@@ -477,7 +506,7 @@ int main(int argc, char **argv) {
     fclose(OUTPUT_PRM);
 
     // generate the LED file
-    n = pop_led_hdf5(file, sv);
+    n = pop_led_hdf5(file, sv, rslc_base);
 
     strcpy(tmp_str, argv[2]);
     strcat(tmp_str, ".LED");
@@ -488,6 +517,39 @@ int main(int argc, char **argv) {
 
     H5Fclose(file);
 
+}
+
+
+static htri_t h5_path_exists_quiet(hid_t input, const char *path)
+{
+    htri_t exists;
+
+    /*
+     * H5Lexists() prints diagnostics when a trial path is absent.
+     * That is expected here because we test LSAR first and then SSAR.
+     */
+    H5E_BEGIN_TRY {
+        exists = H5Lexists(input, path, H5P_DEFAULT);
+    } H5E_END_TRY;
+
+    return exists;
+}
+
+static void get_nisar_paths(hid_t input, char *rslc_base, size_t rslc_len,
+                            char *ident_base, size_t ident_len)
+{
+    if (h5_path_exists_quiet(input, "/science/LSAR/RSLC") > 0) {
+        snprintf(rslc_base, rslc_len, "/science/LSAR/RSLC");
+        snprintf(ident_base, ident_len, "/science/LSAR/identification");
+    }
+    else if (h5_path_exists_quiet(input, "/science/SSAR/RSLC") > 0) {
+        snprintf(rslc_base, rslc_len, "/science/SSAR/RSLC");
+        snprintf(ident_base, ident_len, "/science/SSAR/identification");
+    }
+    else {
+        fprintf(stderr, "Could not find /science/LSAR/RSLC or /science/SSAR/RSLC in this HDF5 file\n");
+        exit(1);
+    }
 }
 
 static inline short f32_to_i16_with_checks(float x,
