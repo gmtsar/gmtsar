@@ -15,7 +15,7 @@
     echo ""
     echo "    Put the data and orbit files in the raw folder, put DEM in the topo folder"
     echo "    The SAT needs to be specified, choices with in ERS, ENVI, ALOS, ALOS_SLC, ALOS2, ALOS2_SCAN, ALOS4"
-    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1 NSR_A NSR_B"
+    echo "    S1_STRIP, S1_TOPS, ENVI_SLC, CSK_RAW, CSK_SLC, CSG, TSX, RS2, GF3, LT1 NSR_A NSR_B NSR_S"
     echo ""
     echo "    Make sure the files from the same date have the same stem, e.g. aaaa.tif aaaa.xml aaaa.cos aaaa.EOF, etc"
     echo ""
@@ -301,7 +301,7 @@
         echo " no file  raw/"$aligned".tiff"
         exit
       endif
-    else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+    else if ($SAT == "NSR_A" || $SAT == "NSR_B" || $SAT == "NSR_S") then
       if(! -f raw/$master.h5 ) then
         echo " no file  raw/"$master".h5"
         exit
@@ -335,10 +335,10 @@
     endif
     cd raw
    
-    if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+    if ($SAT == "NSR_A" || $SAT == "NSR_B" || $SAT == "NSR_S") then
       echo "pre_proc_nsr.csh "
-      pre_proc_nsr.csh $master.h5 ../$conf
-      pre_proc_nsr.csh $aligned.h5 ../$conf
+      pre_proc_nsr.csh $SAT $master.h5 ../$conf
+      pre_proc_nsr.csh $SAT $aligned.h5 ../$conf
     else 
       echo "pre_proc.csh $SAT $master $aligned $commandline"
       pre_proc.csh $SAT $master $aligned $commandline   
@@ -368,6 +368,10 @@
   if ($SAT == "NSR_B") then
     set master = `echo $master | awk '{print "NSR_"substr($1,44,8)"B"}'`
     set aligned = `echo $aligned | awk '{print "NSR_"substr($1,44,8)"B"}'`
+  endif
+  if ($SAT == "NSR_S") then
+    set master = `echo $master | awk '{print "NSR_"substr($1,44,8)"S"}'`
+    set aligned = `echo $aligned | awk '{print "NSR_"substr($1,44,8)"S"}'`
   endif
   if ($SAT == "S1_TOPS") then
     set master = `echo $master | awk '{ print "S1_"substr($1,16,8)"_"substr($1,25,6)"_F"substr($1,7,1)}'`
@@ -535,7 +539,7 @@
         else if ($SAT == "ERS" || $SAT == "ENVI" || $SAT == "ALOS" || $SAT == "CSK_RAW" || $SAT == "LT1" ||  $SAT == "ALOS_SLC") then
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 3 3 freq_xcorr.dat 18 >> $aligned.PRM
-	else if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+	else if ($SAT == "NSR_A" || $SAT == "NSR_B" || $SAT == "NSR_S") then
 		  rm amp*.grd
           slc2amp.csh $master.PRM 4 amp-$master.grd 
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 40 -ny 40
@@ -544,7 +548,7 @@
           xcorr $master.PRM $aligned.PRM -xsearch 128 -ysearch 128 -nx 20 -ny 50
           fitoffset.csh 2 2 freq_xcorr.dat 18 >> $aligned.PRM
         endif
-        if ($SAT == "NSR_A" || $SAT == "NSR_B") then
+        if ($SAT == "NSR_A" || $SAT == "NSR_B" || $SAT == "NSR_S") then
           resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 5 r.grd a.grd
 	else
           resamp $master.PRM $aligned.PRM $aligned.PRMresamp $aligned.SLCresamp 4
@@ -697,7 +701,7 @@
 
     endif
 
-    if ($region_cut != "" && $SAT != "NSR_A" && $SAT != "NSR_B") then
+    if ($region_cut != "" && $SAT != "NSR_A" && $SAT != "NSR_B" && $SAT != "NSR_S") then
       echo "Cutting SLC image to $region_cut"
       if ($skip_master == 0 || $skip_master == 2) then
         cut_slc $master.PRM junk1 $region_cut
