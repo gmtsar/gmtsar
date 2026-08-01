@@ -29,7 +29,12 @@ char *USAGE = "\nUsage: make_slc_nsr name_of_input_file name_output output_type 
               "NISAR_L1_PR_RSLC_004_091_A_021_4005_DHDH_A_20251104T120256_20251104T120331_X05004_N_F_J_001.h5 NSR_20251104A AHH 30000 30000/53000/24000/47000 \n"
               "Output: NSR_20251104A.SLC NSR_20251104A.PRM NSR_20251104A.LED \n"
               "\nS-band example: make_slc_nsr NISAR_S1_PR_RSLC_...h5 NSR_20260129S SRH 20000 \n"
+              "S-band HH example: make_slc_nsr NISAR_S1_PR_RSLC_...h5 NSR_20260709S SHH 20000 \n"
+              "SRH = S-band receive-horizontal channel; SRV = S-band receive-vertical channel.\n"
+              "SHH = S-band horizontal-transmit/horizontal-receive dataset HH.\n"
+              "The code maps these to the polarization datasets available in the HDF5 file.\n"
               "Output: NSR_20260129S.SLC NSR_20260129S.PRM NSR_20260129S.LED \n";
+
 
 static inline short f32_to_i16_with_checks(float x,
                                            long long *sat_hi,
@@ -39,6 +44,85 @@ static inline short f32_to_i16_with_checks(float x,
 static void get_nisar_paths(hid_t input, char *rslc_base, size_t rslc_len,
                             char *ident_base, size_t ident_len);
 static htri_t h5_path_exists_quiet(hid_t input, const char *path);
+static void resolve_sband_mode(hid_t input, const char *rslc_base,
+                               char *mode, size_t mode_len);
+
+static void resolve_sband_mode(hid_t input, const char *rslc_base,
+                               char *mode, size_t mode_len)
+{
+    char path[256];
+
+    if (strstr(rslc_base, "/SSAR/") == NULL)
+        return;
+
+    if (strcmp(mode, "SHH") == 0) {
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/HH", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "AHH");
+            printf("SHH mapped to S-band dataset HH\n");
+            return;
+        }
+
+        fprintf(stderr,
+                "SHH requested, but HH does not exist under "
+                "%s/swaths/frequencyA\n", rslc_base);
+        exit(1);
+    }
+
+    if (strcmp(mode, "SRH") == 0) {
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/RH", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "ARH");
+            printf("SRH mapped to S-band dataset RH\n");
+            return;
+        }
+
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/HH", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "AHH");
+            printf("SRH mapped to S-band dataset HH\n");
+            return;
+        }
+
+        fprintf(stderr,
+                "SRH requested, but neither RH nor HH exists under "
+                "%s/swaths/frequencyA\n", rslc_base);
+        exit(1);
+    }
+
+    if (strcmp(mode, "SRV") == 0) {
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/RV", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "ARV");
+            printf("SRV mapped to S-band dataset RV\n");
+            return;
+        }
+
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/HV", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "AHV");
+            printf("SRV mapped to S-band dataset HV\n");
+            return;
+        }
+
+        snprintf(path, sizeof(path), "%s/swaths/frequencyA/VV", rslc_base);
+        if (h5_path_exists_quiet(input, path) > 0) {
+            snprintf(mode, mode_len, "AVV");
+            printf("SRV mapped to S-band dataset VV\n");
+            return;
+        }
+
+        fprintf(stderr,
+                "SRV requested, but none of RV, HV, or VV exists under "
+                "%s/swaths/frequencyA\n", rslc_base);
+        exit(1);
+    }
+
+    fprintf(stderr,
+            "For S-band products, output_type must be SRH, SRV, or SHH; received %s\n",
+            mode);
+    exit(1);
+}
 
 int get_range(char *str, int *xl, int *xh, int *yl, int *yh) {
         
@@ -460,10 +544,6 @@ int main(int argc, char **argv) {
 
     strcpy(mode,argv[3]);
 
-    /* Accept SRH/SRV on the command line */
-    if (strcmp(mode,"SRH")==0) strcpy(mode,"ARH");
-    if (strcmp(mode,"SRV")==0) strcpy(mode,"ARV");
-
     dfact = atof(argv[4]);
 
     if (argc == 6) {
@@ -476,8 +556,10 @@ int main(int argc, char **argv) {
     get_nisar_paths(file, rslc_base, sizeof(rslc_base), ident_base, sizeof(ident_base));
     printf("Using NISAR path: %s\n", rslc_base);
 
+    resolve_sband_mode(file, rslc_base, mode, sizeof(mode));
+
     /* Rename S-band output basename from ...A to ...S */
-    if ((strcmp(mode,"ARH")==0 || strcmp(mode,"ARV")==0)) {
+    if (strstr(rslc_base, "/SSAR/") != NULL) {
         size_t l=strlen(argv[2]);
         if (l>0 && argv[2][l-1]=='A') argv[2][l-1]='S';
     }
