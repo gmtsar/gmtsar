@@ -32,7 +32,7 @@ echo "region_cut "$region_cut
 #
 if ($1 == "NSR_S") then
 echo $stemname"S.PRM"
-make_slc_nsr $2 $stemname"S" SRH $SLC_factor $region_cut
+make_slc_nsr $2 $stemname"S" SHH $SLC_factor $region_cut
 calc_dop_orb $stemname"S.PRM" tmp 0 0
 cat tmp >> $stemname"S.PRM"
 rm tmp
