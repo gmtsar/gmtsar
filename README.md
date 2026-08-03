@@ -37,6 +37,18 @@ __INSTALL__
    If using C-shell you may have to type rehash first. 
    If this does not work then make sure the <installdir> is in your system $PATH or $path.
 
+7) GMTSAR now also ships a Python implementation of the processing framework
+   in gmtsar/python. Its scripts mirror the csh ones by name and most of its
+   compute kernels are reimplemented in Python, verified bit-faithful over a
+   21-case sweep (20/21 clean) and with speedup. Its installer provisions the
+   dependencies and builds GMTSAR in place -- for example, on native Windows,
+   with no WSL:
+
+       python gmtsar/python/install.py --system conda-windows-full
+
+   Run it with --help for the other modes. See gmtsar/python/README.md for
+   details.
+
 __RUN__
 
 1) GET DATA. There is an example data set at our website:

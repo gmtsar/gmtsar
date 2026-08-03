@@ -367,6 +367,40 @@ def test_locate_conda_env_finds_env_outside_conda_search_bases(tmp_path, monkeyp
     assert not calls, "should NOT have called conda create -- env already exists"
 
 
+def test_root_readme_is_pure_ascii():
+    """The root README.md must contain no non-ASCII byte.
+
+    Real incident, 2026-08-01: the fork's v2.11.1 GitHub Release body
+    rendered as `Native Windows bundle 鈥??? supersedes...`. Em-dashes
+    written as UTF-8 (E2 80 94) went through a CP936/GBK-configured pipe
+    on the Windows dev host, so E2 80 became a CJK glyph and 94 became an
+    unrecoverable replacement char. The repo's own .md files were fine --
+    the damage happened in transit to an external system.
+
+    The root README is the highest-risk file for that failure mode: it is
+    upstream's, it is read by everyone, and it gets copied into release
+    announcements and issue replies where the same mangling can recur. It
+    was pure ASCII before this project touched it and must stay that way.
+
+    Deliberately scoped to the root README only. The release notes under
+    docs/release_notes/ do use em-dashes and arrows throughout, are read
+    via git/GitHub's own UTF-8 rendering, and have never been corrupted --
+    guarding them would be churn, not safety."""
+    readme = install.REPO_ROOT / "README.md"
+    assert readme.is_file(), f"root README.md not found at {readme}"
+    raw = readme.read_bytes()
+    offenders = [
+        (i, b) for i, b in enumerate(raw) if b > 0x7F
+    ]
+    assert not offenders, (
+        f"root README.md has {len(offenders)} non-ASCII byte(s), first at "
+        f"offset {offenders[0][0]} (0x{offenders[0][1]:02X}). Use ASCII "
+        "punctuation ('--' not an em-dash, '->' not an arrow, straight "
+        "quotes) -- non-ASCII here has been mangled to mojibake by "
+        "CP936-configured Windows tooling before."
+    )
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
