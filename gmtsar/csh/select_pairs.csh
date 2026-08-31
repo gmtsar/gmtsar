@@ -53,4 +53,4 @@
 
   awk '{print $1,$2}' < text > text2
   gmt psxy text2 -Sp0.2c -G0 -R -JX -Ba0.5:"year":/a50g00f25:"baseline (m)":WSen -O >> baseline.ps
-  
+  gmt psconvert baseline.ps -Tf -A
