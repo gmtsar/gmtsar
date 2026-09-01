@@ -143,7 +143,14 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
 	int i;
 	double dt;
 
-	dt = trunc((sv[1].sec) * 100.0) / 100.0 - trunc((sv[0].sec) * 100.0) / 100.0;
+	/* Round, do not truncate -- see make_s1a_tops.c write_orb(). Orbit times
+	   round-trip through a "%.12f" string in xml.c str_date2JD(), so each
+	   arrives a few hundredths of a microsecond above or below its exact
+	   integer second. Truncating at 0.01 s then floors two adjacent vectors
+	   in OPPOSITE directions and dt comes out 9.99 instead of 10.00, a 0.1%
+	   error that calc_dop_orb propagates into SC_vel. Rounding moves both
+	   the same way, so their difference stays exact. */
+	dt = round((sv[1].sec) * 1000.0) / 1000.0 - round((sv[0].sec) * 1000.0) / 1000.0;
 	if (n <= 1)
 		return (-1);
 	fprintf(fp, "%d %d %d %.6lf %lf \n", n, sv[0].yr, sv[0].jd, sv[0].sec, dt);
