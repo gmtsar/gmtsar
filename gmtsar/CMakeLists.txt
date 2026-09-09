@@ -51,6 +51,13 @@ if (WIN32)
 		${CMAKE_SOURCE_DIR})
 endif (WIN32)
 
+if (WIN32)
+	# sbas_utils.c / resamp.c / sbas.c #include <sys/mman.h>, which MinGW
+	# doesn't provide -- a local mmap()/munmap() shim covers the subset
+	# they actually use (see compat_win32/sys/mman.h).
+	include_directories (${CMAKE_CURRENT_SOURCE_DIR}/compat_win32)
+endif (WIN32)
+
 add_library (gmtsar aastretch.c acpatch.c calc_dop.c conv2d.c do_freq_xcorr.c
 	do_time_int_xcorr.c fft_bins.c fft_interpolate_routines.c file_stuff.c
 	geoxyz.c get_locations.c get_params.c hermite_c.c highres_corr.c
@@ -62,6 +69,9 @@ add_library (gmtsar aastretch.c acpatch.c calc_dop.c conv2d.c do_freq_xcorr.c
 	lib_strfuncs.c gmtsar.h lib_functions.h llt2xyz.h orbit.h
 	sarleader_ALOS.h sarleader_fdr.h sfd_complex.h siocomplex.h soi.h xcorr.h)
 target_link_libraries (gmtsar ${GMTSAR_LINK_LIBS})
+if (WIN32)
+	add_dependencies (gmtsar openblas_min_lib_target)
+endif (WIN32)
 
 set (GMTSAR_LINK_LIBS ${GMTSAR_LINK_LIBS} gmtsar)
 
