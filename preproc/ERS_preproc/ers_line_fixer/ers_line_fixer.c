@@ -40,9 +40,15 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#else
 #include <strings.h>
+#include <sys/uio.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -50,7 +56,6 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/types.h>
-#include <sys/uio.h>
 #include <unistd.h>
 
 #define SWAP_2(x) ((((x)&0xff) << 8) | ((unsigned short)(x) >> 8))

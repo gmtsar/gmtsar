@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
 		if (i == 0)
 			fs0 = r[0].fs;
 		if (r[i].fs != fs0) {
-			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistant.\nYou "
+			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistent.\nYou "
 			                "need to do FBD/FBS conversion.\n\n");
 		}
 
@@ -384,6 +384,8 @@ void ALOS_baseline(struct PRM *r, struct ALOS_ORB *orb, int nfiles, int input_fl
 		/* write out in x,y format bperp baseline only 		*/
 		if (input_flag == 1)
 			write_bperp(r[ii], filename[ii]);
+
+		fflush(stdout);		/* Make sure output buffer is flushed  */
 	}
 }
 /*---------------------------------------------------------------------------*/

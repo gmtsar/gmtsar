@@ -511,36 +511,36 @@ int main(int argc, char *argv[]) {
 	/* usage note */
 
 	// printf( "\n*** asa_im_decode v1.0 by smb ***\n\n" );
-	printf("\n*** asa_im_decode v1.1 by smb ***\n\n");
+	fprintf(stderr, "\n*** asa_im_decode v1.1 by smb ***\n\n");
 
 	if ((argc - 1) < 5) {
-		printf("Decodes Envisat ASAR Image Mode Level 0 data.\n\n");
-		printf("Usage: asa_im_decode <asa_im> <asa_ins> <out> <outType> "
+		fprintf(stderr, "Decodes Envisat ASAR Image Mode Level 0 data.\n\n");
+		fprintf(stderr, "Usage: asa_im_decode <asa_im> <asa_ins> <out> <outType> "
 		       "<near_range>\n\n");
-		printf("       asa_im      input image file(s) (multiple files if merging "
+		fprintf(stderr, "       asa_im      input image file(s) (multiple files if merging "
 		       "along-track)\n");
-		printf("       asa_ins     input auxilary instrument characterization data "
+		fprintf(stderr, "       asa_ins     input auxiliary instrument characterization data "
 		       "file\n");
-		printf("       out         output raw data file\n");
-		printf("       outType     output file type (1=byte,4=float)\n");
-		printf("       near_range  near range to which to align all lines (0=use "
+		fprintf(stderr, "       out         output raw data file\n");
+		fprintf(stderr, "       outType     output file type (1=byte,4=float)\n");
+		fprintf(stderr, "       near_range  near range to which to align all lines (0=use "
 		       "first line near range)\n\n");
-		printf("Notes:\n\n");
-		printf("out is a complex file with no headers (byte/float I1, byte/float "
+		fprintf(stderr, "Notes:\n\n");
+		fprintf(stderr, "out is a complex file with no headers (byte/float I1, byte/float "
 		       "Q1, byte/float I2, byte/float Q2, ...)\n\n");
-		printf("if outType is byte, then the decoded floats are multiplied by "
+		fprintf(stderr, "if outType is byte, then the decoded floats are multiplied by "
 		       "127.5, shifted by 127.5, rounded to the nearest integer and "
 		       "limited to the range 0-255\n\n");
-		printf("starting range computed as (rank*pri+windowStartTime)*c/2 where rank "
+		fprintf(stderr, "starting range computed as (rank*pri+windowStartTime)*c/2 where rank "
 		       "is the number of pri between transmitted pulse and return echo\n\n");
-		printf("calibration/noise lines are replaced with previous echo data "
+		fprintf(stderr, "calibration/noise lines are replaced with previous echo data "
 		       "line\n\n");
-		printf("missing lines within a data set and between adjacent along-track "
+		fprintf(stderr, "missing lines within a data set and between adjacent along-track "
 		       "data sets are filled with zeroes in float mode and 0.*127.5+127.5 "
 		       "+ .5 = 128 for byte mode\n\n");
-		printf("auxilary data files can be found at "
+		fprintf(stderr, "auxiliary data files can be found at "
 		       "http://envisat.esa.int/services/auxiliary_data/asar/\n\n");
-		printf("Envisat ASAR Product Handbook, Issue 1.1, 1 December 2002 can be "
+		fprintf(stderr, "Envisat ASAR Product Handbook, Issue 1.1, 1 December 2002 can be "
 		       "found at "
 		       "http://envisat.esa.int/dataproducts/asar/"
 		       "CNTR6-3-6.htm#eph.asar.asardf.0pASA_IM__0P\n\n");
@@ -574,11 +574,11 @@ int main(int argc, char *argv[]) {
 	*/
 
 	if (is_bigendian()) {
-		printf("It is running under Unix or Mac...\n");
+		fprintf(stderr, "It is running under Unix or Mac...\n");
 		is_littlendian = 0;
 	}
 	else {
-		printf("It is running under Linux or Windows...\n");
+		fprintf(stderr, "It is running under Linux or Windows...\n");
 		is_littlendian = 1;
 	}
 
@@ -586,40 +586,40 @@ int main(int argc, char *argv[]) {
 
 	outFilePtr = fopen(outFileName, "wb");
 	if (outFilePtr == NULL) {
-		printf("*** ERROR - cannot open file: %s\n", outFileName);
-		printf("\n");
+		fprintf(stderr, "*** ERROR - cannot open file: %s\n", outFileName);
+		fprintf(stderr, "\n");
 		exit(-1);
 	}
 
 	if (printBlockIdIfZero == 0) {
 		blockIdFilePtr = fopen(blockIdFileName, "wb");
 		if (blockIdFilePtr == NULL) {
-			printf("*** ERROR - cannot open file: %s\n", blockIdFileName);
-			printf("\n");
+			fprintf(stderr, "*** ERROR - cannot open file: %s\n", blockIdFileName);
+			fprintf(stderr, "\n");
 			exit(-1);
 		}
 	}
 
 	insFilePtr = fopen(insFileName, "rb");
 	if (insFilePtr == NULL) {
-		printf("*** ERROR - cannot open file: %s\n", insFileName);
-		printf("\n");
+		fprintf(stderr, "*** ERROR - cannot open file: %s\n", insFileName);
+		fprintf(stderr, "\n");
 		exit(-1);
 	}
 
 	/* read MPH of ins file */
 
-	printf("Reading MPH of ins file...\n\n");
+	fprintf(stderr, "Reading MPH of ins file...\n\n");
 
 	mphPtr = (char *)malloc(sizeof(char) * mphSize);
 
 	if (mphPtr == NULL) {
-		printf("ERROR - mph allocation memory\n");
+		fprintf(stderr, "ERROR - mph allocation memory\n");
 		exit(-1);
 	}
 
 	if ((fread(mphPtr, sizeof(char), mphSize, insFilePtr)) != mphSize) {
-		printf("ERROR - mph read error\n\n");
+		fprintf(stderr, "ERROR - mph read error\n\n");
 		exit(-1);
 	}
 
@@ -628,17 +628,17 @@ int main(int argc, char *argv[]) {
 
 	/* read SPH from ins file */
 
-	printf("Reading SPH from ins file...\n\n");
+	fprintf(stderr, "Reading SPH from ins file...\n\n");
 
 	sphPtr = (char *)malloc(sizeof(char) * mphIns.sphSize);
 
 	if (sphPtr == NULL) {
-		printf("ERROR - sph allocation memory\n");
+		fprintf(stderr, "ERROR - sph allocation memory\n");
 		exit(-1);
 	}
 
 	if ((fread(sphPtr, sizeof(char), mphIns.sphSize, insFilePtr)) != mphIns.sphSize) {
-		printf("ERROR - sph read error\n\n");
+		fprintf(stderr, "ERROR - sph read error\n\n");
 		exit(-1);
 	}
 
@@ -649,7 +649,7 @@ int main(int argc, char *argv[]) {
 
 	/* read GADS from ins file */
 
-	printf("Reading GADS from ins file...\n\n");
+	fprintf(stderr, "Reading GADS from ins file...\n\n");
 
 	/*gadsPtr = ( char * ) malloc( sizeof( char ) * sphIns.dsd[ 0 ].dsrSize );
 
@@ -671,9 +671,9 @@ int main(int argc, char *argv[]) {
 	*/
 
 	if ((fread(&insGads, sizeof(insGads), 1, insFilePtr)) != 1) {
-		printf("sizeof( insGads ): %ld\n", sizeof(insGads));
-		printf("ERROR - gads read error\n\n");
-		printf("%d %ld %ld\n", 171648, sizeof(insGads), 171648 - sizeof(insGads));
+		fprintf(stderr, "sizeof( insGads ): %ld\n", sizeof(insGads));
+		fprintf(stderr, "ERROR - gads read error\n\n");
+		fprintf(stderr, "%d %ld %ld\n", 171648, sizeof(insGads), 171648 - sizeof(insGads));
 		exit(-1);
 	}
 
@@ -718,24 +718,24 @@ int main(int argc, char *argv[]) {
 
 		imFilePtr = fopen(imFileName, "rb");
 		if (imFilePtr == NULL) {
-			printf("*** ERROR - cannot open file: %s\n", imFileName);
-			printf("\n");
+			fprintf(stderr, "*** ERROR - cannot open file: %s\n", imFileName);
+			fprintf(stderr, "\n");
 			exit(-1);
 		}
 
 		/* read image MPH */
 
-		printf("Reading image MPH...\n\n");
+		fprintf(stderr, "Reading image MPH...\n\n");
 
 		mphPtr = (char *)malloc(sizeof(char) * mphSize);
 
 		if (mphPtr == NULL) {
-			printf("ERROR - mph allocation memory\n");
+			fprintf(stderr, "ERROR - mph allocation memory\n");
 			exit(-1);
 		}
 
 		if ((fread(mphPtr, sizeof(char), mphSize, imFilePtr)) != mphSize) {
-			printf("ERROR - mph read error\n\n");
+			fprintf(stderr, "ERROR - mph read error\n\n");
 			exit(-1);
 		}
 
@@ -744,17 +744,17 @@ int main(int argc, char *argv[]) {
 
 		/* read image SPH */
 
-		printf("Reading image SPH...\n\n");
+		fprintf(stderr, "Reading image SPH...\n\n");
 
 		sphPtr = (char *)malloc(sizeof(char) * mph.sphSize);
 
 		if (sphPtr == NULL) {
-			printf("ERROR - sph allocation memory\n");
+			fprintf(stderr, "ERROR - sph allocation memory\n");
 			exit(-1);
 		}
 
 		if ((fread(sphPtr, sizeof(char), mph.sphSize, imFilePtr)) != mph.sphSize) {
-			printf("ERROR - sph read error\n\n");
+			fprintf(stderr, "ERROR - sph read error\n\n");
 			exit(-1);
 		}
 
@@ -763,7 +763,7 @@ int main(int argc, char *argv[]) {
 
 		/* read image MDSR from file */
 
-		printf("Reading and decoding image MDSR...\n\n");
+		fprintf(stderr, "Reading and decoding image MDSR...\n\n");
 
 		bytesRead = 0;
 
@@ -1010,7 +1010,7 @@ int main(int argc, char *argv[]) {
 				if (printBlockIdIfZero == 0) {
 					if ((fwrite(&mdsrBlockId, sizeof(unsigned char), outSamples / 63 + 1, blockIdFilePtr)) !=
 					    outSamples / 63 + 1) {
-						printf("ERROR - blockIdFile write error\n\n");
+						fprintf(stderr, "ERROR - blockIdFile write error\n\n");
 						exit(-1);
 					}
 				}
@@ -1025,13 +1025,13 @@ int main(int argc, char *argv[]) {
 						mdsrLineChar[k] = mdsrLineInt;
 					}
 					if ((fwrite(&mdsrLineChar, 2 * sizeof(unsigned char), outSamples, outFilePtr)) != outSamples) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 				}
 				else {
 					if ((fwrite(&mdsrLine, 2 * sizeof(float), outSamples, outFilePtr)) != outSamples) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 				}
@@ -1046,7 +1046,7 @@ int main(int argc, char *argv[]) {
 				mdsrIspLength+1-30;
 				*/
 
-				printf("Line %5d : missing line(s) - filling with zeroes - %d %d\n", i + 1, modePacketCount, modePacketCountOld);
+				fprintf(stderr, "Line %5d : missing line(s) - filling with zeroes - %d %d\n", i + 1, modePacketCount, modePacketCountOld);
 
 				for (j = 0; j < (modePacketCount - modePacketCountOld - 1); j++) {
 					if (outType == 1) {
@@ -1054,7 +1054,7 @@ int main(int argc, char *argv[]) {
 							mdsrLineChar[k] = 128; /* (0.*127.5+127.5) + .5 */
 						}
 						if ((fwrite(&mdsrLineChar, 2 * sizeof(unsigned char), outSamples, outFilePtr)) != outSamples) {
-							printf("ERROR - outFile write error\n\n");
+							fprintf(stderr, "ERROR - outFile write error\n\n");
 							exit(-1);
 						}
 					}
@@ -1063,7 +1063,7 @@ int main(int argc, char *argv[]) {
 							mdsrLine[k] = 0.;
 						}
 						if ((fwrite(&mdsrLine, 2 * sizeof(float), outSamples, outFilePtr)) != outSamples) {
-							printf("ERROR - outFile write error\n\n");
+							fprintf(stderr, "ERROR - outFile write error\n\n");
 							exit(-1);
 						}
 					}
@@ -1083,13 +1083,13 @@ int main(int argc, char *argv[]) {
 				i = i - 1;
 			}
 			else if (modePacketCount < modePacketCountOld + 1) {
-				printf("Line %5d : duplicate line\n", i + 1);
+				fprintf(stderr, "Line %5d : duplicate line\n", i + 1);
 				fseek(imFilePtr, mdsrIspLength + 1 - 30, SEEK_CUR);
 				bytesRead = bytesRead + mdsrIspLength + 1 - 30;
 				modePacketCount = modePacketCountOld;
 			}
 			else {
-				printf("Line %5d : error - %d %d\n", i + 1, modePacketCount, modePacketCountOld);
+				fprintf(stderr, "Line %5d : error - %d %d\n", i + 1, modePacketCount, modePacketCountOld);
 				exit(-1);
 			}
 		}

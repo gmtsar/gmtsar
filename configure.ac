@@ -25,7 +25,7 @@ dnl 1. Location of GMT include and library files
 dnl 2. Location of ORBITS directory
 dnl ------------------------------------------------------------------
 dnl
-AC_INIT(GMTSAR, 5.5.0, gmtsar-l@ucsd.edu)
+AC_INIT([GMTSAR],[master],[gmtsar-l@ucsd.edu])
 dnl
 dnl ------------------------------------------------------------------
 dnl The remainder should need no editing
@@ -36,10 +36,9 @@ m4_include([ax_blas.m4])
 m4_include([ax_lib_hdf5.m4])
 AC_CONFIG_SRCDIR(gmtsar/xcorr.c)
 AC_CONFIG_AUX_DIR(`pwd`)
-AC_CYGWIN
-AC_CANONICAL_SYSTEM
+AC_CANONICAL_TARGET
 AC_CANONICAL_HOST
-AC_LANG_C
+AC_LANG([C])
 AC_PROG_CC
 AC_PROG_CPP
 AC_PREFIX_DEFAULT(`pwd`)
@@ -154,7 +153,7 @@ dnl ------------------------------------------------------------------
 dnl Set the HDF5 include and lib stuff
 dnl ------------------------------------------------------------------
 AX_LIB_HDF5()
-HDF5_LIBS="$HDF5_LIBS -lhdf5_cpp"	# Add the C++ library
+HDF5_LIBS="$HDF5_LIBS -lhdf5${HDF5_INFIX}_cpp"	# Add the C++ library
 AC_MSG_CHECKING(for HDF5 include)
 AC_MSG_RESULT($HDF5_CPPFLAGS)
 AC_MSG_CHECKING(for HDF5 libs)
@@ -223,18 +222,6 @@ if test -x "$GMT_CONF" && test "X$GMT_INC" = "X" && test "X$GMT_LIB" = "X" ; the
 	AC_MSG_RESULT($GMT_LIB)
 	GMT_LIB_PATH=`echo $GMT_LIB | sed 's/^-L//;s/\ .*//'`
 	rpath="$GMT_LIB_PATH"
-	AC_MSG_CHECKING(for cpu found)
-	if test "$host_cpu" = "aarch64" && test "$os" = "Linux"; then
-		GCC_64=""
-		LDFLAGS="$LDFLAGS"
-	else
-		bits=`$GMT_CONF --bits`
-		GCC_64="-m${bits}"
-		LDFLAGS="$LDFLAGS -m${bits}"
-	fi
-	AC_MSG_RESULT(found ${host_cpu})
-	AC_MSG_CHECKING(for 32/64-bit GMT installation)
-	AC_MSG_RESULT(found ${bits}-bit)
 fi
 dnl
 dnl ------------------------------------------------------------------
@@ -280,12 +267,7 @@ LIBEXT='$(SL)'
 SL_VERSION='$(SL)'
 if test "X$enable_shared" = "Xyes" ; then
 	AC_MSG_CHECKING(how to make a shared object)
-	if test "X$CYGWIN" = "Xyes" ; then
-		SL=dll.a
-		SL_VERSION=$LIB_MAJOR_VERSION.$SL
-		LD='$(CC)'
-		LD_OPT="-shared"
-	elif test "$os" = "SunOS" ; then
+	if test "$os" = "SunOS" ; then
 		if test "$Sun_rev" = "" ; then	# SunOS
 			LD_OPT="-Bdynamic"
 		else				# Solaris
@@ -361,13 +343,13 @@ dnl
 AC_MSG_CHECKING(C compiler options for GMTSAR)
 if test "$GCC" = "yes"; then		# GNU cc options
 	if test "$chip" = "alpha" ; then	# Alpha PC
-		CFLAGS="$CFLAGS -mieee -Wall $GCC_64"
-		CXXFLAGS="$CXXFLAGS -mieee -Wall $GCC_64"
+		CFLAGS="$CFLAGS -mieee -Wall"
+		CXXFLAGS="$CXXFLAGS -mieee -Wall"
 	else				# MacOSX, Linux, ...
-		CFLAGS="$CFLAGS -Wall $GCC_64"
-		CXXFLAGS="$CXXFLAGS -Wall $GCC_64"
+		CFLAGS="$CFLAGS -Wall"
+		CXXFLAGS="$CXXFLAGS -Wall"
 	fi
-	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=c99"
+	CFLAGS="$CFLAGS -fPIC -fno-strict-aliasing -std=gnu99"
 	CXXFLAGS="$CXXFLAGS -fPIC"
 elif test "$os" = "SunOS" ; then	# Sun Workshop CC options
 	CFLAGS="$CFLAGS -Xc"
@@ -411,5 +393,6 @@ dnl ------------------------------------------------------------------
 dnl Update Make macros and preprocess scripts that need the orbits dir
 dnl ------------------------------------------------------------------
 dnl
-AC_OUTPUT(config.mk preproc/ENVI_preproc/scripts/ENVI_pre_process preproc/ENVI_preproc/scripts/ENVI_SLC_pre_process preproc/ERS_preproc/scripts/ERS_pre_process gmtsar/csh/gmtsar_sharedir.csh)
+AC_CONFIG_FILES([config.mk preproc/ENVI_preproc/scripts/ENVI_pre_process preproc/ENVI_preproc/scripts/ENVI_SLC_pre_process preproc/ERS_preproc/scripts/ERS_pre_process gmtsar/csh/gmtsar_sharedir.csh])
+AC_OUTPUT
 dnl

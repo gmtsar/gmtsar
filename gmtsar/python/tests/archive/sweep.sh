@@ -1,0 +1,364 @@
+#!/bin/bash
+# sweep.sh — download + run + compare every case in cases.caseNameList.
+# Designed for an unattended multi-hour run.
+#
+# Modes (project_rules.md Rule 13: simple > many options — 2026-07-13
+# trimmed from 6 modes down to these; see docs/reports/ for the archived
+# --smoke/--unit/--sample/--smart_fast history if ever needed again):
+#   bash sweep.sh                     # full sweep, all 21 cases (~3 h)
+#   bash sweep.sh --full              # same as above, explicit
+#   bash sweep.sh --fast              # 12 cases (~27 min, bounded by ENVI_Baja_EQ)
+#   TEST_CASES=<name> bash sweep.sh --fast   # single case (works with --full too)
+#   bash sweep.sh --fast --parallel 6        # cap concurrent cases (default 12)
+#
+# Force a re-run of an already-passing (cached) case: SWEEP_FORCE=1.
+#
+# Logs: gmtsar/python/work/sweep.log + per-case work/{python,csh}_test/<case>/log.txt
+
+set -u
+
+_TIER_SET=''
+_PARALLEL=12
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fast|fast)         export TEST_TIER=fast; _TIER_SET=1; shift ;;
+        --full|full)         export TEST_TIER=full; _TIER_SET=1; shift ;;
+        --parallel|-p)
+            if [ -z "${2:-}" ] || ! echo "${2}" | grep -qE '^[0-9]+$'; then
+                echo "sweep.sh: --parallel requires a numeric argument" >&2; exit 2
+            fi
+            _PARALLEL="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,15p' "$0"; exit 0 ;;
+        *) echo "unknown arg: $1 (try --fast / --full / --parallel N / --help; for a single case set TEST_CASES=<name>)" >&2; exit 2 ;;
+    esac
+done
+[ -n "$_TIER_SET" ] || export TEST_TIER=full
+
+# Derive GMTSAR from this script's location: sweep.sh lives at
+#   <repo>/gmtsar/python/tests/sweep.sh → repo root is three dirs up.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${GMTSAR:-}" ]; then
+    GMTSAR="$(cd "$_SCRIPT_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null)" \
+        || { echo "sweep.sh: cannot derive GMTSAR — set GMTSAR env var or run from inside the git repo" >&2; exit 1; }
+fi
+export GMTSAR
+# Prepend gmtsar bin so gmtsar tools are on PATH for subprocess calls inside
+# unit tests. Any conda/system path already on PATH (e.g. from caller's env)
+# is preserved after the repo's own bin.
+export PATH=$GMTSAR/bin:$PATH
+PY="$(command -v python3 2>/dev/null)" \
+    || { echo "sweep.sh: python3 not on PATH — activate conda env or set PATH" >&2; exit 1; }
+DATASET_DIR=$GMTSAR/gmtsar/python/work/dataset
+WORK=$GMTSAR/gmtsar/python/work
+LOG=$WORK/sweep.log
+TESTSYS=$GMTSAR/gmtsar/python/tests
+mkdir -p "$DATASET_DIR" "$WORK"
+
+# Derive case list + per-case (path, url) from cases.py in one shot — single
+# source of truth for archive extension (.tar.gz vs .tgz) and URL.
+declare -A TARBALL URL
+cases=""
+while IFS=$'\t' read -r c path url; do
+    cases+="$c "
+    TARBALL[$c]=$path
+    URL[$c]=$url
+done < <(cd "$TESTSYS" && "$PY" -c "
+from cases import caseNameList, archive_path, archive_url
+for c in caseNameList: print(f'{c}\t{archive_path(c)}\t{archive_url(c)}')
+")
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
+
+log "=== sweep started ==="
+log "cases: $cases"
+
+# Per project rule #6: capture hardware + software snapshot so scorecards
+# from different hosts/runs are comparable. Single file per sweep.
+PERF_FILE="$WORK/perf_$(date +%Y%m%d_%H%M%S).txt"
+{
+    echo "=== hardware ==="
+    echo "host: $(hostname)"
+    echo "cpu_model: $(awk -F: '/^model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ *//')"
+    echo "cpu_cores_logical: $(nproc)"
+    echo "ram_total: $(awk '/^MemTotal:/ {printf "%.1fG\n", $2/1024/1024}' /proc/meminfo)"
+    echo "workdir_fs: $(stat -f -c '%T (%n)' "$WORK" 2>/dev/null || stat --file-system -c '%T' "$WORK")"
+    echo "workdir_mount: $(df "$WORK" | awk 'NR==2 {print $1}')"
+    echo ""
+    echo "=== software ==="
+    echo "kernel: $(uname -srm)"
+    echo "python: $($PY --version 2>&1)"
+    echo "gmt: $(gmt --version 2>/dev/null || echo 'gmt not on PATH at sweep time')"
+    echo "gmtsar_bin: $(which gmtsar 2>/dev/null || echo 'gmtsar not on PATH')"
+    echo "git_sha: $(cd "$TESTSYS/../.." && git rev-parse --short HEAD 2>/dev/null || echo 'no git')"
+    echo "git_branch: $(cd "$TESTSYS/../.." && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '-')"
+    echo "git_dirty: $(cd "$TESTSYS/../.." && (git diff --quiet 2>/dev/null && echo no) || echo yes)"
+    echo ""
+    echo "=== thread limits (intended by case_runner.sh) ==="
+    echo "OMP_NUM_THREADS=${OMP_NUM_THREADS:-unset}"
+    echo "MKL_NUM_THREADS=${MKL_NUM_THREADS:-unset}"
+    echo "OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-unset}"
+    echo "FFTW_NUM_THREADS=${FFTW_NUM_THREADS:-unset}"
+    echo ""
+    echo "=== sweep ==="
+    echo "started: $(ts)"
+    echo "cases: $cases"
+    echo "max_parallel: $_PARALLEL"
+} > "$PERF_FILE"
+log "hw+sw snapshot → $PERF_FILE"
+
+# Skip cases that already have an all-SUCCESS results/<case>.json from this code
+# version. Restarting a failed/interrupted sweep should not re-verify what's
+# already passing.
+#
+# SWEEP_FORCE — rerun semantics:
+#   SWEEP_FORCE=1      hard force: wipe csh_test/<c>, python_test/<c>, and
+#                      results/<c>.json. Both pipelines re-extract + re-run.
+#                      ~3h for the full 21-case sweep.
+#   SWEEP_FORCE=py     soft force: wipe ONLY python_test/<c> and
+#                      results/<c>.json. case_runner.sh re-extracts the
+#                      tarball into a fresh python_test/<c>. csh_test/<c>
+#                      preserved as the immutable reference. ~1/2 the wall
+#                      time of the hard force. Use for iterating on
+#                      python-side code without rebuilding the csh oracle.
+#   SWEEP_FORCE=stage  stage-cache wipe: remove only the .stage_done_* sentinels
+#                      under python_test/<c>/ (does NOT touch outputs). Forces
+#                      every stage to re-execute on next run while preserving
+#                      the prior outputs as a post-mortem anchor. Useful when
+#                      debugging stage_cache.py or when a stale-cache hit is
+#                      suspected. No-op if GMTSAR_STAGE_CACHE=0 (default).
+# Modes use rename-then-delete to survive NFS .nfs* lock files (parent of
+# /tmp/<stale> directory is renamed atomically; the actual rm runs in the
+# background and tolerates lingering handles).
+#
+# SWEEP_FORCE=stage adds a third mode: wipe ONLY the per-stage cache sentinels
+# (.stage_done_*) under python_test/<c>/, NOT the case outputs. Forces every
+# stage to re-run on the next sweep but preserves the outputs from the
+# previous run as a comparison anchor. Use when iterating on stage_cache.py
+# itself or when you suspect a stale cache hit.
+if [ -n "${SWEEP_FORCE:-}" ]; then
+    case "${SWEEP_FORCE}" in
+        py|PY|python)   wipe_csh=0; wipe_mode=py ;;
+        stage|STAGE)    wipe_csh=0; wipe_mode=stage ;;
+        *)              wipe_csh=1; wipe_mode=hard ;;
+    esac
+    ts=$(date +%s%N)
+    for c in $cases; do
+        if [ "$wipe_mode" = "stage" ]; then
+            # Only purge .stage_done_* sentinels under python_test/<c>/; leave
+            # everything else intact so the prior outputs remain available for
+            # post-mortem comparison if the new run regresses.
+            pyDir="$WORK/python_test/$c"
+            if [ -d "$pyDir" ]; then
+                n=$(find "$pyDir" -maxdepth 3 -name ".stage_done_*" -print 2>/dev/null | wc -l)
+                find "$pyDir" -maxdepth 3 -name ".stage_done_*" -delete 2>/dev/null
+                log "WIPE $c (SWEEP_FORCE=stage — removed $n stage-cache sentinels under $pyDir; outputs preserved)"
+            else
+                log "WIPE $c (SWEEP_FORCE=stage — nothing to do, no $pyDir)"
+            fi
+            continue
+        fi
+        targets="$WORK/python_test/$c"
+        [ "$wipe_csh" = 1 ] && targets="$WORK/csh_test/$c $targets"
+        for d in $targets; do
+            if [ -d "$d" ]; then
+                stale="${d}.stale.$$.$ts"
+                if mv "$d" "$stale" 2>/dev/null; then
+                    (rm -rf "$stale" 2>/dev/null) &
+                    disown $! 2>/dev/null || true
+                else
+                    log "WIPE $c — FAILED to rename $d; aborting (won't run with stale outputs)"
+                    exit 1
+                fi
+            fi
+        done
+        rm -f "$WORK/results/$c.json"
+        if [ "$wipe_csh" = 1 ]; then
+            log "WIPE $c (SWEEP_FORCE=1 hard — csh_test, python_test, results cleared)"
+        else
+            log "WIPE $c (SWEEP_FORCE=py soft — python_test, results cleared; csh_test preserved as reference)"
+        fi
+    done
+fi
+if [ -z "${SWEEP_FORCE:-}" ]; then
+    new_cases=""
+    for c in $cases; do
+        rj="$WORK/results/$c.json"
+        if [ -f "$rj" ] && $PY -c "
+import json,sys
+d=json.load(open('$rj'))
+comps=d.get('comparisons',[])
+# A genuinely verified case has ALL comparisons SUCCESS AND at least 6 of
+# them (3 PNG + 3 grd). Fewer than 6 means the python run aborted mid-pipeline
+# (e.g. unwrap crash) so the comparison set is incomplete — re-run not skip.
+sys.exit(0 if len(comps) >= 6 and all(x.get('status')=='SUCCESS' for x in comps) else 1)
+" 2>/dev/null; then
+            log "SKIP $c (already verified — results/$c.json all-SUCCESS; SWEEP_FORCE=1 to override)"
+        else
+            new_cases+="$c "
+        fi
+    done
+    cases="$new_cases"
+    if [ -z "$(echo $cases)" ]; then
+        log "all cases already verified — nothing to do"
+        exit 0
+    fi
+fi
+
+# Detect pre-existing wgets targeting our dataset dir. Concurrent wgets writing
+# to the same file via -c corrupt the partial download, so we must serialize.
+# But if a wget is already running for a tarball we want, WAIT for it rather
+# than killing — the user may have an out-of-band download going. We'll
+# selectively skip wget for cases whose target is being downloaded already.
+declare -A EXTERN_WGET_PID
+for pid in $(pgrep -f "wget .*${DATASET_DIR}" 2>/dev/null || true); do
+    cmdline=$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+    for c in $cases; do
+        if echo "$cmdline" | grep -q -F "${TARBALL[$c]}"; then
+            EXTERN_WGET_PID[$c]=$pid
+            log "external wget already running for $c (pid $pid) — will wait for it"
+        fi
+    done
+done
+
+# Kick off a background `wget -c` for every case at startup. wget -c does a
+# HEAD against the server: it's near-instant if the file is already complete,
+# resumes if partial, downloads from scratch if absent. The sweep loop later
+# `wait`s for each case's wget before running it — so cases whose tarballs are
+# already complete will essentially skip the wait and run immediately.
+declare -A DL_PID
+for c in $cases; do
+    if [ -n "${EXTERN_WGET_PID[$c]:-}" ]; then
+        log "DOWNLOAD using external wget for $c (pid ${EXTERN_WGET_PID[$c]})"
+        DL_PID[$c]=${EXTERN_WGET_PID[$c]}
+    else
+        log "DOWNLOAD start (background) $c"
+        wget -c -q --timeout=60 --tries=3 "${URL[$c]}" -O "${TARBALL[$c]}" &
+        DL_PID[$c]=$!
+    fi
+done
+
+# Dynamic scheduling with bounded parallelism. Pick whichever case's wget has
+# finished first; launch up to _PARALLEL case runs concurrently (set via
+# --parallel N, default 12 — see arg parsing above; no env var, by design,
+# so a stray shell variable can't silently change behavior). Each case run
+# uses ~2 cores (csh + python pipelines in parallel within the case), so the
+# default of 12 = ~24 cores busy on a 64-core box; FFTW shim keeps each FFT
+# serial so this stays well under the core count. Watch swap if you push higher
+# — heavy cases (S1_Ridgecrest_EQ, ALOS2_SCAN_SSAF) can RAM-pressure the box.
+log "max parallel cases: $_PARALLEL"
+
+run_case() {
+    local c=$1
+    if [ ! -s "${TARBALL[$c]}" ]; then
+        log "DOWNLOAD FAIL $c — tarball missing/empty"
+        return 1
+    fi
+    log "RUN $c — starting"
+    local t0=$SECONDS
+    cd "$TESTSYS"
+    TEST_CASES="$c" "$PY" runner.py >> "$LOG" 2>&1
+    local dur=$((SECONDS - t0))
+    log "DONE $c (${dur}s)"
+}
+
+remaining="$cases"
+while [ -n "$(echo "$remaining" | tr -d ' ')" ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
+    # If we've hit the parallelism cap, wait for any case to finish.
+    if [ $(jobs -rp | wc -l) -ge "$_PARALLEL" ]; then
+        wait -n 2>/dev/null || true
+        continue
+    fi
+    # Find a case whose wget has finished.
+    next=""
+    for c in $remaining; do
+        if ! kill -0 "${DL_PID[$c]}" 2>/dev/null; then
+            next=$c
+            break
+        fi
+    done
+    if [ -z "$next" ]; then
+        # Nothing ready yet — wait for any download or active case.
+        if [ $(jobs -rp | wc -l) -gt 0 ]; then
+            wait -n 2>/dev/null || true
+        else
+            sleep 10
+        fi
+        continue
+    fi
+    remaining=$(echo "$remaining" | tr ' ' '\n' | grep -vx "$next" | tr '\n' ' ')
+    # Reap the wget exit status. `wait` only works on child PIDs of this shell;
+    # for an externally-running wget we adopted via EXTERN_WGET_PID, just check
+    # the file landed.
+    if [ -n "${EXTERN_WGET_PID[$next]:-}" ]; then
+        rc=0; [ ! -s "${TARBALL[$next]}" ] && rc=1
+    else
+        wait "${DL_PID[$next]}"; rc=$?
+    fi
+    if [ $rc -ne 0 ]; then
+        log "DOWNLOAD FAIL $next (wget rc=$rc) — skipping"
+        [ ! -s "${TARBALL[$next]}" ] && rm -f "${TARBALL[$next]}"
+        continue
+    fi
+    # Verify tarball is a valid gzip — catches truncated/corrupted downloads
+    # (e.g. concurrent wgets fighting, NFS write errors). per project_rules.md
+    # #1: don't fall through to extraction on bad data — remove and skip so the
+    # case is retried next sweep with a fresh download.
+    # IMPORTANT: only delete on a "real" gzip-detected corruption (rc=1).
+    # rc=137/143 mean gzip was killed (SIGKILL/SIGTERM) — likely an external
+    # pkill that matched the tarball filename, not an actual data problem.
+    # Deleting on signal would force a needless 44GB re-download.
+    gzip -t "${TARBALL[$next]}" 2>/dev/null
+    gz_rc=$?
+    if [ $gz_rc -ne 0 ]; then
+        if [ $gz_rc -ge 128 ]; then
+            log "INTEGRITY CHECK killed (rc=$gz_rc) for $next — skipping run, leaving tarball intact for retry"
+            continue
+        fi
+        log "INTEGRITY FAIL $next (gzip rc=$gz_rc) — tarball corrupt; removing and skipping"
+        rm -f "${TARBALL[$next]}"
+        continue
+    fi
+    log "DOWNLOAD OK $next ($(du -h "${TARBALL[$next]}" | cut -f1))"
+    # Launch this case in a background subshell — up to $_PARALLEL run at once.
+    run_case "$next" &
+done
+
+wait  # drain any still-running case
+log "all case runs complete"
+
+# Final summary: per-case download / status / timings / SUCCESS|FAIL counts.
+"$PY" "$TESTSYS/report.py" >> "$LOG" 2>&1
+log "summary written to $WORK/sweep_summary.md"
+
+# Tier 3: blessed scorecard diff — compares python_test outputs against the
+# committed golden file in docs/blessed_scorecards/<latest_tag>/<case>.json.
+# Non-fatal: a blessed diff failure is surfaced in the log and the markdown
+# report, but does NOT override the sweep exit code (that is set by the case
+# runs via runner.py).  A dedicated --blessed-check CI job can gate on
+# blessed_diff.py directly if needed.
+BLESSED_DIFF_TOOL="$TESTSYS/blessed_diff.py"
+if [ -f "$BLESSED_DIFF_TOOL" ]; then
+    log "Running blessed scorecard diff..."
+    "$PY" "$BLESSED_DIFF_TOOL" >> "$LOG" 2>&1 \
+        && log "blessed diff PASS" \
+        || log "WARN: blessed diff reported regressions — see $WORK/blessed_diff_*.md"
+else
+    log "WARN: $BLESSED_DIFF_TOOL missing — skipping blessed scorecard diff"
+fi
+
+# project_rules.md #7 — every full sweep MUST emit a perf snapshot under
+# docs/perf_snapshots/ so the run is reproducible/auditable. Tier becomes a
+# label so partial sweeps (smoke/fast) don't masquerade as full ones.
+SNAPSHOT_TOOL="$GMTSAR/gmtsar/python/tools/perf_snapshot.py"
+if [ -f "$SNAPSHOT_TOOL" ]; then
+    label_for_snapshot="${TEST_TIER:-full}"
+    "$PY" "$SNAPSHOT_TOOL" --label "$label_for_snapshot" >> "$LOG" 2>&1 \
+        && log "perf snapshot written under docs/perf_snapshots/" \
+        || log "WARN: perf_snapshot.py failed (non-fatal)"
+else
+    log "WARN: $SNAPSHOT_TOOL missing — skipping rule-7 snapshot"
+fi
+
+log "=== sweep finished ==="

@@ -3,11 +3,11 @@ PROG =  make_slc_csk
 CSRCS = make_slc_csk.c
 
 OBJS =  $(CSRCS:.c=.o)
-INCLUDES = -I../include -I../../../gmtsar $(HDF5_CPPFLAGS)
-CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lxmlC $(HDF5_LDFLAGS) $(HDF5_LIBS) -lm
+INCLUDES = -I../include -I../../../gmtsar $(GMT_INC) $(HDF5_CPPFLAGS) 
+CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lxmlC $(GMT_LIB) $(HDF5_LDFLAGS) $(HDF5_LIBS) -lm
 
 $(PROG): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CLIBS) 
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(CLIBS) 
 
 all:	$(PROG)
 
@@ -18,4 +18,4 @@ uninstall:
 	rm -f $(bindir)/$(PROG)
 
 clean:
-	rm -f $(OBJS) tags core
+	rm -f $(OBJS) tags core $(PROG)

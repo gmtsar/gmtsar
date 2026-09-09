@@ -12,6 +12,7 @@
  ***************************************************************************/
 
 #include "PRM.h"
+#include "gmtsar.h"
 #include "hdf5.h"
 #include "lib_defs.h"
 #include "lib_functions.h"
@@ -24,7 +25,7 @@
 int pop_prm_hdf5(struct PRM *, hid_t, char *);
 int pop_led_hdf5(hid_t, state_vector *);
 int write_orb(state_vector *sv, FILE *fp, int);
-int write_slc_hdf5(hid_t, FILE *);
+int write_slc_hdf5(hid_t, FILE *, double);
 int hdf5_read(void *, hid_t, char *, char *, char *, int);
 
 /*static inline unsigned long long bswap_64(unsigned long long x) {
@@ -32,19 +33,18 @@ int hdf5_read(void *, hid_t, char *, char *, char *, int);
 (bswap_32(x>>32));
 }*/
 
-char *USAGE = "\n\nUsage: make_slc_csk name_of_input_file name_output\n"
+char *USAGE = "\n\nUsage: make_slc_csk name_of_input_file name_output [SLC_factor]\n"
               "\nExample: make_slc_csk "
               "CSKS2_SCS_B_HI_09_HH_RA_SF_20090412050638_20090412050645.h5 CSK_20090412\n"
-              "\nOutput: CSK_20090412.SLC CSK_20090412.PRM CSK_20090412.LED\n";
+              "\nOutput: CSK_20090412.SLC CSK_20090412.PRM CSK_20090412.LED\n"
+              "\nDefault SLC_factor is 1.0.\n";
 
 int main(int argc, char **argv) {
 
 	FILE *OUTPUT_PRM, *OUTPUT_SLC, *OUTPUT_LED;
 	char tmp_str[200];
-	char *buff_c, *buff_o;
-	double *buff_d;
-	int *buff_i;
 	struct PRM prm;
+    double SLC_factor = 1.0;
 	// tree *xml_tree;
 	state_vector sv[200];
 	int n;
@@ -53,13 +53,12 @@ int main(int argc, char **argv) {
 
 	// fprintf(stderr,"Hahahaha...\n");
 
-	buff_c = (char *)malloc(60000 * sizeof(char));
-	buff_o = (char *)malloc(60000 * sizeof(char));
-	buff_d = (double *)malloc(1000 * sizeof(double));
-	buff_i = (int *)malloc(1000 * sizeof(double));
-
 	if (argc < 3)
 		die(USAGE, "");
+	if (argc == 4) {
+        SLC_factor = atof(argv[3]);
+        printf("Setting SLC_factor to %.6f\n",SLC_factor);
+    }
 	// generate the xml tree
 	// if ((INPUT_FILE = fopen(argv[1],"r")) == NULL) die("Couldn't open xml file:
 	// \n",argv[1]);
@@ -96,7 +95,7 @@ int main(int argc, char **argv) {
 	if ((OUTPUT_SLC = fopen(tmp_str, "wb")) == NULL)
 		die("Couldn't open tiff file: \n", tmp_str);
 
-	write_slc_hdf5(file, OUTPUT_SLC);
+	write_slc_hdf5(file, OUTPUT_SLC, SLC_factor);
 	fclose(OUTPUT_SLC);
 
 	// TIFFClose(TIFF_FILE);
@@ -104,9 +103,10 @@ int main(int argc, char **argv) {
 	H5Fclose(file);
 }
 
-int write_slc_hdf5(hid_t input, FILE *slc) {
+int write_slc_hdf5(hid_t input, FILE *slc, double SLC_factor) {
 
-	int i, j, width, height;
+	int i, j, width, height, widthi, nclip = 0;
+    float rr, ii;
 	short *buf, *tmp;
 	hsize_t dims[10];
 	hid_t memtype, dset, group;
@@ -115,11 +115,15 @@ int write_slc_hdf5(hid_t input, FILE *slc) {
 	hdf5_read(dims, input, "/S01", "SBI", "", 'n');
 	height = (int)dims[0];
 	width = (int)dims[1];
-
-	printf("Data size %lld x %lld x %lld...\n", dims[0], dims[1], dims[2]);
+    widthi = width;
 
 	buf = (short *)malloc(height * width * 2 * sizeof(short));
 	tmp = (short *)malloc(width * 2 * sizeof(short));
+
+	printf("Data size %lld x %lld x %lld...\n", dims[0], dims[1], dims[2]);
+
+    width = width - width%4;
+    height = height - height%4;
 
 	group = H5Gopen(input, "/S01", H5P_DEFAULT);
 	dset = H5Dopen(group, "SBI", H5P_DEFAULT);
@@ -132,11 +136,17 @@ int write_slc_hdf5(hid_t input, FILE *slc) {
 
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width * 2; j += 2) {
-			tmp[j] = (short)buf[i * width * 2 + j];
-			tmp[j + 1] = (short)buf[i * width * 2 + j + 1];
+			rr = (float)((double)buf[i * widthi * 2 + j]*SLC_factor);
+			ii = (float)((double)buf[i * widthi * 2 + j + 1]*SLC_factor);
+            tmp[j] = (short)clipi2(rr);
+            tmp[j + 1] = (short)clipi2(ii);
+            if ((int)rr > I2MAX || (int)ii > I2MAX) {
+                nclip++;
+            }
 		}
 		fwrite(tmp, sizeof(short), width * 2, slc);
 	}
+    fprintf(stderr, "number of points clipped to short int %d \n", nclip);
 	free(buf);
 	free(tmp);
 	return (1);
@@ -308,10 +318,11 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name) {
 	hdf5_read(dims, input, "/S01", "SBI", "", 'n');
 	// fprintf(stderr,"%d  %d\n",(int)dims[0],(int)dims[1]);
 
-	prm->bytes_per_line = (int)dims[1] * 4;
+	prm->bytes_per_line = ((int)dims[1] - (int)dims[1]%4) * 4;
 	prm->good_bytes = prm->bytes_per_line;
 
 	prm->num_lines = (int)dims[0] - (int)dims[0] % 4;
+    
 	prm->SC_clock_stop = prm->SC_clock_start + prm->num_lines / prm->prf / 86400;
 	prm->clock_stop = prm->clock_start + prm->num_lines / prm->prf / 86400;
 	prm->nrows = prm->num_lines;

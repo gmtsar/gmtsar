@@ -1,0 +1,98 @@
+#! /usr/bin/env python3
+"""make_dem — fetch a DEM tile and remove EGM96 geoid to WGS84.
+
+Python port of csh make_dem.csh (E. Lindsey 2022).
+
+Uses GMT server SRTM 1-arcsec (mode 1, default) or 3-arcsec (mode 2) data
+for the given W/E/S/N bounding box, then ADDs the EGM96 geoid (which
+SRTM heights are referenced to) to produce WGS84-ellipsoidal heights.
+
+Note: the legacy script labels this 'remove geoid' but the operation is
+grdmath ADD (the geoid value at each pixel is added). SRTM heights are
+above EGM96; ellipsoid height = SRTM + geoid_undulation.
+
+Usage:  make_dem W E S N [mode]
+Example: make_dem -115 -112 32 35 2
+
+Output: dem.grd (heights relative to WGS84 ellipsoid).
+"""
+import os
+import subprocess
+import sys
+from gmtsar_lib import run
+
+# Mira GMTSAR_GRDMATH_PY wire-in: numpy replacements for `gmt grdmath` ops.
+# Default ON (GMTSAR_GRDMATH_PY=1); set =0 to force the gmt subprocess.
+try:
+    import gmt_grdmath_py as _gm  # type: ignore
+    _HAVE_GRDMATH_PY = True
+except ImportError:
+    _HAVE_GRDMATH_PY = False
+
+
+def _grdmath_py_on() -> bool:
+    return _HAVE_GRDMATH_PY and os.environ.get("GMTSAR_GRDMATH_PY", "1") == "1"
+
+
+# Mira GMTSAR_GRDSAMPLE_PY wire-in: in-process gmt_grdsample_py via the
+# grdsample_wrapper for the `geoid -Rdem_ortho.grd` upsample below. The
+# geoid is a smooth global field upsampled onto the DEM lattice; A/B vs
+# `gmt grdsample` is 1 float32-ULP (max|diff| = 1 ULP, NaN-footprint
+# identical, verified on LA/RS2/Baja DEMs) — within the documented ULP
+# floor. Default ON; set GMTSAR_GRDSAMPLE_PY=0 to force the gmt subprocess.
+try:
+    from grdsample_wrapper import grdsample as _grdsample_py
+    _HAVE_GRDSAMPLE_PY = True
+except Exception:  # pragma: no cover
+    _HAVE_GRDSAMPLE_PY = False
+
+
+def _grdsample_py_on() -> bool:
+    return _HAVE_GRDSAMPLE_PY and os.environ.get("GMTSAR_GRDSAMPLE_PY", "1") == "1"
+
+
+def make_dem():
+    if len(sys.argv) not in (5, 6):
+        sys.exit(
+            "Usage: make_dem W E S N [mode]\n"
+            "  Uses GMT server to fetch SRTM data and removes EGM96 geoid.\n"
+            "  mode 1: SRTM-1s (default), 2: SRTM-3s\n"
+            "Example: make_dem -115 -112 32 35 2"
+        )
+    W, E, S, N = sys.argv[1:5]
+    mode = int(sys.argv[5]) if len(sys.argv) == 6 else 1
+    if mode not in (1, 2):
+        sys.exit("[ERROR]: Wrong DEM mode selected (use 1 or 2).")
+
+    print("\nSTART: make_dem\n")
+
+    R = f"-R{W}/{E}/{S}/{N}"
+
+    # Resolve the GMTSAR share dir (where geoid_egm96_icgem.grd lives)
+    gmtsar = os.environ.get('GMTSAR')
+    if not gmtsar:
+        sys.exit("make_dem: $GMTSAR not set")
+    sharedir = os.path.join(gmtsar, 'share', 'gmtsar')
+
+    relief = "@earth_relief_01s" if mode == 1 else "@earth_relief_03s"
+    run(f"gmt grdcut {relief} {R} -Gdem_ortho.grd")
+
+    if _grdsample_py_on():
+        _grdsample_py(f"{sharedir}/geoid_egm96_icgem.grd",
+                      "geoid_resamp.grd", ref_grd="dem_ortho.grd")
+    else:
+        run(f"gmt grdsample {sharedir}/geoid_egm96_icgem.grd "
+            f"-Rdem_ortho.grd -Ggeoid_resamp.grd -Vq")
+    if _grdmath_py_on():
+        _gm.grdmath2("ADD", "dem_ortho.grd", "geoid_resamp.grd", "dem.grd",
+                     ctx="make_dem:ADD_geoid")
+    else:
+        run("gmt grdmath -Vq dem_ortho.grd geoid_resamp.grd ADD = dem.grd")
+    run("rm -f geoid_resamp.grd")
+
+    print("\ncreated dem.grd, heights relative to WGS84 ellipsoid")
+    print("\nEND: make_dem\n")
+
+
+if __name__ == "__main__":
+    make_dem()

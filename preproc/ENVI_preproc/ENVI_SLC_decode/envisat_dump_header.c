@@ -41,10 +41,10 @@ int main(int argc, char **argv) {
 	printf("|  This is envisat_dump_header by Bert Kampes   |\n");
 	printf("+-----------------------------------------------+\n");
 	if (argc <= 1) {
-		printf("Usage: envisat_dump_header envisat-product\n");
-		printf("  where envisat-product is the input filename\n");
-		printf("Example:\n");
-		printf("  envisat_dump_header "
+		fprintf(stderr, "Usage: envisat_dump_header envisat-product\n");
+		fprintf(stderr, "  where envisat-product is the input filename\n");
+		fprintf(stderr, "Example:\n");
+		fprintf(stderr, "  envisat_dump_header "
 		       "ASA_IMS_1PNDPA20021025_175208_000000162010_00356_03416_0005.N1\n\n");
 		exit(1);
 	}
@@ -58,8 +58,8 @@ int main(int argc, char **argv) {
 	/*status = epr_init_api(e_log_debug, epr_log_message, epr_log_message);*/
 	status = epr_init_api(e_log_debug, epr_log_message, NULL);
 	if (status != 0) {
-		printf("envisat_dump_header: fatal error in epr_init_api\n");
-		printf("exiting.\n");
+		fprintf(stderr, "envisat_dump_header: fatal error in epr_init_api\n");
+		fprintf(stderr, "exiting.\n");
 		exit(1);
 	};
 

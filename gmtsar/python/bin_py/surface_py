@@ -1,0 +1,190 @@
+#! /usr/bin/env python3
+"""surface_py — Python replacement for `gmt surface`.
+
+Drop-in CLI compatible with the subset that gmtsar uses:
+
+    surface_py infile.rat -R<xmin>/<xmax>/<ymin>/<ymax> -I<dx>/<dy>
+               -bi3d -T<tension> -N<iter> -G<outfile> -r [-V]
+
+Reads xyz scatter (binary 3-double per row from -bi3d), interpolates to a
+regular grid via scipy.interpolate.griddata, and writes a GMT-compatible
+.grd via the `gmt xyz2grd` clib.Session call.
+
+The dem2topo_ra use case feeds blockmedian output (xyz scatter already
+binned to cells) into surface to produce a continuous regularly-gridded
+topo. We don't need true Wessel-Bercovici splines under tension — cubic
+griddata with optional smoothing matches downstream's expectations within
+the comparison thresholds.
+
+Status: serial, correctness-first. Tension knob currently implemented as
+a single Gaussian smoothing pass weighted by (1 - tension). Multi-iteration
+biharmonic refinement is deferred (Phase 2).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import tempfile
+
+import numpy as np
+
+# Bootstrap utils_pygmt for gmt_compat (xyz2grd routes through clib.Session)
+_PY_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(_PY_DIR, "utils_pygmt"))
+from gmt_compat import xyz2grd, has_pygmt  # type: ignore
+
+
+def _parse_region(r: str) -> tuple[float, float, float, float]:
+    """`xmin/xmax/ymin/ymax` → 4 floats."""
+    parts = r.split("/")
+    if len(parts) != 4:
+        raise ValueError(f"surface_py: -R{r} not in xmin/xmax/ymin/ymax form")
+    return tuple(float(p) for p in parts)  # type: ignore
+
+
+def _parse_spacing(s: str) -> tuple[float, float]:
+    """`dx/dy` or `dx` → 2 floats (dx, dy)."""
+    parts = s.split("/")
+    if len(parts) == 1:
+        return float(parts[0]), float(parts[0])
+    return float(parts[0]), float(parts[1])
+
+
+def _build_grid(xmin: float, xmax: float, ymin: float, ymax: float,
+                dx: float, dy: float, pixel_reg: bool
+                ) -> tuple[np.ndarray, np.ndarray]:
+    """Return (X, Y) meshgrid for the output. Pixel-registration places
+    grid cell CENTRES at xmin+dx/2 … xmax-dx/2 with nx = (xmax-xmin)/dx
+    cells. Gridline-registration places nodes ON the boundary.
+    """
+    if pixel_reg:
+        nx = int(round((xmax - xmin) / dx))
+        ny = int(round((ymax - ymin) / dy))
+        x = xmin + dx * (np.arange(nx) + 0.5)
+        y = ymin + dy * (np.arange(ny) + 0.5)
+    else:
+        nx = int(round((xmax - xmin) / dx)) + 1
+        ny = int(round((ymax - ymin) / dy)) + 1
+        x = np.linspace(xmin, xmax, nx)
+        y = np.linspace(ymin, ymax, ny)
+    X, Y = np.meshgrid(x, y)
+    return X, Y
+
+
+def surface_interp(xyz: np.ndarray, region: tuple, spacing: tuple,
+                   tension: float = 0.25, pixel_reg: bool = True,
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Interpolate scattered xyz to a regular grid.
+
+    xyz:     (N, 3) array of (x, y, z) triplets
+    region:  (xmin, xmax, ymin, ymax)
+    spacing: (dx, dy)
+    tension: 0..1. 0 = max smoothing (heavy Gaussian); 1 = no smoothing.
+             GMT surface default is 0.1-0.25 for our use case.
+    pixel_reg: True for `-r` (cell-centred), False for gridline-registered.
+
+    Returns (X, Y, Z) meshgrid + interpolated Z (with NaN-fill for cells
+    outside the convex hull of input scatter).
+    """
+    xmin, xmax, ymin, ymax = region
+    dx, dy = spacing
+    X, Y = _build_grid(xmin, xmax, ymin, ymax, dx, dy, pixel_reg)
+
+    # Primary interpolation: cubic via scipy.interpolate.griddata.
+    # 'cubic' uses CloughTocher2D which is fast and gives a C1-continuous
+    # surface — visually equivalent to gmt surface with light tension.
+    from scipy.interpolate import griddata
+    Z = griddata(xyz[:, :2], xyz[:, 2], (X, Y),
+                 method="cubic", fill_value=np.nan)
+
+    # Fill NaNs (points outside convex hull) with nearest-neighbour.
+    nan_mask = np.isnan(Z)
+    if nan_mask.any():
+        Zn = griddata(xyz[:, :2], xyz[:, 2], (X, Y),
+                      method="nearest")
+        Z[nan_mask] = Zn[nan_mask]
+
+    # Tension-like smoothing: one Gaussian pass weighted by (1 - tension).
+    if 0.0 < tension < 1.0:
+        from scipy.ndimage import gaussian_filter
+        sigma = 1.0  # one-pixel smoothing scale
+        Z_smooth = gaussian_filter(Z, sigma=sigma)
+        Z = tension * Z + (1.0 - tension) * Z_smooth
+
+    return X, Y, Z
+
+
+def write_gmt_grid(X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
+                   region: tuple, spacing: tuple, output: str,
+                   pixel_reg: bool = True) -> None:
+    """Write the regular grid Z to a GMT-compatible .grd via xyz2grd."""
+    # Stream every grid cell as an (x, y, z) triplet to a tempfile,
+    # then xyz2grd. This guarantees GMT-canonical netcdf output that
+    # downstream gmt operations can read without complaints.
+    xs = X.ravel()
+    ys = Y.ravel()
+    zs = Z.ravel()
+    triplets = np.column_stack([xs, ys, zs]).astype(np.float64)
+    xmin, xmax, ymin, ymax = region
+    dx, dy = spacing
+
+    with tempfile.NamedTemporaryFile(suffix=".xyz", delete=False) as f:
+        tmp = f.name
+        triplets.tofile(f)
+    try:
+        reg_flag = " -r" if pixel_reg else ""
+        xyz2grd(f"{tmp} -R{xmin}/{xmax}/{ymin}/{ymax} -I{dx}/{dy} "
+                f"-G{output} -bi3d{reg_flag}")
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def surface_py(args: list[str]) -> int:
+    """Run as if called from the CLI: parse args, do the work."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("infile")
+    p.add_argument("-R", required=True)
+    p.add_argument("-I", required=True)
+    p.add_argument("-G", required=True, help="output .grd path")
+    p.add_argument("-T", default="0.25", help="tension 0..1")
+    p.add_argument("-N", default="1000", help="max iters (unused; CLI compat)")
+    p.add_argument("-bi3d", action="store_true", help="binary input, 3 doubles per row")
+    p.add_argument("-r", action="store_true", help="pixel registration")
+    p.add_argument("-V", action="store_true", help="verbose (ignored)")
+    p.add_argument("-Q", action="store_true", help="dry-run (matches gmt surface; ignored)")
+    ns = p.parse_args(args)
+
+    region = _parse_region(getattr(ns, "R"))
+    spacing = _parse_spacing(getattr(ns, "I"))
+    tension = float(ns.T)
+
+    if not ns.bi3d:
+        # Plain text xyz fallback (for compatibility, though gmtsar always
+        # uses -bi3d)
+        xyz = np.loadtxt(ns.infile)
+    else:
+        a = np.fromfile(ns.infile, dtype=np.float64)
+        if a.size % 3 != 0 or a.size == 0:
+            print(f"surface_py: {ns.infile} not a multiple of 3 doubles",
+                  file=sys.stderr)
+            return 2
+        xyz = a.reshape(-1, 3)
+
+    if ns.Q:
+        # Dry-run: emit a -R hint line and exit, like gmt surface -Q.
+        # We just print the data extent so callers parsing the hint still work.
+        print(f"surface [Hint]: -R{xyz[:, 0].min():.3f}/{xyz[:, 0].max():.3f}/"
+              f"{xyz[:, 1].min():.3f}/{xyz[:, 1].max():.3f}")
+        return 0
+
+    X, Y, Z = surface_interp(xyz, region, spacing,
+                             tension=tension, pixel_reg=ns.r)
+    write_gmt_grid(X, Y, Z, region, spacing,
+                   output=getattr(ns, "G"), pixel_reg=ns.r)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(surface_py(sys.argv[1:]))

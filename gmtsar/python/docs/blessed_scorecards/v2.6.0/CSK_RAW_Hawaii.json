@@ -1,0 +1,21 @@
+{
+  "case": "CSK_RAW_Hawaii",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/CSK_RAW_Hawaii.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2014004_2014020/corr_ll.grd": "f6bce0d16a30f498c6f1a3c4777b2215",
+    "intf/2014004_2014020/corr_ll.png": "afefaf3ed3e353d652733e5569f596d1",
+    "intf/2014004_2014020/display_amp_ll.png": "301955e1fa5cdbc1dbc9741d614b28eb",
+    "intf/2014004_2014020/filtcorr.grd": "7567dd3cf1d00025d6fd05b927c15350",
+    "intf/2014004_2014020/phasefilt.grd": "3dd21096b6d69b8a3b97e0f2baced509",
+    "intf/2014004_2014020/phasefilt_mask_ll.png": "95c7d60ad3559516331adfb6930e4945"
+  }
+}

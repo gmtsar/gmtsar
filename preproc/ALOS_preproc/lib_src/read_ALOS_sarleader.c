@@ -90,7 +90,8 @@ void read_ALOS_sarleader(FILE *ldrfile, struct PRM *prm, struct ALOS_ORB *orb) {
 	fscanf(ldrfile, SARLEADER_DSS_RCS_ALOS, SARLEADER_DSS_RVL_ALOS(sar.dss_ALOS));
 	if (verbose)
 		fprintf(logfile, SARLEADER_DSS_WCS_ALOS, SARLEADER_DSS_RVL_ALOS(sar.dss_ALOS));
-
+	if (prefix_off == 388)
+		fseek(ldrfile, 2, SEEK_CUR); //maybe needed?
 	/* check format ERSDAC or AUIG */
 	if (strncmp(sar.dss_ALOS->processing_system_id, "SKY", 3) == 0)
 		ALOS_format = 1;
@@ -115,7 +116,11 @@ void read_ALOS_sarleader(FILE *ldrfile, struct PRM *prm, struct ALOS_ORB *orb) {
 			fprintf(stderr, "uncertain SAR mode; assuming high resolution\n");
 		SAR_mode = 0;
 	}
-
+	if (prefix_off == 388) {
+                /* We are reading ALOS 4 Data */
+		rewind(ldrfile);
+		fseek(ldrfile, 5400, SEEK_CUR);
+        }
 	nitems = fread(&sb, sizeof(struct sarleader_binary), 1, ldrfile);
 	if (verbose)
 		print_binary_position(&sb, nitems, ldrfile, logfile);

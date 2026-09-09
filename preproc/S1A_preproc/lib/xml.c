@@ -19,7 +19,7 @@
 
 /* global variables needed for the xml library */
 int N = 0;
-int MAX_TREE_SIZE = 600000; // size of the tree in maximum
+int MAX_TREE_SIZE = 2000000; // size of the tree in maximum
 int MAX_CHAR_SIZE = 60000;  // size of char arrays in maximum
 char STR[4000][60000];
 
@@ -46,7 +46,7 @@ int search_tree(tree *list, char *str, char *s_out, int type, int loc, int num) 
 	  str2dbs to convert to double array.
 	 ***************************************************************************/
 	// search the num-th target at loc in str in the tree
-	int64_t ct = 0;
+	long int ct = 0;
 	int n = 1, i, j, j1, j2;
 	char s_name[200], *tmp_name, tmp_num[200];
 	while (strlocate(str, '/', n) != -1) {
@@ -146,9 +146,9 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 	char *buffer;
 	char tmp_char[200], tmp_s[200], *tmp_c;
 	int i1, i2, j1, j2, have_slash;
-	int64_t count = 0;
+	long int count = 0;
 	// int *num_space;
-	int64_t level[100] = {-1}, lev_ct = 0;
+	long int level[100] = {-1}, lev_ct = 0;
 	char lev_rec[100][200];
 
 	buffer = (char *)malloc(MAX_CHAR_SIZE * sizeof(char));
@@ -174,8 +174,9 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 		j2 = strlocate(buffer, '>', 2);
 
 		if (i1 < 0 || j1 < 0) {
-			fprintf(stderr, "Not an well formatted XML file...%d, %d\n", i1, j1);
-			return (-1);
+            continue;
+			//fprintf(stderr, "Not an well formatted XML file...%d, %d\n", i1, j1);
+			//return (-1);
 		}
 		else if (buffer[i1 + 1] == '/') {
 			have_slash = 1;
@@ -194,6 +195,7 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 
 		// create tree
 		// first node
+
 		if (count == 0) {
 			strcpy(list[count].name, tmp_char);
 			level[lev_ct] = count;
@@ -241,6 +243,10 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 		// go to parent level
 
 		else if (count != 0 && have_slash == 1) {
+
+            // in case the above attributes are empty, increase the level so it can properly go back
+            if (strncmp(tmp_char, lev_rec[lev_ct], strlen(tmp_char)) == 0) lev_ct++;
+
 			// fprintf(stderr,"%s\n",tmp_char);
 			if (strncmp(lev_rec[lev_ct - 1], "OutOfSpace", 10) == 0) {
 				cat_nums(tmp_s, lev_rec[lev_ct - 1]);
@@ -289,7 +295,7 @@ int space_count(char *str) {
 int itoa_xml(int d, char *buf, int base) {
 	char *p = buf;
 	char *p1, *p2;
-	uint64_t ud = d;
+	unsigned long ud = d;
 	int divisor = 10;
 
 	/* If %d is specified and D is minus, put `-' in the head.  */
@@ -422,11 +428,26 @@ int show_tree(tree *T, int ct, int lvl) {
 
 int cat_nums(char *str_out, char *str) {
 	// cat out the numbers in str to str_out
-	int i = 0, j = 0;
+	int i = 0, j = 0, sep1 = -1, sep2 = -1;
+
 	while (str[i] != '\0') {
 		if (str[i] >= '0' && str[i] <= '9') {
 			str_out[j++] = str[i];
 		}
+        // to account for single digits time such as 5:6:7.123456
+        else if (j > 0) {
+            if (str[i] == 'T' || str[i] == ':' || str[i] == '.') {
+              //printf("correction %c (%d)\n",str[i],i);
+              sep2 = i;
+              if (sep2 - sep1 == 2) {
+                str_out[j] = str_out[j-1];
+                str_out[j-1] = '0';
+                j++;
+                sep2++;
+              }
+              sep1 = i;
+            }
+        }
 		i++;
 	}
 	str_out[j] = '\0';
@@ -480,9 +501,13 @@ int str_date2JD(char *str_JD, char *str_date) {
 double str2double(char *str) {
 	int i, n, m;
 	double value = 0.0, value1 = 0.0, value2 = 0.0, sgn = 1.0;
-	char tmp1[100], tmp2[100], tmp[100], str_tmp[100];
+	char tmp1[100], tmp2[100], tmp[100], str_tmp[100], str_tmp2[100];
 
 	strasign(str_tmp, str, 0, strlen(str));
+    while (str_tmp[0] == ' ') {
+        strcpy(str_tmp2,str_tmp);
+        strasign(str_tmp, str_tmp2, 1, strlen(str));
+    }
 
 	// decide the sign
 	if (str_tmp[0] == '-' || str_tmp[0] == '+') {
@@ -666,10 +691,9 @@ num)
 
 int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 
-	char str[200];
+	char str[200],c[100],c2[100];
 
 	if (strncmp(T[ct].name, "OutOfSpace", 10) == 0) {
-		char c[100];
 		cat_nums(c, T[ct].name);
 		if (mode == 1) {
 			fprintf(fp, "<%s>\n", STR[(int)str2double(c)]);
@@ -679,15 +703,19 @@ int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 			fprintf(fp, "</%s>\n", str);
 		}
 		else {
-			sscanf(STR[(int)str2double(c)], "%s ", str);
-			if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
-				char c2[100];
-				cat_nums(c2, T[T[ct].firstchild].name);
-				fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], STR[(int)str2double(c2)], str);
-			}
-			else {
-				fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], T[T[ct].firstchild].name, str);
-			}
+            if (T[ct].name[strlen(T[ct].name)-1] == '/') {
+                fprintf(fp, "<%s>\n", T[ct].name);
+            }
+            else {
+			    sscanf(STR[(int)str2double(c)], "%s ", str);
+			    if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
+				    cat_nums(c2, T[T[ct].firstchild].name);
+				    fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], STR[(int)str2double(c2)], str);
+			    }
+			    else {
+				    fprintf(fp, "<%s>%s</%s>\n", STR[(int)str2double(c)], T[T[ct].firstchild].name, str);
+			    }
+            }
 		}
 	}
 	else {
@@ -699,15 +727,19 @@ int print_tree(struct tree *T, int ct, int mode, FILE *fp) {
 			fprintf(fp, "</%s>\n", str);
 		}
 		else {
-			sscanf(T[ct].name, "%s ", str);
-			if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
-				char c2[100];
-				cat_nums(c2, T[T[ct].firstchild].name);
-				fprintf(fp, "<%s>%s</%s>\n", T[ct].name, STR[(int)str2double(c2)], str);
-			}
-			else {
-				fprintf(fp, "<%s>%s</%s>\n", T[ct].name, T[T[ct].firstchild].name, str);
-			}
+            if (T[ct].name[strlen(T[ct].name)-1] == '/') {
+                fprintf(fp, "<%s>\n", T[ct].name);
+            }
+            else {
+			    sscanf(T[ct].name, "%s ", str);
+			    if (strncmp(T[T[ct].firstchild].name, "OutOfSpace", 10) == 0) {
+				    cat_nums(c2, T[T[ct].firstchild].name);
+				    fprintf(fp, "<%s>%s</%s>\n", T[ct].name, STR[(int)str2double(c2)], str);
+			    }
+			    else {
+				    fprintf(fp, "<%s>%s</%s>\n", T[ct].name, T[T[ct].firstchild].name, str);
+			    }
+            }
 		}
 	}
 
@@ -797,15 +829,7 @@ int assemble_trees(int nfiles, struct tree **T, int ct, int lvl, FILE *fp) {
 
 /*
 add_branch(int n, struct tree **T, str, ct) {
-    
-
-
-
-
-
-
-
-
+    
     int i;
     char str_out[60000];
     i = search_tree(T[0],str,str_out,1,0,1);
@@ -855,15 +879,7 @@ getting a good tree structure
     int ii1,jj1,kk1,ct,nn1,ii2,jj2,kk2,kk3,nn2,qq;
     char tmp_c[60000],s_name[200],s_out[200];
     double t1,t2;
-  
-
-
-
-
-
-
-
-
+  
     ct = 0;
     while (T[0][ct].sibr != -1 || T[0][ct].firstchild != -1) {
         if (T[0][ct].sibr != -1) ct = T[0][ct].sibr;
@@ -924,15 +940,7 @@ T[0][ii2+nlmx*qq*5].firstchild;
         T[0][kk2].parent = ii1;
         sprintf(tmp_c,"orbitList count=\"%d\"",nn1+nn2-ct);
         strcpy(T[0][ii1].name,tmp_c);
-    
-
-
-
-
-
-
-
-
+    
 
     }
 

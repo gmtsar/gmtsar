@@ -28,7 +28,7 @@ endif
 #   first mask the phase and phase gradient using the correlation
 #
 gmt grdmath corr.grd $1 GE 0 NAN mask.grd MUL = mask2.grd $V
-gmt grdmath phase.grd mask2.grd MUL = phase_mask.grd
+gmt grdmath phasefilt.grd mask2.grd MUL = phase_mask.grd
 if (-e xphase.grd) then
   gmt grdmath xphase.grd mask2.grd MUL = xphase_mask.grd
   gmt grdmath yphase.grd mask2.grd MUL = yphase_mask.grd
@@ -48,14 +48,14 @@ gmt psscale -Rphase_mask.grd -J -DJTC+w5i/0.2i+h -Cphase.cpt -Bxa1.57+l"Phase" -
 gmt psconvert -Tf -P -A -Z phase_mask.ps
 echo "Masked phase map: phase_mask.pdf"
 if (-e xphase_mask.grd) then
-  gmt makecpt -Cgray -T-.3/.3/.1 -N -Z > xphase.cpt
-  gmt grdimage xphase_mask.grd -JX8i -Cxphase.cpt -X.2i -Y.5i -P -K > xphase_mask.ps
-  gmt psscale -Rxphase_mask.grd -J -DJTC+w5i/0.2i+h -Cxphase.cpt -Bxa0.1+l"Phase" -By+lrad -O >> xphase_mask.ps
+  gmt makecpt -Cgray -T-.3/.3/.1 -Z -M --COLOR_NAN=red > xphase.cpt
+  gmt grdimage xphase_mask.grd -JX8i -Cxphase.cpt -Bxaf+lrange -Byaf+lazimuth -BWSen -X1.3i -Y3i -Q -P -K > xphase_mask.ps
+  gmt psscale -Rxphase_mask.grd -J -DJTC+w5i/0.2i+h -Cxphase.cpt -Bxa0.1+l"x-phase" -By+lrad -O >> xphase_mask.ps
   gmt psconvert -Tf -P -A -Z xphase_mask.ps
   echo "Masked x phase map: xphase_mask.pdf"
-  gmt makecpt -Cgray -T-.6/.6/.1 -N -Z > yphase.cpt
-  gmt grdimage yphase_mask.grd -JX8i -Cyphase.cpt -X.2i -Y.5i -P -K > yphase_mask.ps
-  gmt psscale -Ryphase_mask.grd -J -DJTC+w5i/0.2i+h -Cyphase.cpt -Bxa0.1+l"Phase" -By+lrad -O >> yphase_mask.ps
+  gmt makecpt -Cgray -T-.6/.6/.1 -Z -M  --COLOR_NAN=red > yphase.cpt
+  gmt grdimage yphase_mask.grd -JX8i -Cyphase.cpt -Bxaf+lrange -Byaf+lazimuth -BWSen -X1.3i -Y3i -Q -P -K > yphase_mask.ps
+  gmt psscale -Ryphase_mask.grd -J -DJTC+w5i/0.2i+h -Cyphase.cpt -Bxa0.1+l"y-phase" -By+lrad -O >> yphase_mask.ps
   gmt psconvert -Tf -P -A -Z yphase_mask.ps
   echo "Masked y phase map: yphase_mask.pdf"
 endif

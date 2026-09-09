@@ -1,0 +1,17 @@
+#! /usr/bin/env python3
+"""SAT-specific alias scaffold — superseded by Python p2p_processing.
+
+The legacy csh has per-SAT shell wrappers (e.g. align_ALOS_SLC.csh) that
+just dispatch to the right SAT_pre_process / align binary. The Python
+`p2p_processing` utility already handles SAT dispatch internally, so
+these wrappers are redundant in the Python framework.
+
+If you need the wrapper behavior verbatim, call the upstream csh
+directly (it's still on PATH via the install symlinks).
+"""
+import os, sys
+sys.exit(
+    f"{os.path.basename(__file__)}: redundant in the Python framework — use "
+    f"p2p_processing SAT master aligned [config.py] instead.\n"
+    f"For exact legacy behavior, call gmtsar/csh/{os.path.basename(__file__)}.csh."
+)

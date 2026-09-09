@@ -5,8 +5,6 @@ include ../../config.mk
 DIRS	= lib src_swath src_tops src_orbit src_stitch src_spec_div src_assembly
 
 all:
-	$(LN_S) -f ../S1A_preproc/include include
-	$(LN_S) -f ../S1A_preproc/lib lib
 	for d in $(DIRS); do \
 		(cd $$d; $(MAKE) all); \
 	done
@@ -27,3 +25,4 @@ clean:
 	done
 
 spotless:	clean
+	$(MAKE) -C lib spotless

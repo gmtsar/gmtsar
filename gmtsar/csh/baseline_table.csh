@@ -3,11 +3,13 @@
 #
 #  April 21, 1999 - David T. Sandwell
 #  May 23, 2017 - Anders Hogrelius, updated to fully support Envisat formatted SLC data
+#  August 12, 2026 - DTS changed to use mktime which requires gawk
 #
 #  Script to calculate a table of parameters from master and
 #  aligned PRM files.
 #
 unset noclobber
+setenv TZ UTC
 #
 #  Modified by M.Wei to add ALOS function, 9/27/06
 #
@@ -48,31 +50,41 @@ set ERSSLC = `echo $1|cut -c1-10`
 #
 if ($SSC == 1 || $SSC == 2) then
  SAT_baseline $1 $2 > temp
- @ YR = $T0  / 1000 - 1992
- @ YDAY = $YR * 365 + $DAY
+ set t0 = `echo "" | gawk '{print mktime("1992 01 01 00 00 00")}'`
+ @ YR = $T0  / 1000
+ set t1 = `echo "" | gawk '{print mktime("'$YR' 01 01 00 00 00")}'`
+ set YDAY = `echo $t0 $t1 | awk '{printf("%d",int(($2-$1)/86400.0+0.5)+'$DAY'-1)}'`
 else if ($SSC == 4 || $SSC == 6) then
  SAT_baseline $1 $2 > temp
- @ YR = $T0  / 1000 - 1992
- @ YDAY = $YR * 365 + $DAY
+ set t0 = `echo "" | gawk '{print mktime("1992 01 01 00 00 00")}'`
+ @ YR = $T0  / 1000
+ set t1 = `echo "" | gawk '{print mktime("'$YR' 01 01 00 00 00")}'`
+ set YDAY = `echo $t0 $t1 | awk '{printf("%d",int(($2-$1)/86400.0+0.5)+'$DAY'-1)}'`
 else if ($SSC == 5) then
  SAT_baseline $1 $2 > temp
  @ YR1 = $T0 / 1000
  if ($YR1 < 2013) then
-  @ YR = $T0  / 1000 - 2006
+  set t0 = `echo "" | gawk '{print mktime("2006 01 01 00 00 00")}'`
  else
-  @ YR = $T0  / 1000 - 2014
+  set t0 = `echo "" | gawk '{print mktime("2014 01 01 00 00 00")}'`
  endif
- @ YDAY = $YR * 365 + $DAY
+ @ YR = $T0  / 1000
+ set t1 = `echo "" | gawk '{print mktime("'$YR' 01 01 00 00 00")}'`
+ set YDAY = `echo $t0 $t1 | awk '{printf("%d",int(($2-$1)/86400.0+0.5)+'$DAY'-1)}'`
 else
  SAT_baseline $1 $2 > temp
  if ($SSC == 7 || $SSC == 8) then
-  @ YR = $T0 / 1000 - 2007
+  set t0 = `echo "" | gawk '{print mktime("2007 01 01 00 00 00")}'`
  else if ($SSC == 9) then
-  @ YR = $T0 / 1000 - 2008
+  set t0 = `echo "" | gawk '{print mktime("2008 01 01 00 00 00")}'`
  else if ($SSC == 10) then
-  @ YR = $T0 / 1000 - 2014
+  set t0 = `echo "" | gawk '{print mktime("2014 01 01 00 00 00")}'`
+ else
+  set t0 = `echo "" | gawk '{print mktime("2020 01 01 00 00 00")}'`
  endif
- @ YDAY = $YR * 365 + $DAY
+ @ YR = $T0  / 1000
+ set t1 = `echo "" | gawk '{print mktime("'$YR' 01 01 00 00 00")}'`
+ set YDAY = `echo $t0 $t1 | awk '{printf("%d",int(($2-$1)/86400.0+0.5)+'$DAY')}'`
 endif
 #
 #  get the needed parameters from temp
@@ -87,7 +99,7 @@ if ($SSC == 5) then
      set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,14,5)}'` 
   else
      if ($#argv < 3) then
-       set ORB = `grep input_file $2 | awk '{print $3}' | awk -F"." '{print $1".1__D"}'`
+       set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,1,length($1)-4)}'`
      else
        set ORB = `grep input_file $2 | awk '{print $3}' | awk '{print substr($1,13,5)}'` 
      endif

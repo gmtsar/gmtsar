@@ -26,7 +26,7 @@ if (${srcdir} STREQUAL ${bindir})
 endif (${srcdir} STREQUAL ${bindir})
 
 # Define minimum CMake version required
-cmake_minimum_required (VERSION 2.8.5)
+cmake_minimum_required (VERSION 3.5)
 
 # Use NEW behavior with newer CMake releases
 foreach(p
@@ -40,6 +40,16 @@ endforeach()
 # Define project name and language
 project (GMTSAR C)
 
+# MSVC needs an export table for legacy libraries whose headers do not
+# consistently use dllexport.
+if (MSVC)
+	set (CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+	# Include the fork's neutralized declspec shim before GMT's header of the
+	# same name.  This prevents GMT's dllimport macro from being applied to
+	# GMTSAR function definitions compiled into our own DLLs.
+	add_compile_options (/FI${CMAKE_SOURCE_DIR}/declspec.h)
+endif ()
+
 # Where to find our CMake modules (this variable is visible in subdirectories).
 set (CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/"
 	CACHE INTERNAL "Location of our custom CMake modules." FORCE)
@@ -49,20 +59,52 @@ include (ConfigCMake)
 
 # Find UNIX commands
 include (FindUnixCommands)
+find_program (SVN svn)
 find_program (GS gs gswin64)
 
 # Find dependent libraries
 find_package (GMT REQUIRED)
 find_package (TIFF REQUIRED)
-find_package (LAPACK)
+if (MSVC AND LAPACK_LIBRARIES)
+	# The long-standing MSVC build supplies a known-compatible LAPACK import
+	# library explicitly.  Avoid FindLAPACK's Fortran/BLAS probes, which are
+	# both unnecessary and unreliable in a C-only Visual Studio environment.
+	set (LAPACK_FOUND TRUE)
+else ()
+	find_package (LAPACK REQUIRED)
+endif ()
 
 # check for math and POSIX functions
 include(ConfigureChecks)
 
 # Add subdirectories
 add_subdirectory (gmtsar)
-#add_subdirectory (snaphu/src)
+if (EXISTS "${CMAKE_SOURCE_DIR}/snaphu/src/CMakeLists.txt")
+	add_subdirectory (snaphu/src)
+endif ()
 add_subdirectory (preproc)
+
+# Install the GMTSAR "sharedir" (filter kernels, snaphu configs, virgin PRM
+# templates) -- the CMake build's counterpart to the top-level Makefile's
+# `install:` target (see Makefile, sharedir rules). Only the traditional
+# ./configure && make path did this; the CMake path (gmtsar/CMakeLists.txt's
+# WIN32 block; this is Windows-only in practice today) never had an
+# equivalent, so filter/gmtsar_sharedir.csh-dependent tools (filter,
+# fitoffset, ...) had no share/gmtsar to resolve. Mirrors the Makefile's
+# file selection exactly: gmtsar/filters/[bfgsxy]* (kernel files), csh
+# snaphu.conf.* configs, and the two virgin PRM templates.
+install (DIRECTORY DESTINATION share/gmtsar/filters)
+install (DIRECTORY DESTINATION share/gmtsar/snaphu/config)
+file (GLOB _gmtsar_share_filters "${CMAKE_SOURCE_DIR}/gmtsar/filters/[bfgsxy]*")
+install (FILES ${_gmtsar_share_filters} DESTINATION share/gmtsar/filters)
+file (GLOB _gmtsar_share_snaphu_conf "${CMAKE_SOURCE_DIR}/gmtsar/csh/snaphu.conf.*")
+install (FILES ${_gmtsar_share_snaphu_conf} DESTINATION share/gmtsar/snaphu/config)
+file (GLOB _gmtsar_share_grds "${CMAKE_SOURCE_DIR}/gmtsar/*.grd")
+install (FILES
+	"${CMAKE_SOURCE_DIR}/preproc/ERS_preproc/scripts/virgin.PRM"
+	"${CMAKE_SOURCE_DIR}/preproc/ENVI_preproc/scripts/virgin_envisat.PRM"
+	${_gmtsar_share_grds}
+	DESTINATION share/gmtsar)
 
 # Configuration done
 message(

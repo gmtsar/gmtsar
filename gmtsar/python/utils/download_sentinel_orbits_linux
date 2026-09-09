@@ -1,0 +1,13 @@
+#! /usr/bin/env python3
+"""Scaffold — Python port pending or unnecessary.
+
+Reference: see gmtsar/csh/<same name>.csh.
+Some are environment-specific (prep_data, download_sentinel_orbits —
+ASF credentials, orb_dir paths), specialized variants of already-ported
+utilities, or large but rarely-used wrappers.
+"""
+import os, sys
+sys.exit(
+    f"{os.path.basename(__file__)}: scaffold — not yet implemented.\n"
+    f"See gmtsar/csh/{os.path.basename(__file__)}.csh for the legacy CLI."
+)

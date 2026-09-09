@@ -22,7 +22,7 @@
   gmt set COLOR_MODEL = hsv
   gmt set PROJ_LENGTH_UNIT = inch
 
-  if ($#argv < 4 && $#argv > 7) then
+  if ($#argv < 4 || $#argv > 7) then
 errormessage:
     echo ""
     echo "Usage: filter.csh master.PRM aligned.PRM filter decimation [rng_dec azi_dec] [compute_phase_gradient]"
@@ -105,6 +105,7 @@ errormessage:
 #
 #  make the custom filter2 and set the decimation
 #
+  rm -rf gauss_*
   make_gaussian_filter $1 $dec_rng $az_lks $3 > ijdec
   set filter2 = gauss_$3
   set idec = `cat ijdec | awk -v dc="$dec" '{ print dc*$1 }'`

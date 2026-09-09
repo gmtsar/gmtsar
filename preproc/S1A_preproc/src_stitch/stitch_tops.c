@@ -20,16 +20,113 @@ char *USAGE = "\n\nUSAGE: stitch_tops stem.in output_stem\n"
               "\nnote: please put the files to stem.in in the order of time.\n"
               "\n      make sure all images have same rng_samp_rate and PRF. \n";
 
+int calc_offset(struct PRM prm1, struct PRM prm2, int nl, int nl0){
+
+    FILE *SLC1, *SLC2;
+    int ntot,i,j,k,i1,j1,k1,width,width2,height,imax,jmax,is,js,ib = 10; // boundaries not used 
+    short *f1, *f2, *buf;
+    double sum1, sum2, ave1, ave2, sumc, corr, denom, maxcorr = -9999.0, r1, r2;
+    // set search radius
+    int ns = 2;
+    imax = 0;
+    jmax = 0;
+    
+    if ((SLC1 = fopen(prm1.SLC_file, "rb")) == NULL)
+        die("Couldn't open input SLC file: \n", prm1.SLC_file);
+    if ((SLC2 = fopen(prm2.SLC_file, "rb")) == NULL)
+        die("Couldn't open input SLC file: \n", prm2.SLC_file);
+    
+    width = prm1.num_rng_bins;
+    width2 = prm2.num_rng_bins; 
+    height = nl0-nl+1;
+    if (width != width2)
+        die("Number of Range bins different for xcorr \n", "");
+
+    /* run xcorr to figure out shift */
+    f1 = (short *)malloc(width * 2 * sizeof(short) * (nl0-nl+1));
+    f2 = (short *)malloc(width * 2 * sizeof(short) * (nl0-nl+1));
+	buf = (short *)malloc(width * 2 * sizeof(short) * 2);
+
+    for (i = 1; i < nl; i++)
+        fread(buf, sizeof(short), width * 2, SLC1);
+        
+    for (i = 0; i < height; i++) {
+        fread(buf, sizeof(short), width * 2, SLC1);
+        for (j = 0; j < width; j++) {
+            f1[j+i*width] = sqrt(buf[j*2]*buf[j*2] + buf[j*2+1]*buf[j*2+1]);
+        }
+    }
+    fclose(SLC1);
+
+    for (i = 0; i < height; i++) {
+        fread(buf, sizeof(short), width * 2, SLC2);
+        for (j = 0; j < width; j++) {
+            f2[j+i*width] = sqrt(buf[j*2]*buf[j*2] + buf[j*2+1]*buf[j*2+1]);
+        }
+    }
+    fclose(SLC2);
+
+    // comput average
+    ntot = 0;
+    sum1 = sum2 = 0.0;
+
+    for (i = 0; i < height; i++) {
+        for (j = 0; j < width; j++) {
+            k = i * width + j;
+            ntot++;
+            sum1 = sum1 + f1[k];
+            sum2 = sum2 + f2[k];
+        }   
+    }   
+    ave1 = sum1 / ntot;
+    ave2 = sum2 / ntot;
+
+    for (is = -ns; is <= ns; is++) {
+        for (js = -ns; js <= ns; js++) {
+            ntot = 0;
+            sumc = sum1 = sum2 = 0.0;
+            for (i = 0 + ib; i < height - ib; i++) {
+                i1 = i - is;
+                for (j = 0 + ib; j < width - ib; j++) {
+                    j1 = j - js;
+                    k = i * width + j;
+                    k1 = i1 * width + j1;
+                    r1 = f1[k] - ave1;
+                    r2 = f2[k1] - ave2;
+                    if (!isnan(r1) && !isnan(r2)) {
+                        sumc = sumc + r1 * r2;
+                        sum1 = sum1 + r1 * r1;
+                        sum2 = sum2 + r2 * r2;
+                    }
+                }
+            }
+            corr = 0;
+            denom = sum1*sum2;
+            if (denom > 0.)
+                corr = sumc / sqrt(denom);
+            if (corr > maxcorr) {
+                maxcorr = corr;
+                imax = is;
+                jmax = js;
+            }
+    
+        }
+    }
+    printf(" optimal: rshift = %d  ashift = %d  max_correlation = %f\n", jmax, imax, maxcorr);
+    return(imax);
+}
+
 int main(int argc, char **argv) {
 
 	/* define variables */
 	FILE *stemin, *SLCin, *SLCout, *PRM;
-	struct PRM prm1, prm2;
+	struct PRM prm1, prm2, prm3;
 	char stem[100][200], tmp_str[200];
 	int ii, jj, nfile = 0, ntl = 0, nl, width, nl0, width2;
 	int n_start, n_end, dr = 0;
 	double prf, t1, t2;
 	short *buf;
+    int line_offset = 0, line_offset_total = 0;
 
 	if (argc != 3)
 		die(USAGE, "");
@@ -60,6 +157,7 @@ int main(int argc, char **argv) {
 	width2 = prm1.num_rng_bins;
 	prf = prm1.prf;
 	nl0 = prm1.num_lines;
+    prm3 = prm1;
 
 	/* malloc buf for copying, make some extra space in case the width of two
 	 * images are different */
@@ -70,6 +168,7 @@ int main(int argc, char **argv) {
 	strcat(tmp_str, ".SLC");
 	if ((SLCout = fopen(tmp_str, "wb")) == NULL)
 		die("Couldn't open output SLC file: \n", tmp_str);
+
 
 	/* loop over all the images */
 	for (ii = 1; ii < nfile; ii++) {
@@ -101,12 +200,20 @@ int main(int argc, char **argv) {
 			die("Images do not have overlapped region \n", "");
 
 		n_start = ntl - (floor)((t1 - prm1.clock_start - (prm1.ashift + prm1.sub_int_a) / prf / 86400.0) * 86400.0 * prf + 0.5);
+        if (line_offset_total != 0) {
+            printf("Need to shift lines by %d\n",line_offset_total);
+            n_start = n_start - line_offset_total;
+        }
 		n_end = floor((float)(nl0 + nl) / 2.0 + 0.5);
 
+        line_offset = calc_offset(prm3, prm2, nl+1, nl0);
+        line_offset_total = line_offset_total + line_offset;
+  
 		/* write the SLC files */
 		fprintf(stderr, "Parsing %d lines...\n", n_start);
 		for (jj = 1; jj <= n_start; jj++)
 			fread(buf, sizeof(short), width2 * 2, SLCin);
+
 		fprintf(stderr, "Writing Image %d, from line %d to line %d (%d)...\n", ii, 1 + n_start, n_end, width2);
 		for (jj = 1 + n_start; jj <= n_end; jj++) {
 			fread(buf, sizeof(short), width2 * 2, SLCin);
@@ -128,6 +235,7 @@ int main(int argc, char **argv) {
 		t1 = t2;
 		nl0 = prm2.num_lines;
 		width2 = prm2.num_rng_bins;
+        prm3 = prm2;
 		fclose(SLCin);
 	}
 
@@ -138,6 +246,15 @@ int main(int argc, char **argv) {
 		die("Couldn't open input SLC file: \n", tmp_str);
 	nl = prm2.num_lines;
 	n_start = ntl - (floor)((t1 - prm1.clock_start - (prm1.ashift + prm1.sub_int_a) / prf / 86400.0) * 86400.0 * prf + 0.5);
+    if (line_offset_total != 0) {
+        printf("Need to shift lines by %d\n",line_offset_total);
+        n_start = n_start - line_offset_total;
+    }
+    
+    if (line_offset!= 0) {
+        //printf("Need to shift lines by %d\n",line_offset);
+        n_start = n_start - line_offset;
+    }
 	/* writing the last SLC */
 	fprintf(stderr, "Parsing %d lines...\n", n_start);
 	for (jj = 1; jj <= n_start; jj++)

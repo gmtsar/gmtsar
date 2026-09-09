@@ -1,0 +1,81 @@
+#! /usr/bin/env python3
+"""extract_one_time_series — point time-series extraction from disp_*.grd stack.
+
+Python port of csh extract_one_time_series.csh (X. Xu 2021). Converts a
+(lon, lat) point to (range, azimuth) via SAT_llt2rat + DEM lookup, then
+samples a small averaging window in each disp_<sc_id>.grd file listed in
+scene.tab.
+
+Usage:  extract_one_time_series longitude latitude PRM dem.grd scene.tab [m_rng m_azi]
+Output: time_series.dat (displacement + stdev per row)
+"""
+import os
+import subprocess
+import sys
+from gmtsar_lib import run
+
+
+def _capture(cmd):
+    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                          check=False).stdout.decode("utf-8").strip()
+
+
+def extract_one_time_series():
+    if len(sys.argv) not in (6, 8):
+        sys.exit(
+            "Usage: extract_one_time_series longitude latitude PRM dem.grd "
+            "scene.tab [m_rng m_azi]\n"
+            "  m_rng/m_azi: average half-window (default 5 5 → samp 2 2)\n"
+            "  Output: time_series.dat (cols: displacement, stdev)"
+        )
+    lon, lat, prm, dem, scene_tab = sys.argv[1:6]
+    m_rng = int(sys.argv[6]) if len(sys.argv) == 8 else 5
+    m_azi = int(sys.argv[7]) if len(sys.argv) == 8 else 5
+
+    # lon/lat → range/azimuth via grdtrack + SAT_llt2rat
+    pos = _capture(f"echo {lon} {lat} | gmt grdtrack -G{dem} | "
+                   f"SAT_llt2rat {prm} 1 | awk '{{print $1, $2}}'").split()
+    if len(pos) < 2:
+        sys.exit("extract_one_time_series: failed to compute range/azimuth")
+    rng, azi = float(pos[0]), float(pos[1])
+    print(f"extracting at range {rng} azimuth {azi} ...")
+
+    if os.path.isfile("time_series.dat"):
+        os.remove("time_series.dat")
+
+    # Read scene.tab; first column is sc_id
+    with open(scene_tab) as f:
+        sc_ids = [ln.split()[0] for ln in f if ln.strip()]
+    if not sc_ids:
+        sys.exit("extract_one_time_series: empty scene.tab")
+
+    # Get grid resolution from the first disp grid
+    first_grid = f"disp_{sc_ids[0]}.grd"
+    xinc = float(_capture(f"gmt grdinfo {first_grid} -C | awk '{{print $8}}'"))
+    yinc = float(_capture(f"gmt grdinfo {first_grid} -C | awk '{{print $9}}'"))
+
+    samp_x = m_rng // 2
+    samp_y = m_azi // 2
+    print(f"grid xinc={xinc} yinc={yinc}; half samp {samp_x} {samp_y} ...")
+
+    # Compute the averaging region centered on (rng, azi).
+    # Legacy formula: snap to grid, ±3 below to +2 above.
+    r0 = int(rng / xinc) * xinc
+    a0 = int(azi / yinc) * yinc
+    RR = (f"{r0 - 3*xinc}/{r0 + 2*xinc}/"
+          f"{a0 - 3*yinc}/{a0 + 2*yinc}")
+    print(f"sampling over {RR} ...")
+
+    for sc in sc_ids:
+        name = f"disp_{int(float(sc))}.grd"
+        print(f"Working on {name}")
+        run(f"gmt grdcut {name} -Gtmp_cut.grd -R{RR}")
+        # Append mean + stdev (cols 12, 13 of gmt grdinfo -L2 -C)
+        out_line = _capture("gmt grdinfo tmp_cut.grd -L2 -C | awk '{print $12, $13}'")
+        with open("time_series.dat", "a") as f:
+            f.write(out_line + "\n")
+    run("rm -f tmp_cut.grd")
+
+
+if __name__ == "__main__":
+    extract_one_time_series()

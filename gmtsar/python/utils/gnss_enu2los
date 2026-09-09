@@ -1,0 +1,50 @@
+#! /usr/bin/env python3
+"""gnss_enu2los — convert GNSS ENU displacements to InSAR LOS in radar coords.
+
+Python port of csh gnss_enu2los.csh (X. Xu original, K. Gualandi 2021).
+Reads a GNSS station file with (Stat, Lon, Lat, East, North, Up) columns
+and produces gnss_los.rad with (range, azimuth, LOS_mm) per station.
+
+Usage:  gnss_enu2los master.PRM master.LED gnss.sllenu dem.grd
+"""
+import os
+import sys
+from gmtsar_lib import run
+
+
+def gnss_enu2los():
+    if len(sys.argv) != 5:
+        sys.exit(
+            "Usage: gnss_enu2los master.PRM master.LED gnss.sllenu dem.grd\n"
+            "  gnss.sllenu: Stat Lon Lat E N U (mm)\n"
+            "  Output: gnss_los.rad (range azimuth LOS_mm)"
+        )
+    PRM, LED, gnssenu, dem = sys.argv[1:5]
+
+    if not os.path.isfile(PRM):
+        sys.exit("PRM does not exist — this is required")
+    if not os.path.isfile(LED):
+        sys.exit("LED does not exist — this is required")
+
+    # Extract per-station elevation from DEM, then SAT_look for look vectors.
+    run(f"awk '{{print $2,$3}}' {gnssenu} | gmt grdtrack -G{dem} > tmp.llh")
+    run(f"SAT_look {PRM} < tmp.llh > tmp.lltn")
+
+    # Dot ENU displacement with ENU look vector → LOS (mm).
+    # gnssenu cols: $1=stat $2=lon $3=lat $4=E $5=N $6=U
+    # tmp.lltn cols: $7=lon $8=lat $9=h $10=Elook $11=Nlook $12=Ulook
+    run(f"paste {gnssenu} tmp.lltn | "
+        f"awk '{{if ($9 != \"nan\") "
+        f"printf(\"%.9f %.9f %.9f %.12f\\n\", $2,$3,$9, ($4*$10)+($5*$11)+($6*$12))}}' "
+        f"> tmp.lltd")
+    print("LOS displacements calculated!")
+
+    run(f"SAT_llt2rat {PRM} 1 < tmp.llh > tmp.ratll")
+    # Output (range, azimuth, LOS).
+    run("paste tmp.ratll tmp.lltd | awk '{print $1,$2,$9}' > gnss_los.rad")
+    print("Result created and stored as gnss_los.rad")
+    run("rm -f tmp.* tmp* *tmp*")
+
+
+if __name__ == "__main__":
+    gnss_enu2los()

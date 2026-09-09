@@ -4,14 +4,18 @@
  * images.  Also estimates the crude offset for image matching.                *
  *******************************************************************************/
 /********************************************************************************
- * Creator:  Matt Wei, 04/26/10 *
- *										*
- * Based on the program ALOS_baseline by * Creator:  Sandwell and Rob Mellors
- ** (San Diego State University, Scripps Institution of Oceanography)  * Date :
- *06/07/2007                                                         *
- * Modifications: * 29/26/2018 by Xiaohua Xu * Adding the along track component
- *for Baseline called B_offset      * This further ensures phase closure *
- ********************************************************************************/
+ * Creator:  Matt Wei, 04/26/10 					       *
+ *									       *
+ * Based on the program ALOS_baseline by * Creator:  Sandwell and Rob Mellors  *
+ ** (San Diego State University, Scripps Institution of Oceanography)  * Date :*
+ * 06/07/2007                                                                  *
+ * Modifications: 							       * 
+ * 29/26/2018	by Xiaohua Xu. Adding the along track component for Baseline   *
+ * 		called B_offset. This further ensures phase closure 	       *
+ * 05/20/2026	Establish a local coordinate system to decompose the baseline  *
+ * 		and obtain Bh and Bv, which mitigates the error amplification  *
+ * 		effect when α=90 degree.                                       *  
+ *******************************************************************************/
 
 #include "gmtsar.h"
 #include "orbit.h"
@@ -39,24 +43,26 @@ char *USAGE = "Usage: (two modes)\n"
  */
 
 /* function prototypes */
-EXTERN_MSC double find_dist(double, double, double, double, double, double);
-EXTERN_MSC double find_alpha_degrees(double, double);
-EXTERN_MSC void find_unit_vectors(double, double, double, double *, double *, double *, double *);
-EXTERN_MSC void endpoint_distance(int, double, double, double, double, double *, double *, double *, double *, int *);
-EXTERN_MSC void find_parallel_perp_baseline(struct PRM, struct PRM, double, double *, double *);
-EXTERN_MSC void write_prm_baseline(struct PRM);
-EXTERN_MSC void get_sign(struct PRM, double, double, double, double, int *);
-EXTERN_MSC void write_bperp(struct PRM, char *);
-EXTERN_MSC void baseline_parse_command_line(char **, int *, int *);
-EXTERN_MSC void read_input_file(char *, int, char **);
-EXTERN_MSC void baseline(struct PRM *, struct SAT_ORB *, int, int, char **, double);
-EXTERN_MSC void read_all_ldr(struct PRM *, struct SAT_ORB *, int);
-EXTERN_MSC void read_orb(FILE *, struct SAT_ORB *);
-EXTERN_MSC void llt2rat_sub(struct PRM *, double *, double *);
-EXTERN_MSC void interpolate_SAT_orbit_slow(struct SAT_ORB *orb, double time, double *, double *, double *, int *);
-EXTERN_MSC void interpolate_SAT_orbit(struct SAT_ORB *, double *, double *, double *, double, double *, double *, double *, int *);
-EXTERN_MSC void calc_height_velocity(struct SAT_ORB *, struct PRM *, double, double, double *, double *, double *, double *, double *);
-EXTERN_MSC void polyfit(double *, double *, double *, int *, int *);
+double find_dist(double, double, double, double, double, double);
+double find_alpha_degrees(double, double);
+void find_unit_vectors(double, double, double, double *, double *, double *, double *);
+void find_baseline_components(struct SAT_ORB *, double *, double *, double *, double, double, double, double, double, double, double,
+                              int, double *, double *, double *);
+void endpoint_distance(int, double, double, double, double, double *, double *, double *, double *, int *);
+void find_parallel_perp_baseline(struct PRM, struct PRM, double, double *, double *);
+void write_prm_baseline(struct PRM);
+void get_sign(struct PRM, double, double, double, double, int *);
+void write_bperp(struct PRM, char *);
+void baseline_parse_command_line(char **, int *, int *);
+void read_input_file(char *, int, char **);
+void baseline(struct PRM *, struct SAT_ORB *, int, int, char **, double);
+void read_all_ldr(struct PRM *, struct SAT_ORB *, int);
+void read_orb(FILE *, struct SAT_ORB *);
+void llt2rat_sub(struct PRM *, double *, double *);
+void interpolate_SAT_orbit_slow(struct SAT_ORB *orb, double time, double *, double *, double *, int *);
+void interpolate_SAT_orbit(struct SAT_ORB *, double *, double *, double *, double, double *, double *, double *, int *);
+void calc_height_velocity(struct SAT_ORB *, struct PRM *, double, double, double *, double *, double *, double *, double *);
+void polyfit(double *, double *, double *, int *, int *);
 
 int main(int argc, char **argv) {
 	int i;
@@ -99,18 +105,17 @@ int main(int argc, char **argv) {
 		if (i == 0)
 			fs0 = r[0].fs;
 		if (r[i].fs != fs0) {
-			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistant.\nYou "
+			fprintf(stderr, "\nWARNING:\nRange_sampling_rate is not consistent.\nYou "
 			                "need to do FBD/FBS conversion.\n\n");
 		}
 
 		fclose(prmfile);
 	}
 
-	fprintf(stdout, "SC_identity = %d \n", r[0].SC_identity);
+	printf("SC_identity = %d \n", r[0].SC_identity);
 	orb = malloc(nfiles * sizeof(struct SAT_ORB));
 	read_all_ldr(r, orb, nfiles);
 	baseline(r, orb, nfiles, input_flag, filename, fs0);
-	fflush(stdout);		/* Make sure output buffer is flushed  */
 
 	return (EXIT_SUCCESS);
 }
@@ -169,10 +174,11 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 	int k, ns, ns2, m1, m2, m3, sign1, sign2, sign3;
 	double dr, dt, ds;
 	double bv1, bv2, bv3, bh1, bh2, bh3;
+	double bx1, bx2, bx3;
 	double t11, t12, t13, t21, t22, t23;
+	double ts1, ts2, ts3;
 	double x11, y11, z11, x12, y12, z12, x13, y13, z13;
 	double x21, y21, z21, x22, y22, z22, x23, y23, z23;
-	double ru1, ru2, ru3, xu1, yu1, zu1, xu2, yu2, zu2, xu3, yu3, zu3;
 	double ts, xs, ys, zs;
 	double b1, b2, b3, bpara, bperp; //, b_tmp;
 	double *pt, *p, *pv, pt0;
@@ -245,7 +251,7 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 
 	/* set some defeault values 				*/
 
-	m1 = -99999;
+	m1 = m2 = m3 = -99999;
 	x21 = y21 = z21 = -99999.0;
 	x22 = y22 = z22 = -99999.0;
 	x23 = y23 = z23 = -99999.0;
@@ -267,6 +273,9 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 		if (b3 < 0.0 || ds < b3)
 			endpoint_distance(k, ds, xs, ys, zs, &b3, &x23, &y23, &z23, &m3);
 	}
+	ts1 = t21 + m1 * dt;
+	ts2 = t21 + m2 * dt;
+	ts3 = t21 + m3 * dt;
 
 	// refine the baseline computation with polynomial fit
 
@@ -274,6 +283,7 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 	// check whether it's the computation of same orbit.
 	if (dstart > 10.) {
 		poly_interp(&orb[ii], &ts, &b1, t21, x11, y11, z11, m1 * dt);
+		ts1 = ts;
 		interpolate_SAT_orbit_slow(&orb[ii], ts, &xs, &ys, &zs, &ir);
 		x21 = xs;
 		y21 = ys;
@@ -292,6 +302,7 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 		// &vtot, &rdot);
 
 		poly_interp(&orb[ii], &ts, &b2, t21, x12, y12, z12, m2 * dt);
+		ts2 = ts;
 		interpolate_SAT_orbit_slow(&orb[ii], ts, &xs, &ys, &zs, &ir);
 		x22 = xs;
 		y22 = ys;
@@ -304,6 +315,7 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 		//}
 
 		poly_interp(&orb[ii], &ts, &b3, t21, x13, y13, z13, m3 * dt);
+		ts3 = ts;
 		interpolate_SAT_orbit_slow(&orb[ii], ts, &xs, &ys, &zs, &ir);
 		x23 = xs;
 		y23 = ys;
@@ -343,25 +355,15 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 	r[ii].baseline_end = b2;
 	r[ii].baseline_center = b3;
 
-	/* compute unit vectors 				*/
-	find_unit_vectors(x11, y11, z11, &ru1, &xu1, &yu1, &zu1);
-	find_unit_vectors(x12, y12, z12, &ru2, &xu2, &yu2, &zu2);
-	find_unit_vectors(x13, y13, z13, &ru3, &xu3, &yu3, &zu3);
-
 	/* compute sign of horizontal baseline 			*/
 	get_sign(r[ii], x11, y11, x21, y21, &sign1);
 	get_sign(r[ii], x12, y12, x22, y22, &sign2);
 	get_sign(r[ii], x13, y13, x23, y23, &sign3);
 
 	/* compute baseline components (horizontal and vertical) */
-	bv1 = (x21 - x11) * xu1 + (y21 - y11) * yu1 + (z21 - z11) * zu1;
-	bh1 = sign1 * sqrt(b1 * b1 - bv1 * bv1); //+ d1*d1);
-
-	bv2 = (x22 - x12) * xu2 + (y22 - y12) * yu2 + (z22 - z12) * zu2;
-	bh2 = sign2 * sqrt(b2 * b2 - bv2 * bv2); // + d2*d2);
-
-	bv3 = (x23 - x13) * xu3 + (y23 - y13) * yu3 + (z23 - z13) * zu3;
-	bh3 = sign3 * sqrt(b3 * b3 - bv3 * bv3); // + d3*d3);
+	find_baseline_components(&orb[ii], pt, p, pv, ts1, x11, y11, z11, x21, y21, z21, sign1, &bv1, &bh1, &bx1);
+	find_baseline_components(&orb[ii], pt, p, pv, ts2, x12, y12, z12, x22, y22, z22, sign2, &bv2, &bh2, &bx2);
+	find_baseline_components(&orb[ii], pt, p, pv, ts3, x13, y13, z13, x23, y23, z23, sign3, &bv3, &bh3, &bx3);
 
 	/* angle from horizontal 				*/
 	r[ii].alpha_start = find_alpha_degrees(bv1, bh1);
@@ -442,8 +444,8 @@ void baseline(struct PRM *r, struct SAT_ORB *orb, int nfiles, int input_flag, ch
 	fll = (r[0].ra - r[0].rc) / r[0].ra;
 	xyz2plh(target, target_llt, r[0].ra, fll);
 
-	fprintf(stdout, "lon_tie_point =  %f\n", (target_llt[1] > 180.0) ? target_llt[1] - 360.0 : target_llt[1]);
-	fprintf(stdout, "lat_tie_point =  %f\n", target_llt[0]);
+	printf("lon_tie_point =  %f\n", (target_llt[1] > 180.0) ? target_llt[1] - 360.0 : target_llt[1]);
+	printf("lat_tie_point =  %f\n", target_llt[0]);
 
 	llt2rat_sub(&r[0], target_llt, target_rat_ref);
 	llt2rat_sub(&r[ii], target_llt, target_rat_rep);
@@ -540,26 +542,26 @@ void get_sign(struct PRM r, double x11, double y11, double x21, double y21, int 
 }
 /*---------------------------------------------------------------------------*/
 void write_prm_baseline(struct PRM rep) {
-	fprintf(stdout, "SC_vel              = %.12f \n", rep.vel);
-	fprintf(stdout, "SC_height           = %.12f \n", rep.ht);
-	fprintf(stdout, "SC_height_start     = %.12f \n", rep.ht_start);
-	fprintf(stdout, "SC_height_end       = %.12f \n", rep.ht_end);
-	fprintf(stdout, "earth_radius        = %.12f \n", rep.RE);
-	fprintf(stdout, "rshift              = %d \n", rep.rshift);
-	fprintf(stdout, "sub_int_r           = 0.0 \n");
-	fprintf(stdout, "ashift              = %d\n", rep.ashift);
-	fprintf(stdout, "sub_int_a           = 0.0 \n");
-	fprintf(stdout, "B_parallel          = %.12f \n", rep.bpara);
-	fprintf(stdout, "B_perpendicular     = %.12f \n", rep.bperp);
-	fprintf(stdout, "baseline_start      = %.12f \n", rep.baseline_start);
-	fprintf(stdout, "baseline_center     = %.12f \n", rep.baseline_center);
-	fprintf(stdout, "baseline_end        = %.12f \n", rep.baseline_end);
-	fprintf(stdout, "alpha_start         = %.12f \n", rep.alpha_start);
-	fprintf(stdout, "alpha_center        = %.12f \n", rep.alpha_center);
-	fprintf(stdout, "alpha_end           = %.12f \n", rep.alpha_end);
-	fprintf(stdout, "B_offset_start      = %.12f \n", rep.B_offset_start);
-	fprintf(stdout, "B_offset_center     = %.12f \n", rep.B_offset_center);
-	fprintf(stdout, "B_offset_end        = %.12f \n", rep.B_offset_end);
+	printf("SC_vel              = %.12f \n", rep.vel);
+	printf("SC_height           = %.12f \n", rep.ht);
+	printf("SC_height_start     = %.12f \n", rep.ht_start);
+	printf("SC_height_end       = %.12f \n", rep.ht_end);
+	printf("earth_radius        = %.12f \n", rep.RE);
+	printf("rshift              = %d \n", rep.rshift);
+	printf("sub_int_r           = 0.0 \n");
+	printf("ashift              = %d\n", rep.ashift);
+	printf("sub_int_a           = 0.0 \n");
+	printf("B_parallel          = %.12f \n", rep.bpara);
+	printf("B_perpendicular     = %.12f \n", rep.bperp);
+	printf("baseline_start      = %.12f \n", rep.baseline_start);
+	printf("baseline_center     = %.12f \n", rep.baseline_center);
+	printf("baseline_end        = %.12f \n", rep.baseline_end);
+	printf("alpha_start         = %.12f \n", rep.alpha_start);
+	printf("alpha_center        = %.12f \n", rep.alpha_center);
+	printf("alpha_end           = %.12f \n", rep.alpha_end);
+	printf("B_offset_start      = %.12f \n", rep.B_offset_start);
+	printf("B_offset_center     = %.12f \n", rep.B_offset_center);
+	printf("B_offset_end        = %.12f \n", rep.B_offset_end);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -601,6 +603,43 @@ double find_alpha_degrees(double bv, double bh) {
 	a = a / rad;
 
 	return (a);
+}
+/*---------------------------------------------------------------------------*/
+void find_baseline_components(struct SAT_ORB *rep_orb, double *pt, double *p, double *pv, double trep, double xr, double yr,
+                              double zr, double xp, double yp, double zp, int sign, double *bv, double *bh, double *bx) {
+	int ir, k;
+	double d[3], radial[3], along[3], cross[3];
+	double xf, yf, zf, xb, yb, zb, ru, dot_ar, raw_bh, pt0;
+
+	pt0 = (24.0 * 60.0 * 60.0) * rep_orb->id + rep_orb->sec;
+	for (k = 0; k < rep_orb->nd; k++)
+		pt[k] = pt0 + k * rep_orb->dsec;
+
+	interpolate_SAT_orbit(rep_orb, pt, p, pv, trep + 0.1, &xf, &yf, &zf, &ir);
+	interpolate_SAT_orbit(rep_orb, pt, p, pv, trep - 0.1, &xb, &yb, &zb, &ir);
+
+	find_unit_vectors(xr, yr, zr, &ru, &radial[0], &radial[1], &radial[2]);
+
+	along[0] = xf - xb;
+	along[1] = yf - yb;
+	along[2] = zf - zb;
+	dot_ar = along[0] * radial[0] + along[1] * radial[1] + along[2] * radial[2];
+	along[0] -= dot_ar * radial[0];
+	along[1] -= dot_ar * radial[1];
+	along[2] -= dot_ar * radial[2];
+	find_unit_vectors(along[0], along[1], along[2], &ru, &along[0], &along[1], &along[2]);
+
+	cross3(radial, along, cross);
+	find_unit_vectors(cross[0], cross[1], cross[2], &ru, &cross[0], &cross[1], &cross[2]);
+
+	d[0] = xp - xr;
+	d[1] = yp - yr;
+	d[2] = zp - zr;
+
+	*bv = d[0] * radial[0] + d[1] * radial[1] + d[2] * radial[2];
+	*bx = d[0] * along[0] + d[1] * along[1] + d[2] * along[2];
+	raw_bh = d[0] * cross[0] + d[1] * cross[1] + d[2] * cross[2];
+	*bh = sign >= 0 ? fabs(raw_bh) : -fabs(raw_bh);
 }
 /*---------------------------------------------------------------------------*/
 double find_dist(double xs, double ys, double zs, double x, double y, double z) {

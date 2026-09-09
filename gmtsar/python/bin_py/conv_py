@@ -1,0 +1,349 @@
+#! /usr/bin/env python3
+"""conv_py — Python port of gmtsar/src/conv.c + conv2d.c.
+
+2-D image convolution with row/column decimation. Drop-in replacement
+for the C `conv` binary used by filter.csh (which calls it 6-12 times
+per intf, doing the bulk of the wall time in the filter step).
+
+CLI:
+    conv_py idec jdec filter_file input output
+where input is either a GMT-binary grd (with optional =bf suffix) or a
+SLC PRM file (then |SLC|² is the input array — see read_SLC_int).
+
+C checkpoints mirrored (conv.c + conv2d.c lines):
+    C1 (180-198)  parse idec/jdec/filter_file/input/output
+    C2 (201-234)  resolve input type (grd vs PRM-SLC int vs PRM-SLC float)
+                  and read header dims (xdim, ydim, xmax, ymax)
+    C3 (237-272)  read filter dims + coefficients; compute output dims;
+                  derive GMT pixel-reg inc[]
+    C4 (291-302)  compute filter normalization mode (anormax, rnormax,
+                  norm = 1 if abs(rnormax) > 0.05*anormax)
+    C5 (317-366)  main loop over (ic, jc) → conv2d per output pixel,
+                  with NaN-safe edge handling and output gating:
+                    norm=1: out = fdat/rnorm if |rnorm| > 0.01*rnormax
+                    norm=0: out = fdat       if |rnorm| < 0.0001*anormax
+                  (default 0.0 otherwise)
+    C6 (369-371)  write GMT pixel-reg float32 grid
+
+Constants:
+    DFACT = 2.5e-07 (SLC short → physical-amplitude scaling)
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import struct
+import sys
+from pathlib import Path
+from typing import Tuple
+
+import numpy as np
+
+_HERE = Path(__file__).resolve().parent
+_UTILS = _HERE.parent / "utils"
+if str(_UTILS.parent) not in sys.path:
+    sys.path.insert(0, str(_UTILS.parent))
+
+from utils.gmt_grd_io import read_gmt_grd, write_gmt_grd  # noqa: E402
+
+# Local GMT v4 native binary I/O (=bf flavor)
+from importlib.util import spec_from_file_location, module_from_spec
+_spec = spec_from_file_location("_gmt_native_bf", str(_HERE / "_gmt_native_bf.py"))
+_gmt_native_bf = module_from_spec(_spec); _spec.loader.exec_module(_gmt_native_bf)  # type: ignore
+
+DFACT = 2.5e-07
+
+
+def _is_bf(path: str) -> bool:
+    return "=bf" in path
+
+
+# ---------------------------------------------------------------------------
+# Filter file reader (text format: nx ny on line 1, then nx*ny floats)
+# ---------------------------------------------------------------------------
+
+def _read_filter(path: str) -> Tuple[np.ndarray, int, int]:
+    """Read a text filter file. Returns (filter_2d, xarr, yarr).
+
+    File layout per `conv.c` lines 237-298:
+        line 1: "<njf> <nif>"   (njf = columns / range; nif = rows / azi)
+        then nif*njf floats whitespace-separated, row-major.
+    Both dims must be odd (asserted).
+    """
+    with open(path) as f:
+        toks = f.read().split()
+    if len(toks) < 2:
+        raise IOError(f"conv_py: filter file {path} truncated")
+    xarr = int(toks[0])  # njf — range / columns
+    yarr = int(toks[1])  # nif — azimuth / rows
+    if xarr < 1 or yarr < 1 or (xarr & 1) == 0 or (yarr & 1) == 0:
+        raise IOError(f"conv_py: filter dims {xarr}x{yarr} must both be odd")
+    n = xarr * yarr
+    if len(toks) - 2 < n:
+        raise IOError(f"conv_py: filter file {path} short: "
+                      f"have {len(toks)-2} floats, need {n}")
+    vals = np.asarray(toks[2:2 + n], dtype=np.float64)
+    flt = vals.reshape(yarr, xarr).astype(np.float32)
+    return flt, xarr, yarr
+
+
+# ---------------------------------------------------------------------------
+# Input reader — three flavors (grd, PRM-SLC-short, PRM-SLC-float)
+# ---------------------------------------------------------------------------
+
+def _is_prm(name: str) -> bool:
+    base = name.split("=", 1)[0]
+    return base.lower().endswith(".prm") or base.lower().endswith("prm")
+
+
+def _read_input(name: str) -> Tuple[np.ndarray, int, int, float, float, int]:
+    """Returns (data_yflipped, xdim, ydim, xmax, ymax, format_flag).
+
+    format_flag: 1=float (grd), 2=PRM SLC i2-complex (|z|² amplitude),
+                 3=PRM SLC r4-complex (|z|² amplitude).
+    """
+    name_stripped = name.split("=", 1)[0]
+    if _is_prm(name):
+        # Read minimal PRM info
+        from importlib.util import spec_from_file_location, module_from_spec
+        # Reuse phasediff_py's PRM parser
+        spec = spec_from_file_location("_pd", str(_HERE / "phasediff_py"))
+        mod = module_from_spec(spec); spec.loader.exec_module(mod)  # type: ignore
+        p = mod._parse_prm(name_stripped)
+        xdim = p["num_rng_bins"]
+        ydim = p["num_valid_az"] * p["num_patches"]
+        slc_path = p["SLC_file"]
+        dtype_field = p.get("dtype", "").lower()
+        # format_flag 2 (i2) by default; 3 (r4) if dtype starts with 'c'
+        format_flag = 3 if dtype_field.startswith("c") else 2
+        # Read all rows and convert to |z|² (matches read_SLC_int/read_SLC_float)
+        if format_flag == 2:
+            raw = np.fromfile(slc_path, dtype=np.int16)
+            if raw.size < 2 * xdim * ydim:
+                raise IOError(f"SLC short file too small: {raw.size}")
+            raw = raw[:2 * xdim * ydim].reshape(ydim, xdim, 2)
+            df2 = np.float32(DFACT * DFACT)
+            # |z|² = re² + im² with float promotion to match C cast order:
+            #   buffer[k] = (float)(df2 * ci2[2k]*ci2[2k] + df2 * ci2[2k+1]*ci2[2k+1])
+            re = raw[..., 0].astype(np.float32)
+            im = raw[..., 1].astype(np.float32)
+            arr = (df2 * re * re + df2 * im * im).astype(np.float32)
+        else:
+            raw = np.fromfile(slc_path, dtype=np.float32)
+            if raw.size < 2 * xdim * ydim:
+                raise IOError(f"SLC float file too small: {raw.size}")
+            raw = raw[:2 * xdim * ydim].reshape(ydim, xdim, 2)
+            df2 = np.float32(DFACT * DFACT)
+            re = raw[..., 0].astype(np.float32)
+            im = raw[..., 1].astype(np.float32)
+            arr = (df2 * re * re + df2 * im * im).astype(np.float32)
+        xmax = float(xdim)
+        ymax = float(ydim)
+        return arr, xdim, ydim, xmax, ymax, format_flag
+    elif _is_bf(name):
+        # GMT v4 native binary float grd. Data is already in row-0-top
+        # orientation (matches what C `conv` sees via fseek+fread).
+        data, info = _gmt_native_bf.read_bf(name_stripped)
+        ydim, xdim = data.shape
+        xmax = float(info["x_max"] - info["x_min"])  # span
+        ymax = float(info["y_max"] - info["y_min"])
+        return data, xdim, ydim, xmax, ymax, 1
+    else:
+        # netCDF4 grd (HDF5). Less common in filter.csh hot path (it
+        # always passes =bf intermediates), but supported for general use.
+        z, x, y, info = read_gmt_grd(name_stripped)
+        # read_gmt_grd returns y-ASCENDING. C's GMT_Read_Data path
+        # delivers rows y-DESCENDING (row 0 = top). Flip so our `arr`
+        # matches what the C sees row-for-row.
+        arr = np.flipud(z).astype(np.float32, copy=False)
+        ydim, xdim = arr.shape
+        x_inc = abs(info["x_inc"]) if info["x_inc"] else 1.0
+        y_inc = abs(info["y_inc"]) if info["y_inc"] else 1.0
+        # xmax/ymax are the wesn span (xmax - xmin)
+        if info["node_offset"] == 1:
+            xmax = xdim * x_inc
+            ymax = ydim * y_inc
+        else:
+            xmax = (xdim - 1) * x_inc
+            ymax = (ydim - 1) * y_inc
+        return arr, xdim, ydim, xmax, ymax, 1
+
+
+# ---------------------------------------------------------------------------
+# conv2d — vectorized per-pixel inner loop
+# ---------------------------------------------------------------------------
+
+def _conv2d_grid(
+    rdat: np.ndarray,         # (ydim, xdim) float32
+    flt: np.ndarray,           # (yarr, xarr) float32
+    ic_arr: np.ndarray,        # (iout,) int — output row centers in data coords
+    jc_arr: np.ndarray,        # (jout,) int — output col centers
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized 2-D conv with boundary truncation (matching C conv2d).
+
+    Returns (fdat, rnorm) each shape (iout, jout) float32.
+
+    Matches conv2d.c: at boundary, sum only over the valid filter window.
+    rnorm is the sum of filter coeffs over the valid window.
+    """
+    ydim, xdim = rdat.shape
+    yarr, xarr = flt.shape
+    nif2 = yarr // 2
+    njf2 = xarr // 2
+    iout = ic_arr.shape[0]
+    jout = jc_arr.shape[0]
+
+    # Pad data with zeros and pad filter mask such that we can use one
+    # big stride-tricks view for the inner conv. But boundary truncation
+    # in C means the partial filter window's coeff-sum is RECOMPUTED at
+    # the edges (it's not zero-padding with full-filter-sum). So we must
+    # also compute rnorm per output pixel with the actual window mask.
+    #
+    # Simplest correct + fast approach: zero-pad the data by (nif2, njf2)
+    # on each side; do FULL conv with full filter for fdat; for rnorm,
+    # do FULL conv between a mask-of-ones (same pad) with the filter.
+    # The mask conv naturally accounts for edge truncation.
+
+    # Build padded data and mask
+    pad_data = np.zeros((ydim + 2 * nif2, xdim + 2 * njf2), dtype=np.float32)
+    pad_data[nif2:nif2 + ydim, njf2:njf2 + xdim] = rdat
+
+    pad_mask = np.zeros_like(pad_data)
+    pad_mask[nif2:nif2 + ydim, njf2:njf2 + xdim] = 1.0
+
+    # Sliding-window view: shape (ydim, xdim, yarr, xarr)
+    # Use np.lib.stride_tricks.sliding_window_view (numpy >= 1.20)
+    from numpy.lib.stride_tricks import sliding_window_view
+    # We only need windows at the (ic, jc) output positions, but it's
+    # cheap memory-wise (uses views) to take all then index.
+    windows = sliding_window_view(pad_data, (yarr, xarr))   # (ydim, xdim, yarr, xarr)
+    mask_w = sliding_window_view(pad_mask, (yarr, xarr))
+
+    # Select output positions
+    sel_w = windows[ic_arr[:, None], jc_arr[None, :]]   # (iout, jout, yarr, xarr)
+    sel_m = mask_w[ic_arr[:, None], jc_arr[None, :]]
+
+    # Compute fdat and rnorm
+    # fdat = sum over (yarr,xarr) of filter * window
+    # rnorm = sum over (yarr,xarr) of filter * mask
+    # Use einsum for clarity + speed; both result in (iout, jout) float32.
+    fdat = np.einsum("ijkl,kl->ij", sel_w, flt, dtype=np.float32, optimize=True)
+    rnorm = np.einsum("ijkl,kl->ij", sel_m, flt, dtype=np.float32, optimize=True)
+    return fdat, rnorm
+
+
+# ---------------------------------------------------------------------------
+# Main port — drives the C checkpoints
+# ---------------------------------------------------------------------------
+
+def conv(
+    idec: int,
+    jdec: int,
+    filter_path: str,
+    input_path: str,
+    output_path: str,
+    verbose: bool = False,
+) -> None:
+    """End-to-end conv. Writes float32 GMT pixel-reg grd."""
+    if idec <= 0 or jdec <= 0:
+        raise ValueError("idec and jdec should be positive integers")
+
+    # ----- C2: read input ---------------------------------------------------
+    data, xdim, ydim, xmax, ymax, format_flag = _read_input(input_path)
+    if verbose:
+        print(f" reading {input_path} format_flag={format_flag} "
+              f"xdim={xdim} ydim={ydim}", file=sys.stderr)
+
+    # ----- C3: read filter --------------------------------------------------
+    flt, xarr, yarr = _read_filter(filter_path)
+
+    # Output dim derivation (matches C conv.c lines 244-259):
+    #   iout = ceil(ydim / idec) [counted by stepping through]
+    #   jout = ceil(xdim / jdec)
+    # then inc = round(xmax / jout), and re-derive jout = floor(xmax/inc).
+    iout_pre = 0
+    for ic in range(0, ydim, idec):
+        iout_pre += 1
+    jout_pre = 0
+    for jc in range(0, xdim, jdec):
+        jout_pre += 1
+    inc_x = round(xmax / jout_pre)
+    inc_y = round(ymax / iout_pre)
+    # C: floor() is just integer division for positive doubles here.
+    jout = int(xmax // inc_x)
+    iout = int(ymax // inc_y)
+    if verbose:
+        print(f" decim: {ydim}x{xdim} -> {iout}x{jout} (idec={idec} jdec={jdec})",
+              file=sys.stderr)
+
+    # ----- C4: filter normalization parameters ------------------------------
+    # Sum of |filter[i]| (DC magnitude bound) and sum of filter[i] (DC value).
+    anormax = float(np.sum(np.abs(flt)))
+    rnormax = float(np.sum(flt))
+    norm_mode = 1 if abs(rnormax) > 0.05 * anormax else 0
+
+    # ----- C5: build (ic, jc) arrays and run conv2d -------------------------
+    # ic loops `for (ic = 0; ic < iout * idec; ic += idec)` -> iout positions
+    ic_arr = np.arange(0, iout * idec, idec, dtype=np.int64)
+    jc_arr = np.arange(0, jout * jdec, jdec, dtype=np.int64)
+    assert ic_arr.size == iout
+    assert jc_arr.size == jout
+
+    fdat, rnorm = _conv2d_grid(data, flt, ic_arr, jc_arr)
+
+    # Output gating (conv.c lines 351-360)
+    out = np.zeros((iout, jout), dtype=np.float32)
+    if norm_mode == 1:
+        # out = fdat / rnorm if |rnorm| > 0.01*rnormax, else 0
+        mask = np.abs(rnorm) > (0.01 * abs(rnormax))
+        # Avoid divide-by-zero
+        out[mask] = fdat[mask] / rnorm[mask]
+    else:
+        # Derivative filter (DC≈0): use raw fdat if window is mostly inside
+        mask = np.abs(rnorm) < (0.0001 * anormax)
+        out[mask] = fdat[mask]
+
+    # ----- C6: write grid ---------------------------------------------------
+    # Pixel-registered, inc=(inc_x, inc_y), wesn=[0, jout*inc_x, 0, iout*inc_y]
+    out_stripped = output_path.split("=", 1)[0]
+
+    if _is_bf(output_path):
+        # GMT v4 native bf — data is already row-0-top, which matches
+        # what the bf writer expects. No flip.
+        _gmt_native_bf.write_bf(out_stripped, out,
+                                x_min=0.0, y_min=0.0,
+                                x_inc=float(inc_x), y_inc=float(inc_y),
+                                node_offset=1, remark="conv_py")
+    else:
+        # netCDF4 — flip back to y-ASCENDING
+        x_pix = (np.arange(jout, dtype=np.float64) + 0.5) * inc_x
+        y_pix = (np.arange(iout, dtype=np.float64) + 0.5) * inc_y
+        write_gmt_grd(out_stripped, np.flipud(out), x_pix, y_pix,
+                      node_offset=1, title="conv", history="conv_py",
+                      description="")
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog="conv_py",
+        description="2-D image convolution (port of C conv).",
+        add_help=False,
+    )
+    p.add_argument("idec", type=int)
+    p.add_argument("jdec", type=int)
+    p.add_argument("filter_file")
+    p.add_argument("input")
+    p.add_argument("output")
+    p.add_argument("-V", action="store_true", dest="verbose")
+    p.add_argument("-h", "--help", action="store_true", dest="show_help")
+    ns = p.parse_args(argv)
+    if ns.show_help:
+        p.print_help()
+        return 0
+    conv(ns.idec, ns.jdec, ns.filter_file, ns.input, ns.output,
+         verbose=ns.verbose)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

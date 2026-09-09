@@ -1,0 +1,21 @@
+{
+  "case": "ALOS2_Japan_Fugi_left",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ALOS2_Japan_Fugi_left.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2014326_2015171/corr_ll.grd": "3ccc2b7af95e6c089073442d39e129a6",
+    "intf/2014326_2015171/corr_ll.png": "0a8fb62aa1420c80bcf456b3d04b4b74",
+    "intf/2014326_2015171/display_amp_ll.png": "08915e15fc46711b982f1e1db49de3fe",
+    "intf/2014326_2015171/filtcorr.grd": "34b9716011de68f6938c9947f7e26aa2",
+    "intf/2014326_2015171/phasefilt.grd": "72daf08e362f73d90dd2aca117739d91",
+    "intf/2014326_2015171/phasefilt_mask_ll.png": "acf409b0d2e9c7648cb499acd87432d4"
+  }
+}

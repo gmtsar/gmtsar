@@ -1,0 +1,24 @@
+#! /usr/bin/env python3
+"""gmtsar_sharedir — print the GMTSAR shared data directory.
+
+Python port of csh gmtsar_sharedir.csh. The legacy csh has the path
+hardcoded by autoconf at build time. This version resolves it dynamically:
+
+  1. If $GMTSAR is set AND $GMTSAR/share/gmtsar exists, use that.
+  2. Else, resolve relative to this script's own location:
+     <repo>/bin/gmtsar_sharedir  →  <repo>/share/gmtsar
+     (works when symlinked into bin/ by install.sh).
+  3. Else, error out with a clear message.
+
+Usage:  gmtsar_sharedir
+Output: absolute path on stdout
+"""
+from gmtsar_lib import resolve_sharedir
+
+
+def gmtsar_sharedir():
+    print(resolve_sharedir())
+
+
+if __name__ == "__main__":
+    gmtsar_sharedir()

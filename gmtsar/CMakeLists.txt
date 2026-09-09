@@ -1,3 +1,39 @@
+#
+#	$Id$
+#
+
+if (WIN32)
+	# Real clean-machine failure (2026-07-24, fresh conda env on another
+	# host): find_package(TIFF REQUIRED) succeeded but left TIFF_LIBRARY
+	# empty, so TIFF silently vanished from GMTSAR_LINK_LIBS and the ONE
+	# executable calling libtiff directly (split_spectrum.c: TIFFOpen/
+	# TIFFReadScanline/...) failed at link with undefined references --
+	# every other target linked fine, hiding the root cause. conda-forge's
+	# libtiff has shipped its import library under both names
+	# (libtiff.lib and/or tiff.lib) across builds; coalesce explicitly
+	# and FAIL AT CONFIGURE TIME if nothing resolves, never link without
+	# TIFF silently. (Fresh cache var for the fallback: a stale
+	# TIFF_LIBRARY-NOTFOUND in CMakeCache.txt would otherwise pin the
+	# fallback search to its old failure.)
+	if (NOT TIFF_LIBRARY AND TIFF_LIBRARIES)
+		set (TIFF_LIBRARY ${TIFF_LIBRARIES})
+	endif ()
+	if (NOT TIFF_LIBRARY)
+		find_library (TIFF_LIBRARY_WIN_FALLBACK NAMES tiff libtiff)
+		if (TIFF_LIBRARY_WIN_FALLBACK)
+			set (TIFF_LIBRARY ${TIFF_LIBRARY_WIN_FALLBACK})
+		endif ()
+	endif ()
+	if (NOT TIFF_LIBRARY)
+		message (FATAL_ERROR "TIFF import library not found (checked "
+			"TIFF_LIBRARY, TIFF_LIBRARIES, and a direct search for "
+			"tiff.lib/libtiff.lib) -- refusing to configure a build that "
+			"would silently drop TIFF from the link line and fail only at "
+			"split_spectrum.exe's link step. Is libtiff installed in the "
+			"conda env this build is using?")
+	endif ()
+endif (WIN32)
+
 set (GMTSAR_LINK_LIBS ${GMT_LIBRARY} ${TIFF_LIBRARY} ${LAPACK_LIBRARIES})
 
 if (HAVE_M_LIBRARY)
@@ -7,15 +43,24 @@ endif (HAVE_M_LIBRARY)
 
 include_directories (${GMT_INCLUDE_DIR} ${TIFF_INCLUDE_DIR} ${GETOPT_INC})
 
+if (WIN32)
+	# sbas_utils.c / resamp.c / sbas.c need a local mmap()/munmap() shim
+	# on MSVC.  It covers the subset
+	# they actually use (see compat_win32/sys/mman.h).
+	include_directories (${CMAKE_CURRENT_SOURCE_DIR}/compat_win32
+		${CMAKE_SOURCE_DIR})
+endif (WIN32)
+
 add_library (gmtsar aastretch.c acpatch.c calc_dop.c conv2d.c do_freq_xcorr.c
 	do_time_int_xcorr.c fft_bins.c fft_interpolate_routines.c file_stuff.c
 	geoxyz.c get_locations.c get_params.c hermite_c.c highres_corr.c
-	interpolate_orbit.c intp_coef.c ldr_orbit.c lib_strfuncs.c parse_xcorr_input.c plxyz.c
+	interpolate_orbit.c intp_coef.c ldr_orbit.c parse_xcorr_input.c plxyz.c
 	polyfit.c print_results.c radopp.c read_orb.c read_xcorr_data.c
 	SAT_llt2rat_sub.c rmpatch.c rng_cmp.c rng_ref.c set_prm_defaults.c shift.c
 	sio_struct.c siocomplex.c spline.c trans_col.c utils.c utils_complex.c
-	write_orb.c sbas_utils.c update_PRM_sub.c gmtsar.h lib_functions.h llt2xyz.h orbit.h
-	sarleader_ALOS.h sarleader_fdr.h sfd_complex.h siocomplex.h soi.h update_PRM.h xcorr.h)
+	write_orb.c sbas_utils.c stringutils.c update_PRM_sub.c rng_filter.c
+	lib_strfuncs.c gmtsar.h lib_functions.h llt2xyz.h orbit.h
+	sarleader_ALOS.h sarleader_fdr.h sfd_complex.h siocomplex.h soi.h xcorr.h)
 target_link_libraries (gmtsar ${GMTSAR_LINK_LIBS})
 
 set (GMTSAR_LINK_LIBS ${GMTSAR_LINK_LIBS} gmtsar)
@@ -28,9 +73,6 @@ target_link_libraries (calc_dop_orb ${GMTSAR_LINK_LIBS})
 
 add_executable (conv conv.c gmtsar.h)
 target_link_libraries (conv ${GMTSAR_LINK_LIBS})
-
-add_executable (get_PRM get_PRM.c update_PRM_sub.c gmtsar.h)
-target_link_libraries (get_PRM ${GMTSAR_LINK_LIBS})
 
 add_executable (esarp esarp.c soi.h gmtsar.h)
 target_link_libraries (esarp ${GMTSAR_LINK_LIBS})
@@ -68,14 +110,55 @@ target_link_libraries (SAT_look ${GMTSAR_LINK_LIBS})
 add_executable (sbas sbas.c gmtsar.h sbas.h)
 target_link_libraries (sbas ${GMTSAR_LINK_LIBS})
 
-add_executable (update_PRM update_PRM.c update_PRM_sub.c update_PRM.h)
+add_executable (update_PRM update_PRM.c update_PRM.h gmtsar.h)
 target_link_libraries (update_PRM ${GMTSAR_LINK_LIBS})
+
+add_executable (get_PRM get_PRM.c update_PRM.h)
+target_link_libraries (get_PRM ${GMTSAR_LINK_LIBS})
+
+add_executable (nearest_grid nearest_grid.c gmtsar.h)
+target_link_libraries (nearest_grid ${GMTSAR_LINK_LIBS})
+
+add_executable (fitoffset fitoffset.c update_PRM.h)
+target_link_libraries (fitoffset ${GMTSAR_LINK_LIBS})
+if (MSVC)
+	# fitoffset.c is the only file calling POSIX getline().
+	target_compile_options (fitoffset PRIVATE
+		/FI${CMAKE_CURRENT_SOURCE_DIR}/compat_win32/getline_shim.h)
+endif (MSVC)
+
+add_executable (solid_tide solid_tide.c lib_functions.h)
+target_link_libraries (solid_tide ${GMTSAR_LINK_LIBS})
+
+add_executable (p_scatter p_scatter.c gmtsar.h)
+target_link_libraries (p_scatter ${GMTSAR_LINK_LIBS})
+
+add_executable (split_spectrum split_spectrum.c gmtsar.h)
+target_link_libraries (split_spectrum ${GMTSAR_LINK_LIBS})
+
+add_executable (cut_slc cut_slc.c gmtsar.h)
+target_link_libraries (cut_slc ${GMTSAR_LINK_LIBS})
+
+add_executable (split_aperture split_aperture.c gmtsar.h)
+target_link_libraries (split_aperture ${GMTSAR_LINK_LIBS})
+
+add_executable (phasediff_get_topo_phase phasediff_get_topo_phase.c gmtsar.h)
+target_link_libraries (phasediff_get_topo_phase ${GMTSAR_LINK_LIBS})
+
+add_executable (geocode_slc geocode_slc.c gmtsar.h llt2xyz.h orbit.h)
+target_link_libraries (geocode_slc ${GMTSAR_LINK_LIBS})
+if (MSVC)
+	# geocode_slc includes the Win32 mmap implementation.  It needs only the
+	# core file-mapping API; excluding the COM/XML headers also prevents their
+	# generic method names from colliding with GMT/GMTSAR C identifiers.
+	target_compile_definitions (geocode_slc PRIVATE WIN32_LEAN_AND_MEAN)
+endif (MSVC)
 
 add_executable (xcorr xcorr.c gmtsar.h)
 target_link_libraries (xcorr ${GMTSAR_LINK_LIBS})
 
 # add the install targets
-install (TARGETS gmtsar bperp calc_dop_orb get_PRM conv esarp extend_orbit make_gaussian_filter offset_topo phase2topo phasediff phasefilt resamp SAT_baseline SAT_llt2rat SAT_look sbas update_PRM xcorr
+install (TARGETS gmtsar bperp calc_dop_orb conv esarp extend_orbit make_gaussian_filter offset_topo phase2topo phasediff phasefilt resamp SAT_baseline SAT_llt2rat SAT_look sbas xcorr update_PRM get_PRM nearest_grid fitoffset solid_tide p_scatter split_spectrum cut_slc split_aperture phasediff_get_topo_phase geocode_slc
 	ARCHIVE DESTINATION lib
 	COMPONENT Runtime
 	LIBRARY DESTINATION lib

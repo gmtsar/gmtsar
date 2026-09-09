@@ -140,13 +140,13 @@ int64_t read_ALOS_data_SLC(FILE *imagefile, FILE *outfile, struct PRM *prm, int6
 		if (n == 2)
 			start_sdr_rec_len = sdr.record_length;
 		if (sdr.record_length != start_sdr_rec_len) {
-			printf(" ***** warning sdr.record_length error %d \n", sdr.record_length);
+			fprintf(stderr, " ***** warning sdr.record_length error %d \n", sdr.record_length);
 			sdr.record_length = start_sdr_rec_len;
 			sdr.PRF = prm->prf;
 			sdr.slant_range = slant_range_old;
 		}
 		if (sdr.sequence_number != n)
-			printf(" missing line: n, seq# %d %d \n", n, sdr.sequence_number);
+			fprintf(stderr, " missing line: n, seq# %d %d \n", n, sdr.sequence_number);
 
 		/* check for changes in record_length and PRF */
 		record_length1 = sdr.record_length - line_prefix_size - line_suffix_size;
@@ -213,8 +213,8 @@ int64_t read_ALOS_data_SLC(FILE *imagefile, FILE *outfile, struct PRM *prm, int6
 		}
 	}
 
-//printf("chirp_length = %.12d\n",sdr.chirp_length);
-//printf("chirp_linear_coeff = %.12d\n",sdr.chirp_linear_coeff);
+//fprintf(stderr, "chirp_length = %.12d\n",sdr.chirp_length);
+//fprintf(stderr, "chirp_linear_coeff = %.12d\n",sdr.chirp_linear_coeff);
 
 	/* calculate end time and fix prf */
 	prm->prf = 0.001 * prm->prf;
@@ -233,7 +233,10 @@ int64_t read_ALOS_data_SLC(FILE *imagefile, FILE *outfile, struct PRM *prm, int6
 	prm->nrows = prm->num_lines;
 	prm->num_valid_az = prm->num_lines;
 	prm->num_patches = 1;
-
+	if (prefix_off == 388) {
+		/* We are Reading ALOS 4 Data */
+		prm->near_range = prm->near_range / 100;
+	}
 	if (verbose)
 		print_params(prm);
 
@@ -380,12 +383,12 @@ int check_shift(struct PRM *prm, int *shift, int *ishift, int *shift0, int recor
 	*ishift = abs(*shift);
 
 	if (*ishift > record_length1) {
-		printf(" end: shift exceeds data window %d \n", *shift);
+		fprintf(stderr, " end: shift exceeds data window %d \n", *shift);
 		die("exitting", "");
 	}
 
 	if (*shift != *shift0) {
-		printf(" near_range, shift = %d %d \n", sdr.slant_range, *shift);
+		fprintf(stderr, " near_range, shift = %d %d \n", sdr.slant_range, *shift);
 		*shift0 = *shift;
 	}
 
@@ -458,8 +461,8 @@ int handle_prf_change(struct PRM *prm, FILE *imagefile, int64_t *byte_offset, in
 	*byte_offset = ftell(imagefile);
 
 	/* tell the world */
-	printf(" *** PRF changed from %lf to  %lf  at line %d (byte %ld)\n", (0.001 * prm->prf), (0.001 * sdr.PRF), n, *byte_offset);
-	printf(" end: PRF changed from %lf to  %lf  at line %d \n", (0.001 * prm->prf), (0.001 * sdr.PRF), n);
+	fprintf(stderr, " *** PRF changed from %lf to  %lf  at line %d (byte %ld)\n", (0.001 * prm->prf), (0.001 * sdr.PRF), n, *byte_offset);
+	fprintf(stderr, " end: PRF changed from %lf to  %lf  at line %d \n", (0.001 * prm->prf), (0.001 * sdr.PRF), n);
 
 	return (EXIT_SUCCESS);
 }

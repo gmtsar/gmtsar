@@ -8,6 +8,7 @@ in CEOS SAR data file
 #include "SARtape.h"
 #include "data_param.h"
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>

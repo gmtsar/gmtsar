@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""make_slc_csk2_py — env-gated CLI dispatcher for make_slc_csk2 (CSG SLC/RAW
+HDF5 -> PRM/LED/SLC preprocessor).
+
+Same CLI contract as the C binary:
+    make_slc_csk2_py name_of_input_file name_output [SLC_factor]
+
+Env-gate
+--------
+``GMTSAR_CSK_PREPROC_PY`` (default ``"0"`` — C binary via subprocess).
+Set to ``"1"`` to route through the in-process Python port
+(``utils.make_slc_csk2_py.run``, byte-for-byte parity verified against
+the real ``make_slc_csk2`` C binary on real CSK data — see
+``bin_py/tests/test_make_slc_csk2_parity.py``).
+
+Default is OFF: this preprocessor stage is not wired into any upstream
+caller yet (Rule/Phase E "wire into ONE caller" has no existing Python
+p2p_stages hook for the CSG/make_slc_csk2 stage — see module docstring
+in utils/make_slc_csk2_py.py for the parity-gap disclosure, and the
+timing numbers there: the port does not beat the C binary). This
+dispatcher exists so the port can be dropped ahead of the real
+`make_slc_csk2` on PATH (or invoked directly) with instant rollback via
+the env var, once/if it is wired in.
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_UTILS_DIR = os.path.join(os.path.dirname(_THIS_DIR), "utils")
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
+
+
+def _py_enabled() -> bool:
+    return os.environ.get("GMTSAR_CSK_PREPROC_PY", "0") == "1"
+
+
+def main(argv=None) -> int:
+    argv = sys.argv if argv is None else argv
+    if len(argv) < 3:
+        sys.stderr.write(
+            "\n\nUsage: make_slc_csk2_py name_of_input_file name_output [SLC_factor]\n")
+        return 1
+
+    if _py_enabled():
+        import make_slc_csk2_py as port
+        slc_factor = float(argv[3]) if len(argv) == 4 else 1.0
+        port.run(argv[1], argv[2], slc_factor)
+        return 0
+
+    # Fall back to the real C binary (must be on PATH, e.g. gmtsar/bin).
+    cmd = ["make_slc_csk2"] + argv[1:]
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

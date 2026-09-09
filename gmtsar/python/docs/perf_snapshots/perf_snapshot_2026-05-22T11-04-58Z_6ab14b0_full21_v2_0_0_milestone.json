@@ -1,0 +1,43 @@
+{
+  "generated_utc": "2026-05-22T11-04-58Z",
+  "commit": {
+    "sha": "6ab14b0",
+    "dirty": false
+  },
+  "label": "full21_v2_0_0_milestone",
+  "env": {
+    "NUMBA_NUM_THREADS": "(not constrained)",
+    "XCORR_PY_WORKERS": "(not constrained)",
+    "OMP_NUM_THREADS": "(not constrained)",
+    "MKL_NUM_THREADS": "(not constrained)",
+    "OPENBLAS_NUM_THREADS": "(not constrained)",
+    "BLIS_NUM_THREADS": "(not constrained)",
+    "VECLIB_MAXIMUM_THREADS": "(not constrained)",
+    "NUMEXPR_NUM_THREADS": "(not constrained)",
+    "MAX_PARALLEL": "(not constrained)",
+    "SWEEP_FORCE": "(not constrained)"
+  },
+  "hardware": {
+    "host": "theo2",
+    "cpu_model": "AMD EPYC 7F72 24-Core Processor",
+    "cpu_cores_logical": "1",
+    "ram_total": "",
+    "workdir_fs": "nfs (/home/staff/dliu/gmtsar/gmtsar/python/work)",
+    "workdir_mount": "utig5.ig.utexas.edu:/bigpool/home",
+    "kernel": "Linux 6.8.0-110-generic x86_64",
+    "python": "Python 3.11.0",
+    "gmt": "gmt not on PATH at sweep time",
+    "gmtsar_bin": "/home/staff/dliu/gmtsar/bin/gmtsar",
+    "git_sha": "6ab14b0",
+    "git_branch": "master",
+    "git_dirty": "no",
+    "started": "2026-05-22 06:03:21",
+    "cases": "RS2_SLC_Hawaii NISAR_Ethiopia ALOS_SLC_L1.1 ALOS2_Japan_Fugi_left ALOS2_SCAN_SSAF ALOS4_Pinon ALOS_Baja_EQ ALOS_ERSDAC_L1.0 ALOS_haiti ALOS2_Brazil CSK_RAW_Hawaii CSK_SLC_Italy ENVI_Baja_EQ ENVI_Baja_EQ_SLC ERS_Hector_EQ S1A_SLC_TOPS_COVE S1A_SLC_TOPS_Greece S1A_SLC_TOPS_LA S1_Larsen_C TSX_SLC_Hawaii S1_Ridgecrest_EQ",
+    "max_parallel": "12"
+  },
+  "sweep_wall_sec": 132.0,
+  "n_cases": 0,
+  "n_pass": 0,
+  "n_fail": 0,
+  "per_case": {}
+}

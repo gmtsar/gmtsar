@@ -32,7 +32,7 @@
  * are imported have to be identified as such.
  */
 
-#	ifdef _WIN32
+#	if defined(_WIN32) && !defined(_MSC_VER)
 #		ifdef LIBRARY_EXPORTS
 #			define LIBSPEC __declspec(dllexport)
 #		else

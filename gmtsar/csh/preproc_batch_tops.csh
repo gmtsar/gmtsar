@@ -24,7 +24,7 @@
     echo "    s1a-iw1-slc-vv-20150715...001:s1a-iw1-slc-vv-20150715...001:s1a-iw1-slc-vv-20150715...001:S1A_OPER_AUX_POEORB_V20150625_20150627.EOF"
     echo ""
     echo "  outputs:"
-    echo "    baseline.ps align_table.ra (contains info for precise geomatric alignment)"
+    echo "    baseline.ps (mode 1)"
     echo "    *.PRM *.LED *.SLC(mode 2)"
     echo ""
     echo "  Note:"
@@ -52,9 +52,7 @@
   set mmaster = `awk -F: 'NR==1 {print $1}' $1 | awk '{ print "S1_"substr($1,16,8)"_ALL_F"substr($1,7,1)}'`
   # clean up a little bit
   rm *.PRM* *.SLC *.LED tmp*
-  if($mode == 1) then
-    rm baseline_table.dat
-  endif
+  if (-f baseline_table.dat) rm baseline_table.dat
 
   # loop over all the acquisitions
   foreach line (`awk '{print $0}' $1`)
@@ -286,6 +284,8 @@
     awk '{print $1,$2}' < text > text2
     gmt psxy text2 -Sp0.2c -G0 -R -JX -Ba0.5:"year":/a50g00f25:"baseline (m)":WSen -O >> baseline.ps
     rm text text2 table.gmt
+    gmt psconvert baseline.ps -Tf -A
+    rm baseline.ps
   endif
 
   # clean up a little bit

@@ -37,17 +37,17 @@ int main(int argc, char **argv) {
 	int pixflag = 0;
 
 	/* handle input */
-	printf("argc: %d\n", argc);
+	fprintf(stderr, "argc: %d\n", argc);
 	if (argc != 3 && argc != 7) {
-		printf("Usage: envisat_dump_data envisat-product outputfile [l0 lN p0 pN]\n");
-		printf("  where envisat-product is the input filename\n");
-		printf("        outputfile      is the output filename\n");
-		printf("        l0              is the first azimuth line (starting at 1)\n");
-		printf("        lN              is the last azimuth line\n");
-		printf("        p0              is the first range pixel (starting at 1)\n");
-		printf("        pN              is the last range pixel\n");
-		printf("Example:\n");
-		printf("  envisat_dump_data "
+		fprintf(stderr, "Usage: envisat_dump_data envisat-product outputfile [l0 lN p0 pN]\n");
+		fprintf(stderr, "  where envisat-product is the input filename\n");
+		fprintf(stderr, "        outputfile      is the output filename\n");
+		fprintf(stderr, "        l0              is the first azimuth line (starting at 1)\n");
+		fprintf(stderr, "        lN              is the last azimuth line\n");
+		fprintf(stderr, "        p0              is the first range pixel (starting at 1)\n");
+		fprintf(stderr, "        pN              is the last range pixel\n");
+		fprintf(stderr, "Example:\n");
+		fprintf(stderr, "  envisat_dump_data "
 		       "ASA_IMS_1PNDPA20021025_175208_000000162010_00356_03416_0005.N1 "
 		       "crop.out 0 10 0 100\n\n");
 		return 1;

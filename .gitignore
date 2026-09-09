@@ -1,5 +1,8 @@
 autom4te.cache/
 bin/
+build-win/
+dist/
+lib/
 config.log
 config.mk
 config.status
@@ -167,6 +170,8 @@ preproc/CSK_preproc/src_raw/make_raw_csk
 preproc/CSK_preproc/src_raw/make_raw_csk.o
 preproc/CSK_preproc/src_slc/make_slc_csk
 preproc/CSK_preproc/src_slc/make_slc_csk.o
+preproc/CSK_preproc/src_slc2/make_slc_csk2
+preproc/CSK_preproc/src_slc2/make_slc_csk2.o
 preproc/ENVI_preproc/ASA_CAT/asa_cat
 preproc/ENVI_preproc/ASA_CAT/asa_cat.o
 preproc/ENVI_preproc/Dop_orbit/calc_dop_orb_envi
@@ -232,6 +237,10 @@ preproc/S1A_preproc/src_tops/make_s1a_tops_6par
 preproc/S1A_preproc/src_tops/make_s1a_tops_6par.o
 preproc/TSX_preproc/src/make_slc_tsx
 preproc/TSX_preproc/src/make_slc_tsx.o
+preproc/NSR_preproc/include
+preproc/NSR_preproc/lib
+preproc/NSR_preproc/src_slc/make_slc_nsr
+preproc/NSR_preproc/src_slc/make_slc_nsr.o
 share/
 snaphu/src/snaphu
 snaphu/src/snaphu.o
@@ -241,3 +250,14 @@ snaphu/src/snaphu_io.o
 snaphu/src/snaphu_solver.o
 snaphu/src/snaphu_tile.o
 snaphu/src/snaphu_util.o
+preproc/GF3_preproc/include
+preproc/GF3_preproc/lib
+preproc/GF3_preproc/src/make_slc_gf3
+preproc/GF3_preproc/src/make_slc_gf3.o
+preproc/ALOS_preproc/ALOS_baseline/ALOS_baseline
+preproc/LT1_preproc/include
+preproc/LT1_preproc/lib
+preproc/LT1_preproc/src/make_slc_lt1
+preproc/LT1_preproc/src/make_slc_lt1.o
+preproc/LT1_preproc/src_orbit/ext_orb_lt1
+preproc/LT1_preproc/src_orbit/ext_orb_lt1.o

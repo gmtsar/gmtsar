@@ -1,0 +1,87 @@
+#! /usr/bin/env python3
+"""batch_processing — top-level driver: preproc → align → intf for a stack.
+
+Python port of csh batch_processing.csh. Thin orchestrator that delegates
+to pre_proc_batch / align_batch / intf_batch for steps 1, 2, 4-6.
+Steps 3 (back-geocoding) and 5 (unwrap-only) are TODO — see notes below.
+
+Usage:  batch_processing SAT master_image inputfile step [config]
+
+step:
+  1 = preprocessing                 → pre_proc_batch
+  2 = alignment                     → align_batch
+  3 = back-geocoding                  TODO (inline dem2topo_ra + offset_topo)
+  4 = interferometry                → intf_batch (stage 2 only)
+  5 = phase unwrapping                TODO (intf_batch with stage=5 semantics)
+  6 = geocoding                       TODO (intf_batch with stage=6 semantics)
+
+Notes:
+  - If config is omitted, pop_config is run to generate config.<SAT>.txt.
+  - For TOPS data, steps 1 and 2 are combined in the upstream csh; this
+    Python version preserves the same convention via pre_proc_batch.
+  - For multi-subswath data, run merging steps externally before
+    unwrap/geocode (same as csh).
+"""
+import os
+import sys
+
+from gmtsar_lib import run
+
+
+_SUPPORTED_SATS = {
+    "ERS", "ENVI", "ALOS", "ALOS_SLC", "ALOS2", "ALOS2_SCAN",
+    "S1_STRIP", "S1_TOPS", "ENVI_SLC", "CSK_RAW", "CSK_SLC",
+    "TSX", "RS2", "GF3", "LT1",
+}
+
+
+def batch_processing():
+    argv = sys.argv
+    if len(argv) not in (5, 6):
+        sys.exit(
+            "Usage: batch_processing SAT master_image inputfile step [config]\n"
+            "  step: 1=preproc, 2=align, 3=backgeocode (TODO),\n"
+            "        4=intf, 5=unwrap (TODO), 6=geocode (TODO)"
+        )
+    SAT, master, inputfile, step_str = argv[1], argv[2], argv[3], argv[4]
+    config = argv[5] if len(argv) == 6 else None
+
+    if SAT not in _SUPPORTED_SATS:
+        sys.exit(f"SAT must be one of: {' '.join(sorted(_SUPPORTED_SATS))}")
+    try:
+        step = int(step_str)
+    except ValueError:
+        sys.exit(f"[ERROR]: step must be 1..6, got {step_str!r}")
+    if step not in range(1, 7):
+        sys.exit(f"[ERROR]: Wrong step input: {step}")
+
+    if config and not os.path.isfile(config):
+        sys.exit(f"[ERROR]: no configure file: {config}")
+    if config is None:
+        run(f"pop_config {SAT} > config.{SAT}.txt")
+        config = f"config.{SAT}.txt"
+
+    if step == 1:
+        print(f"batch_processing: step 1 — preprocessing")
+        run(f"pre_proc_batch {SAT} {inputfile} {config}")
+    elif step == 2:
+        print(f"batch_processing: step 2 — alignment")
+        # data_type = RAW for SAR raw inputs, SLC for already-focused.
+        # ALOS/ERS/ENVI/ENVI_SCAN are RAW; SLC and *_SLC variants are SLC.
+        data_type = "RAW" if SAT in ("ALOS", "ERS", "ENVI") else "SLC"
+        secondary = "1"  # legacy default
+        run(f"align_batch {data_type} {secondary} {inputfile}")
+    elif step == 4:
+        print(f"batch_processing: step 4 — interferometry")
+        run(f"intf_batch {SAT} {inputfile} {config}")
+    elif step in (3, 5, 6):
+        sys.exit(
+            f"[TODO]: batch_processing step {step} is not yet implemented in Python.\n"
+            f"  - step 3 (back-geocoding): use dem2topo_ra + offset_topo manually for now.\n"
+            f"  - step 5 (unwrap): use intf_batch with config.threshold_snaphu != 0.\n"
+            f"  - step 6 (geocode): use intf_batch with config.threshold_geocode != 0."
+        )
+
+
+if __name__ == "__main__":
+    batch_processing()

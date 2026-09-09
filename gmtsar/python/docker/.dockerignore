@@ -1,0 +1,20 @@
+# Exclude from Docker build context. Symlink this to repo root as `.dockerignore`
+# (the build is invoked from the repo root, so docker looks there for it).
+.git
+.github
+.claude
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.o
+**/*.a
+bin/
+share/
+orbits/
+config.mk
+config.log
+config.status
+configure
+autom4te.cache/
+gmtsar/python/work/
+gmtsar/python/fftw_force_serial.so

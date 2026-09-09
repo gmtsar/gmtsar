@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
 	}
 
 	// modify xml_tree[0] to get parameters from other xml_trees
-	edit_tree(nfiles, nlmx, xml_tree, azi_1, azi_2, &nb_start, &nb_end);
+	edit_tree(nfiles, nlmx, xml_tree, (int)azi_1, (int)azi_2, &nb_start, &nb_end);
 	printf("Output burst from #%d to #%d ...\n", nb_start, nb_end);
 
 	strcpy(tmp_str, argv[argc - 1]);
@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
 
 	strcpy(tmp_str, argv[argc - 1]);
 	strcat(tmp_str, ".tiff");
-	if ((tif_out = TIFFOpen(tmp_str, "wb")) == NULL)
+	if ((tif_out = TIFFOpen(tmp_str, "w8")) == NULL)
 		die("Couldn't open tiff file: \n", tmp_str);
 	search_tree(xml_tree[0], "/product/swathTiming/linesPerBurst/", tmp_str, 1, 0, 1);
 	lpb = (int)str2double(tmp_str);

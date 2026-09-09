@@ -1,0 +1,265 @@
+{
+  "generated_utc": "2026-05-22T15-34-08Z",
+  "commit": {
+    "sha": "102f22b",
+    "dirty": false
+  },
+  "label": "v2_1_0_milestone",
+  "env": {
+    "NUMBA_NUM_THREADS": "(not constrained)",
+    "XCORR_PY_WORKERS": "(not constrained)",
+    "OMP_NUM_THREADS": "(not constrained)",
+    "MKL_NUM_THREADS": "(not constrained)",
+    "OPENBLAS_NUM_THREADS": "(not constrained)",
+    "BLIS_NUM_THREADS": "(not constrained)",
+    "VECLIB_MAXIMUM_THREADS": "(not constrained)",
+    "NUMEXPR_NUM_THREADS": "(not constrained)",
+    "MAX_PARALLEL": "(not constrained)",
+    "SWEEP_FORCE": "(not constrained)"
+  },
+  "hardware": {
+    "host": "theo2",
+    "cpu_model": "AMD EPYC 7F72 24-Core Processor",
+    "cpu_cores_logical": "1",
+    "ram_total": "",
+    "workdir_fs": "nfs (/home/staff/dliu/gmtsar/gmtsar/python/work)",
+    "workdir_mount": "utig5.ig.utexas.edu:/bigpool/home",
+    "kernel": "Linux 6.8.0-110-generic x86_64",
+    "python": "Python 3.11.0",
+    "gmt": "6.4.0",
+    "gmtsar_bin": "/home/staff/dliu/gmtsar/bin/gmtsar",
+    "git_sha": "9b2dc77",
+    "git_branch": "master",
+    "git_dirty": "no",
+    "started": "2026-05-22 10:07:34",
+    "cases": "RS2_SLC_Hawaii NISAR_Ethiopia ALOS_SLC_L1.1 ALOS2_Brazil ALOS4_Pinon CSK_RAW_Hawaii ENVI_Baja_EQ_SLC ERS_Hector_EQ TSX_SLC_Hawaii",
+    "max_parallel": "9"
+  },
+  "sweep_wall_sec": 1567.0,
+  "n_cases": 11,
+  "n_pass": 11,
+  "n_fail": 0,
+  "per_case": {
+    "ALOS2_Brazil": {
+      "csh_sec": 935.0,
+      "py_sec": 810.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 639.251,
+        "geocode": 31.351,
+        "intf": 18.313,
+        "pre_proc": 20.464,
+        "resamp_py": 33.319,
+        "xcorr_py": 18.406
+      },
+      "profile_total_sec": 810.395,
+      "failures": []
+    },
+    "ALOS4_Pinon": {
+      "csh_sec": 1230.0,
+      "py_sec": 1070.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 820.326,
+        "geocode": 65.958,
+        "intf": 20.201,
+        "pre_proc": 25.288,
+        "resamp_py": 37.542,
+        "xcorr_py": 18.165
+      },
+      "profile_total_sec": 1070.308,
+      "failures": []
+    },
+    "ALOS_Baja_EQ": {
+      "csh_sec": 1101.0,
+      "py_sec": 991.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 357.283,
+        "geocode": 74.716,
+        "intf": 66.209,
+        "pre_proc": 39.645,
+        "resamp_py": 49.535,
+        "xcorr_py": 25.376
+      },
+      "profile_total_sec": 990.333,
+      "failures": []
+    },
+    "ALOS_SLC_L1.1": {
+      "csh_sec": 423.0,
+      "py_sec": 312.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 105.216,
+        "geocode": 48.967,
+        "intf": 15.332,
+        "pre_proc": 20.181,
+        "resamp_py": 31.357,
+        "xcorr_py": 23.858
+      },
+      "profile_total_sec": 311.356,
+      "failures": []
+    },
+    "ALOS_haiti": {
+      "csh_sec": 1749.0,
+      "py_sec": 1646.0,
+      "score": {
+        "success": 7,
+        "fail": 0,
+        "comparisons": 7
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 876.465,
+        "geocode": 71.063,
+        "intf": 54.198,
+        "pre_proc": 12.596,
+        "resamp_py": 65.93,
+        "snaphu": 118.293,
+        "xcorr_py": 35.001
+      },
+      "profile_total_sec": 1646.087,
+      "failures": []
+    },
+    "CSK_RAW_Hawaii": {
+      "csh_sec": 841.0,
+      "py_sec": 592.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 72.737,
+        "geocode": 24.053,
+        "intf": 35.433,
+        "pre_proc": 13.379,
+        "resamp_py": 79.513,
+        "xcorr_py": 45.259
+      },
+      "profile_total_sec": 591.839,
+      "failures": []
+    },
+    "ENVI_Baja_EQ_SLC": {
+      "csh_sec": 1407.0,
+      "py_sec": 1272.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 1022.344,
+        "geocode": 99.437,
+        "intf": 15.917,
+        "pre_proc": 21.887,
+        "resamp_py": 26.9,
+        "xcorr_py": 21.437
+      },
+      "profile_total_sec": 1271.549,
+      "failures": []
+    },
+    "ERS_Hector_EQ": {
+      "csh_sec": 1287.0,
+      "py_sec": 1094.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 718.772,
+        "geocode": 110.177,
+        "intf": 16.8,
+        "pre_proc": 3.172,
+        "resamp_py": 27.549,
+        "xcorr_py": 26.252
+      },
+      "profile_total_sec": 1094.463,
+      "failures": []
+    },
+    "NISAR_Ethiopia": {
+      "csh_sec": 447.0,
+      "py_sec": 282.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 24.573,
+        "fitoffset_ra": 0.71,
+        "geocode": 40.37,
+        "intf": 5.156,
+        "resamp_py": 6.365,
+        "xcorr_py": 40.439
+      },
+      "profile_total_sec": 278.815,
+      "failures": []
+    },
+    "RS2_SLC_Hawaii": {
+      "csh_sec": 178.0,
+      "py_sec": 91.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 33.133,
+        "geocode": 13.401,
+        "intf": 3.906,
+        "pre_proc": 0.732,
+        "resamp_py": 4.042,
+        "xcorr_py": 27.114
+      },
+      "profile_total_sec": 90.984,
+      "failures": []
+    },
+    "TSX_SLC_Hawaii": {
+      "csh_sec": 739.0,
+      "py_sec": 611.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 312.865,
+        "geocode": 54.628,
+        "intf": 39.149,
+        "pre_proc": 16.398,
+        "resamp_py": 81.301,
+        "xcorr_py": 28.209
+      },
+      "profile_total_sec": 610.649,
+      "failures": []
+    }
+  }
+}

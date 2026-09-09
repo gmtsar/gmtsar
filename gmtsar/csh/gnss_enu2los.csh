@@ -23,12 +23,12 @@ errormessage:
     echo "  -- they must match "
     echo " "
     echo " **Assumes the gnss.llenu file is a list of stations with a specific" 
-    echo " displacement value (e.g. the displacement between two insar scenes)"
+    echo " displacement value (e.g. the displacement between two insar scenes) or velocity (for InSAR velocity field)"
     echo " per station."
     echo " "
-    echo "Example: gnss_enu2los.csh master.PRM master.LED gnss_2018-2019.sllenu dem.grd "
+    echo "Example: gnss_enu2los.csh master.PRM master.LED gnss_2019-2018.sllenu dem.grd "
     echo ""
-    echo "Note: Check out correct_intf_with_gnss.csh to correct your interferogram"
+    echo "Note: Check out correct_insar_with_gnss.csh to correct your interferogram"
     echo "with GNSS data"
     echo ""
     exit 1
@@ -66,7 +66,7 @@ endif
 # -----------------------------------
 #
 # pull the lon/lat, pull the height, input into SAT_look to get look direction
- awk '{print $2,$3}' $gnssenu | gmt grdtrack -G$dem -N > tmp.llh 
+ awk '{print $2,$3}' $gnssenu | gmt grdtrack -G$dem > tmp.llh 
  SAT_look $PRM < tmp.llh > tmp.lltn
 #
 # -----------------------------------

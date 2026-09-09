@@ -7,7 +7,7 @@ INCLUDES = -I../include -I../../../gmtsar -I$(TIFF_INC)
 CLIBS = -L../../../gmtsar -lgmtsar -L../lib -lxmlC -L$(TIFF_LIB) -ltiff -lm
 
 $(PROG): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CLIBS) 
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS) $(CLIBS) 
 
 all:	$(PROG)
 
@@ -18,4 +18,4 @@ uninstall:
 	rm -f $(bindir)/$(PROG)
 
 clean:
-	rm -f $(OBJS) tags core
+	rm -f $(OBJS) tags core $(PROG)

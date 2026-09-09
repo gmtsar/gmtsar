@@ -1,0 +1,483 @@
+{
+  "generated_utc": "2026-07-13T16-44-34Z",
+  "commit": {
+    "sha": "dbdecd3",
+    "dirty": true
+  },
+  "label": "full",
+  "env": {
+    "NUMBA_NUM_THREADS": "(not constrained)",
+    "XCORR_PY_WORKERS": "(not constrained)",
+    "OMP_NUM_THREADS": "(not constrained)",
+    "MKL_NUM_THREADS": "(not constrained)",
+    "OPENBLAS_NUM_THREADS": "(not constrained)",
+    "BLIS_NUM_THREADS": "(not constrained)",
+    "VECLIB_MAXIMUM_THREADS": "(not constrained)",
+    "NUMEXPR_NUM_THREADS": "(not constrained)",
+    "MAX_PARALLEL": "(not constrained)",
+    "SWEEP_FORCE": "(not constrained)"
+  },
+  "hardware": {
+    "host": "theo2",
+    "cpu_model": "AMD EPYC 7F72 24-Core Processor",
+    "cpu_cores_logical": "48",
+    "ram_total": "1007.6G",
+    "workdir_fs": "nfs",
+    "workdir_mount": "utig5.ig.utexas.edu:/bigpool/home",
+    "kernel": "Linux 6.8.0-124-generic x86_64",
+    "python": "Python 3.11.0",
+    "gmt": "6.4.0",
+    "git_sha": "dbdecd3",
+    "git_branch": "master",
+    "git_dirty": "yes",
+    "started": "2026-07-13 08:43:18",
+    "max_parallel": "12",
+    "cases": "RS2_SLC_Hawaii NISAR_Ethiopia ALOS_SLC_L1.1 S1_Ridgecrest_EQ S1A_SLC_TOPS_LA S1_Larsen_C ALOS2_SCAN_SSAF S1A_SLC_TOPS_Greece ALOS2_Brazil ENVI_Baja_EQ ALOS_haiti ALOS4_Pinon TSX_SLC_Hawaii ENVI_Baja_EQ_SLC ERS_Hector_EQ ALOS_Baja_EQ ALOS_ERSDAC_L1.0 CSK_SLC_Italy CSK_RAW_Hawaii ALOS2_Japan_Fugi_left S1A_SLC_TOPS_COVE"
+  },
+  "sweep_wall_sec": 109.0,
+  "n_cases": 21,
+  "n_pass": 20,
+  "n_fail": 1,
+  "per_case": {
+    "ALOS2_Brazil": {
+      "csh_sec": 999.0,
+      "py_sec": 873.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 692.929,
+        "geocode": 46.701,
+        "intf": 19.467,
+        "pre_proc": 9.882,
+        "resamp_py": 34.58,
+        "xcorr_py": 16.102
+      },
+      "profile_total_sec": 873.155,
+      "failures": []
+    },
+    "ALOS2_Japan_Fugi_left": {
+      "csh_sec": 1427.0,
+      "py_sec": 1288.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 895.021,
+        "geocode": 74.639,
+        "intf": 38.196,
+        "pre_proc": 43.786,
+        "resamp_py": 101.227,
+        "xcorr_py": 30.041
+      },
+      "profile_total_sec": 1288.159,
+      "failures": []
+    },
+    "ALOS2_SCAN_SSAF": {
+      "csh_sec": 9016.0,
+      "py_sec": 7828.0,
+      "score": {
+        "success": 14,
+        "fail": 0,
+        "comparisons": 14
+      },
+      "has_profile": false,
+      "binaries": null,
+      "profile_total_sec": null,
+      "failures": []
+    },
+    "ALOS4_Pinon": {
+      "csh_sec": 1267.0,
+      "py_sec": 1152.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 878.826,
+        "geocode": 77.022,
+        "intf": 24.708,
+        "pre_proc": 13.331,
+        "resamp_py": 37.915,
+        "xcorr_py": 17.268
+      },
+      "profile_total_sec": 1152.056,
+      "failures": []
+    },
+    "ALOS_Baja_EQ": {
+      "csh_sec": 1117.0,
+      "py_sec": 1024.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 413.93,
+        "geocode": 82.863,
+        "intf": 55.129,
+        "pre_proc": 39.701,
+        "resamp_py": 50.132,
+        "xcorr_py": 21.636
+      },
+      "profile_total_sec": 1023.661,
+      "failures": []
+    },
+    "ALOS_ERSDAC_L1.0": {
+      "csh_sec": 965.0,
+      "py_sec": 862.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 446.282,
+        "geocode": 95.187,
+        "intf": 16.713,
+        "pre_proc": 8.319,
+        "resamp_py": 26.4,
+        "xcorr_py": 46.521
+      },
+      "profile_total_sec": 862.233,
+      "failures": []
+    },
+    "ALOS_SLC_L1.1": {
+      "csh_sec": 448.0,
+      "py_sec": 337.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 118.898,
+        "geocode": 56.442,
+        "intf": 25.202,
+        "pre_proc": 20.293,
+        "resamp_py": 28.856,
+        "xcorr_py": 19.245
+      },
+      "profile_total_sec": 337.341,
+      "failures": []
+    },
+    "ALOS_haiti": {
+      "csh_sec": 1669.0,
+      "py_sec": 1647.0,
+      "score": {
+        "success": 7,
+        "fail": 0,
+        "comparisons": 7
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 897.756,
+        "geocode": 80.748,
+        "intf": 53.41,
+        "pre_proc": 11.523,
+        "resamp_py": 49.548,
+        "snaphu": 131.267,
+        "xcorr_py": 23.759
+      },
+      "profile_total_sec": 1647.22,
+      "failures": []
+    },
+    "CSK_RAW_Hawaii": {
+      "csh_sec": 822.0,
+      "py_sec": 601.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 76.781,
+        "geocode": 24.287,
+        "intf": 39.369,
+        "pre_proc": 14.217,
+        "resamp_py": 80.855,
+        "xcorr_py": 42.048
+      },
+      "profile_total_sec": 601.368,
+      "failures": []
+    },
+    "CSK_SLC_Italy": {
+      "csh_sec": 843.0,
+      "py_sec": 773.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 436.206,
+        "geocode": 41.178,
+        "intf": 38.937,
+        "pre_proc": 82.324,
+        "resamp_py": 77.632,
+        "xcorr_py": 42.144
+      },
+      "profile_total_sec": 772.837,
+      "failures": []
+    },
+    "ENVI_Baja_EQ": {
+      "csh_sec": 1767.0,
+      "py_sec": 1631.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 1009.318,
+        "geocode": 180.932,
+        "intf": 31.632,
+        "pre_proc": 5.651,
+        "resamp_py": 48.491,
+        "xcorr_py": 37.742
+      },
+      "profile_total_sec": 1630.583,
+      "failures": []
+    },
+    "ENVI_Baja_EQ_SLC": {
+      "csh_sec": 1461.0,
+      "py_sec": 1409.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 1126.557,
+        "geocode": 112.285,
+        "intf": 16.52,
+        "pre_proc": 27.147,
+        "resamp_py": 30.369,
+        "xcorr_py": 20.338
+      },
+      "profile_total_sec": 1408.519,
+      "failures": []
+    },
+    "ERS_Hector_EQ": {
+      "csh_sec": 1276.0,
+      "py_sec": 1199.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 802.742,
+        "geocode": 120.598,
+        "intf": 17.376,
+        "pre_proc": 2.515,
+        "resamp_py": 27.771,
+        "xcorr_py": 18.749
+      },
+      "profile_total_sec": 1197.163,
+      "failures": []
+    },
+    "NISAR_Ethiopia": {
+      "csh_sec": 543.0,
+      "py_sec": 178.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 30.218,
+        "fitoffset_ra": 0.642,
+        "geocode": 50.702,
+        "intf": 4.386,
+        "resamp_py": 6.211,
+        "xcorr_py": 37.307
+      },
+      "profile_total_sec": 173.497,
+      "failures": []
+    },
+    "RS2_SLC_Hawaii": {
+      "csh_sec": 195.0,
+      "py_sec": 96.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 39.824,
+        "geocode": 12.753,
+        "intf": 4.773,
+        "pre_proc": 1.084,
+        "resamp_py": 4.074,
+        "xcorr_py": 22.735
+      },
+      "profile_total_sec": 95.882,
+      "failures": []
+    },
+    "S1A_SLC_TOPS_COVE": {
+      "csh_sec": 5507.0,
+      "py_sec": 6035.0,
+      "score": {
+        "success": 10,
+        "fail": 0,
+        "comparisons": 10
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 4473.418,
+        "intf": 68.281,
+        "merge_unwrap_geocode_tops": 470.268,
+        "pre_proc": 507.498
+      },
+      "profile_total_sec": 8486.487,
+      "failures": []
+    },
+    "S1A_SLC_TOPS_Greece": {
+      "csh_sec": 3028.0,
+      "py_sec": 3069.0,
+      "score": {
+        "success": 10,
+        "fail": 0,
+        "comparisons": 10
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 5971.1,
+        "intf": 67.93,
+        "merge_unwrap_geocode_tops": 423.73,
+        "pre_proc": 585.486
+      },
+      "profile_total_sec": 5746.64,
+      "failures": []
+    },
+    "S1A_SLC_TOPS_LA": {
+      "csh_sec": 6722.0,
+      "py_sec": 6408.0,
+      "score": {
+        "success": 10,
+        "fail": 0,
+        "comparisons": 10
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 4774.82,
+        "intf": 76.514,
+        "merge_unwrap_geocode_tops": 506.185,
+        "pre_proc": 537.858
+      },
+      "profile_total_sec": 8844.823,
+      "failures": []
+    },
+    "S1_Larsen_C": {
+      "csh_sec": 5013.0,
+      "py_sec": 5078.0,
+      "score": {
+        "success": 10,
+        "fail": 0,
+        "comparisons": 10
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 3623.197,
+        "intf": 68.466,
+        "merge_unwrap_geocode_tops": 291.461,
+        "pre_proc": 602.977
+      },
+      "profile_total_sec": 7139.782,
+      "failures": []
+    },
+    "S1_Ridgecrest_EQ": {
+      "csh_sec": 9385.0,
+      "py_sec": 8139.0,
+      "score": {
+        "success": 11,
+        "fail": 5,
+        "comparisons": 16
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 3681.111,
+        "intf": 70.429,
+        "merge_unwrap_geocode_tops": 502.187,
+        "pre_proc": 553.227
+      },
+      "profile_total_sec": 3915.199,
+      "failures": [
+        {
+          "file": "corr_ll.png",
+          "status": "FAIL",
+          "metric": 0.6428048179493457,
+          "threshold": 0.9,
+          "metric_name": "ssim"
+        },
+        {
+          "file": "display_amp_ll.png",
+          "status": "FAIL",
+          "metric": 0.5368244297838428,
+          "threshold": 0.9,
+          "metric_name": "ssim"
+        },
+        {
+          "file": "phasefilt_mask_ll.png",
+          "status": "FAIL",
+          "metric": 0.7884889853776795,
+          "threshold": 0.9,
+          "metric_name": "ssim"
+        },
+        {
+          "file": "corr_ll.grd",
+          "status": "FAIL",
+          "metric": 0.02515406906604767,
+          "threshold": 0.01,
+          "metric_name": "rms"
+        },
+        {
+          "file": "phasefilt.grd",
+          "status": "FAIL",
+          "metric": 0.3516296148300171,
+          "threshold": 0.15,
+          "metric_name": "complex-rms"
+        }
+      ]
+    },
+    "TSX_SLC_Hawaii": {
+      "csh_sec": 852.0,
+      "py_sec": 647.0,
+      "score": {
+        "success": 6,
+        "fail": 0,
+        "comparisons": 6
+      },
+      "has_profile": true,
+      "binaries": {
+        "dem2topo_ra": 340.701,
+        "geocode": 58.463,
+        "intf": 38.542,
+        "pre_proc": 18.605,
+        "resamp_py": 82.734,
+        "xcorr_py": 27.489
+      },
+      "profile_total_sec": 647.407,
+      "failures": []
+    }
+  }
+}

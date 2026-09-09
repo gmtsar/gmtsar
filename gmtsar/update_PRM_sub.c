@@ -566,7 +566,7 @@ int setvalue(struct PRM *prm, char *name, char *value) {
 
 	for (n = 0; n <= LOOKUPTABLE_SIZE; n++) {
 		if (m_strcmp(lookuptable[n].name, name) == 0 || m_strcmp(lookuptable[n].alias, name) == 0) {
-			valuetype.name = malloc(sizeof(char) * strlen(lookuptable[n].name));
+			valuetype.name = malloc(sizeof(char) * strlen(lookuptable[n].name)+1);
 			strcpy(valuetype.name, lookuptable[n].name);
 			valuetype.etype = lookuptable[n].etype;
 			valuetype.offset = lookuptable[n].offset;

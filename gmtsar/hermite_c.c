@@ -49,7 +49,7 @@ void hermite_c(double *x, double *y, double *z, int nmax, int nval, double xp, d
 
 	/* reduced index by 1 */
 	if (xp < x[0] || xp > x[nmax - 1]) {
-		fprintf(stderr, "interpolation point outside of data constraints, %f %f %f\n", xp, x[0], x[nmax - 1]);
+		fprintf(stderr, "[ERROR]:hermite interpolation point outside of data constraints, %f %f %f\n", xp, x[0], x[nmax - 1]);
 		*ir = 2;
 		exit(1);
 	}
@@ -71,7 +71,8 @@ void hermite_c(double *x, double *y, double *z, int nmax, int nval, double xp, d
 
 	/* reduced index by 1 */
 	if (i0 + n > nmax) {
-		fprintf(stderr, "hermite: interpolation not in center interval\n");
+		fprintf(stderr, "[ERROR]:hermite interpolation not in center interval\n");
+		fprintf(stderr, "Check the orbit LED file.\n");
 		i0 = nmax - n - 1;
 		*ir = 0;
 	}
@@ -92,7 +93,7 @@ void hermite_c(double *x, double *y, double *z, int nmax, int nval, double xp, d
 
 		*yp = *yp + (y[i + i0] * f0 + z[i + i0] * f1) * hj * hj;
 		if (isnan(*yp) != 0) {
-			fprintf(stderr, "nan!\n");
+			fprintf(stderr, "[ERROR]:hermite interpolation contains nan!\n");
 			exit(1);
 		}
 	}

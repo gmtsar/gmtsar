@@ -594,74 +594,74 @@ int main(int argc, char *argv[]) {
 
 	/* usage note */
 
-	printf("\n*** asa_cat v1.3 by Dochul Yang and Vikas Gudipati***\n\n");
+	fprintf(stderr, "\n*** asa_cat v1.3 by Dochul Yang and Vikas Gudipati***\n\n");
 
 	if ((argc - 1) < 3) {
-		printf("Concatenates Envisat ASAR Image Mode / Wide Swath Mode Level 0 "
+		fprintf(stderr, "Concatenates Envisat ASAR Image Mode / Wide Swath Mode Level 0 "
 		       "data.\n\n");
-		printf("Usage: asa_cat <NumFiles2Cat> <asa_file1> <asa_file2> <...>  "
+		fprintf(stderr, "Usage: asa_cat <NumFiles2Cat> <asa_file1> <asa_file2> <...>  "
 		       "<out_file> [catAbort]\n\n");
-		printf("       NumFiles2Cat Number of files to be concatenated (positive "
+		fprintf(stderr, "       NumFiles2Cat Number of files to be concatenated (positive "
 		       "integer, Max: 100) \n");
-		printf("       asa_file1    First file to be merged (along track)\n");
-		printf("       asa_file2    Second file to be merged (along track)\n");
-		printf("       ...          Rest of files to be merged (along track)\n");
-		printf("       out_file     output data file\n");
-		printf("       [catAbort]   Flag to discontinue concatenation if "
+		fprintf(stderr, "       asa_file1    First file to be merged (along track)\n");
+		fprintf(stderr, "       asa_file2    Second file to be merged (along track)\n");
+		fprintf(stderr, "       ...          Rest of files to be merged (along track)\n");
+		fprintf(stderr, "       out_file     output data file\n");
+		fprintf(stderr, "       [catAbort]   Flag to discontinue concatenation if "
 		       "non-overlaping frames are found. (0: Discontinue, 1: Continue, "
 		       "Default: 0)\n");
-		printf("Notes:\n\n");
+		fprintf(stderr, "Notes:\n\n");
 		return 0;
 	}
 
 	sscanf(argv[1], "%d", &numFiles);
-	printf("\nNumber of input files: %d\n", numFiles);
+	fprintf(stderr, "\nNumber of input files: %d\n", numFiles);
 
 	if (numFiles < 1) {
-		printf("ERROR: Number of files to concatenate is less than one(1). Look at "
+		fprintf(stderr, "ERROR: Number of files to concatenate is less than one(1). Look at "
 		       "command usage.\n\n");
 		exit(-1);
 	}
 	if (numFiles > 100) {
-		printf("ERROR: Maximum number of files allowed for concatenation exceeded. "
+		fprintf(stderr, "ERROR: Maximum number of files allowed for concatenation exceeded. "
 		       "Max: 100. Look at command usage.\n\n");
 		exit(-1);
 	}
 
 	if ((argc - 3) < numFiles) {
-		printf("\nERROR: File names missing in input list. %s\n", argv[1]);
-		printf("\nNumber of files to be concatenated. %s\n", argv[1]);
-		printf("\nNumber of input file names provided. %d\n", (argc - 3));
+		fprintf(stderr, "\nERROR: File names missing in input list. %s\n", argv[1]);
+		fprintf(stderr, "\nNumber of files to be concatenated. %s\n", argv[1]);
+		fprintf(stderr, "\nNumber of input file names provided. %d\n", (argc - 3));
 		exit(-1);
 	}
 
 	for (ii = 0; ii < numFiles; ii++) {
-		printf("Input file %d : %s\n", ii + 1, argv[ii + 2]);
+		fprintf(stderr, "Input file %d : %s\n", ii + 1, argv[ii + 2]);
 	}
 
 	sscanf(argv[numFiles + 2], "%s", outFileName);
-	printf("Output file: %s\n\n", outFileName);
+	fprintf(stderr, "Output file: %s\n\n", outFileName);
 
 	if (argc > (numFiles + 3)) {
 		sscanf(argv[numFiles + 3], "%d", &catAbortFlag);
 	}
 	if (catAbortFlag == 0) {
-		printf("catAbortFlag: %d. Files will NOT be concatenated if they don't "
+		fprintf(stderr, "catAbortFlag: %d. Files will NOT be concatenated if they don't "
 		       "overlap.\n",
 		       catAbortFlag);
 	}
 	else if (catAbortFlag == 1) {
-		printf("catAbortFlag: %d. Files will be concatenated even if they don't "
+		fprintf(stderr, "catAbortFlag: %d. Files will be concatenated even if they don't "
 		       "overlap.\n",
 		       catAbortFlag);
 	}
 
 	if (is_bigendian()) {
-		printf("It is running under Unix or Mac...\n");
+		fprintf(stderr, "It is running under Unix or Mac...\n");
 		is_littlendian = 0;
 	}
 	else {
-		printf("It is running under Linux or Windows...\n");
+		fprintf(stderr, "It is running under Linux or Windows...\n");
 		is_littlendian = 1;
 	}
 
@@ -673,28 +673,28 @@ int main(int argc, char *argv[]) {
 		/* open image file */
 
 		sscanf(argv[ii + 2], "%s", imFileName);
-		printf("\nOpening file: %s\n", imFileName);
+		fprintf(stderr, "\nOpening file: %s\n", imFileName);
 
 		imFilePtr = fopen(imFileName, "rb");
 		if (imFilePtr == NULL) {
-			printf("*** ERROR - cannot open file: %s\n", imFileName);
-			printf("\n");
+			fprintf(stderr, "*** ERROR - cannot open file: %s\n", imFileName);
+			fprintf(stderr, "\n");
 			exit(-1);
 		}
 
 		/* read image MPH */
 
-		printf("Reading MPH...\n");
+		fprintf(stderr, "Reading MPH...\n");
 
 		mphPtr = (char *)malloc(sizeof(char) * mphSize);
 
 		if (mphPtr == NULL) {
-			printf("ERROR - mph allocation memory\n");
+			fprintf(stderr, "ERROR - mph allocation memory\n");
 			exit(-1);
 		}
 
 		if ((fread(mphPtr, sizeof(char), mphSize, imFilePtr)) != mphSize) {
-			printf("ERROR - mph read error\n\n");
+			fprintf(stderr, "ERROR - mph read error\n\n");
 			exit(-1);
 		}
 
@@ -731,7 +731,7 @@ int main(int argc, char *argv[]) {
 
 	//   for (i=0; i< numFiles; i++){printf("\n%d : %f", i, MJD[i]);}
 
-	printf("\nSorting files in ascending order of their sensing start times ...\n");
+	fprintf(stderr, "\nSorting files in ascending order of their sensing start times ...\n");
 	bubbleSort(MJD, numFiles);
 
 	//   for (i=0; i< numFiles; i++){printf("\n%d : %f", i, MJD[i]);}
@@ -744,7 +744,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
-	printf("File order after sorting:");
+	fprintf(stderr, "File order after sorting:");
 	for (i = 0; i < numFiles; i++) {
 		printf(" %d", file_order[i] + 1);
 	}
@@ -754,7 +754,7 @@ int main(int argc, char *argv[]) {
 
 	outFilePtr = fopen(outFileName, "wb");
 	if (outFilePtr == NULL) {
-		printf("*** ERROR - cannot open file: %s\n", outFileName);
+		fprintf(stderr, "*** ERROR - cannot open file: %s\n", outFileName);
 		printf("\n");
 		exit(-1);
 	}
@@ -771,28 +771,28 @@ int main(int argc, char *argv[]) {
 
 		/* open image file */
 		sscanf(argv[file_order[ii] + 2], "%s", imFileName);
-		printf("\nInput file: %d\n", file_order[ii] + 1);
+		fprintf(stderr, "\nInput file: %d\n", file_order[ii] + 1);
 
 		imFilePtr = fopen(imFileName, "rb");
 		if (imFilePtr == NULL) {
-			printf("*** ERROR - cannot open file: %s\n", imFileName);
-			printf("\n");
+			fprintf(stderr, "*** ERROR - cannot open file: %s\n", imFileName);
+			fprintf(stderr, "\n");
 			exit(-1);
 		}
 
 		/* read image MPH */
 
-		printf("Reading MPH...\n");
+		fprintf(stderr, "Reading MPH...\n");
 
 		mphPtr = (char *)malloc(sizeof(char) * mphSize);
 
 		if (mphPtr == NULL) {
-			printf("ERROR - mph allocation memory\n");
+			fprintf(stderr, "ERROR - mph allocation memory\n");
 			exit(-1);
 		}
 
 		if ((fread(mphPtr, sizeof(char), mphSize, imFilePtr)) != mphSize) {
-			printf("ERROR - mph read error\n\n");
+			fprintf(stderr, "ERROR - mph read error\n\n");
 			exit(-1);
 		}
 
@@ -800,17 +800,17 @@ int main(int argc, char *argv[]) {
 
 		/* read image SPH */
 
-		printf("Reading SPH...\n");
+		fprintf(stderr, "Reading SPH...\n");
 
 		sphPtr = (char *)malloc(sizeof(char) * mph.sphSize);
 
 		if (sphPtr == NULL) {
-			printf("ERROR - sph allocation memory\n");
+			fprintf(stderr, "ERROR - sph allocation memory\n");
 			exit(-1);
 		}
 
 		if ((fread(sphPtr, sizeof(char), mph.sphSize, imFilePtr)) != mph.sphSize) {
-			printf("ERROR - sph read error\n\n");
+			fprintf(stderr, "ERROR - sph read error\n\n");
 			exit(-1);
 		}
 
@@ -822,28 +822,28 @@ int main(int argc, char *argv[]) {
 			/* Write MPH of output frame file */
 			mphPtr2 = (char *)malloc(sizeof(char) * mphSize);
 			if (mphPtr2 == NULL) {
-				printf("ERROR - mph allocation memory\n");
+				fprintf(stderr, "ERROR - mph allocation memory\n");
 				exit(-1);
 			}
 			memcpy(mphPtr2, mphPtr, mphSize);
 
-			printf("\nInitializing MPH of output file...\n");
+			fprintf(stderr, "\nInitializing MPH of output file...\n");
 			if ((fwrite(mphPtr2, sizeof(char), mphSize, outFilePtr)) != mphSize) {
-				printf(" ERROR - outFile write error\n\n");
+				fprintf(stderr, " ERROR - outFile write error\n\n");
 				exit(-1);
 			}
 
 			/* Write SPH of output frame file */
 			sphPtr2 = (char *)malloc(sizeof(char) * mph.sphSize);
 			if (sphPtr2 == NULL) {
-				printf("ERROR - sph allocation memory\n");
+				fprintf(stderr, "ERROR - sph allocation memory\n");
 				exit(-1);
 			}
 			memcpy(sphPtr2, sphPtr, mph.sphSize);
 
-			printf("Initializing SPH of output file...\n\n");
+			fprintf(stderr, "Initializing SPH of output file...\n\n");
 			if ((fwrite(sphPtr2, sizeof(char), mph.sphSize, outFilePtr)) != mph.sphSize) {
-				printf(" ERROR - outFile write error\n\n");
+				fprintf(stderr, " ERROR - outFile write error\n\n");
 				exit(-1);
 			}
 
@@ -892,13 +892,13 @@ int main(int argc, char *argv[]) {
 		}
 		/* read image MDSR from file */
 
-		printf("Reading and Writing MDSR...\n");
-		printf("Number of lines in frame %d: %d\n", ii + 1, sph.dsd[0].numDsr);
+		fprintf(stderr, "Reading and Writing MDSR...\n");
+		fprintf(stderr, "Number of lines in frame %d: %d\n", ii + 1, sph.dsd[0].numDsr);
 
 		for (i = 0; i < sph.dsd[0].numDsr; i++) {
 
 			if ((i) % 2000 == 0)
-				printf("Line %6d of input file %d.  Output Line: %8d\n", i + 1, ii + 1, outLines + 1);
+				fprintf(stderr, "Line %6d of input file %d.  Output Line: %8d\n", i + 1, ii + 1, outLines + 1);
 
 			/* sensing time added by Level 0 processor, as converted from Satellite
 			 * Binary Time (SBT) counter embedded in each ISP */
@@ -965,7 +965,7 @@ int main(int argc, char *argv[]) {
 			}
 
 			if (((i) == 24890) || ((i) == 24891))
-				printf("Line %6d of input file %d.  Output Line: %8d    "
+				fprintf(stderr, "Line %6d of input file %d.  Output Line: %8d    "
 				       "modePacketCount: %d\n",
 				       i + 1, ii + 1, outLines + 1, modePacketCount);
 			if ((modePacketCount == modePacketCountOld + 1) || (firstTimeEqualsZero == 0)) {
@@ -976,63 +976,63 @@ int main(int argc, char *argv[]) {
 				bytesRead = bytesRead + (mdsrILen + 1 - 30) * fread(&mdsrLineChar, (mdsrILen + 1 - 30), 1, imFilePtr);
 
 				if ((fwrite(&mdsrDsrTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrIspLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrCrcErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrRsErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrSpare1, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketIdentification, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketSequenceControl, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketDataHeader, 30, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrLineChar, (mdsrILen + 1 - 30), 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 
@@ -1045,63 +1045,63 @@ int main(int argc, char *argv[]) {
 				bytesRead = bytesRead + (mdsrILen + 1 - 30) * fread(&mdsrLineChar, (mdsrILen + 1 - 30), 1, imFilePtr);
 
 				if ((fwrite(&mdsrDsrTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrIspLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrCrcErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrRsErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrSpare1, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketIdentification, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketSequenceControl, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketDataHeader, 30, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrLineChar, (mdsrILen + 1 - 30), 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 
@@ -1114,13 +1114,13 @@ int main(int argc, char *argv[]) {
 				bytesRead = bytesRead + mdsrILen + 1 - 30;
 			}
 			else if ((modePacketCount > modePacketCountOld + 1) && (oldFrameID != FrameID) && (catAbortFlag == 1)) {
-				printf("\nWARNING: No overlap between frames %d and %d.  Continuing "
+				fprintf(stderr, "\nWARNING: No overlap between frames %d and %d.  Continuing "
 				       "concatenation with with missing lines.\n",
 				       modePacketCount, modePacketCountOld + 1);
-				printf("At output Line %5d : Mode packet count at successive frame "
+				fprintf(stderr, "At output Line %5d : Mode packet count at successive frame "
 				       "edges - %d %d\n\n",
 				       outLines + 1, modePacketCountOld, modePacketCount);
-				printf("Number of missing lines: %d \n", modePacketCount - (modePacketCountOld + 1));
+				fprintf(stderr, "Number of missing lines: %d \n", modePacketCount - (modePacketCountOld + 1));
 				nmsl = modePacketCount - (modePacketCountOld + 1);
 				oldFrameID = FrameID;
 				newt = ((double)newmdsrDsrTimeSeconds + newmdsrDsrTimeMicroseconds * 1e-06);
@@ -1195,63 +1195,63 @@ int main(int argc, char *argv[]) {
 					}
 
 					if ((fwrite(&tempmdsrDsrTimeDays, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrDsrTimeSeconds, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrDsrTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrGsrtTimeDays, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrGsrtTimeSeconds, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrGsrtTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrIspLength, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&mdsrCrcErrs, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&mdsrRsErrs, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&mdsrSpare1, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&mdsrPacketIdentification, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&mdsrPacketSequenceControl, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrPacketLength, 2, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrPacketDataHeader, 30, 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 					if ((fwrite(&tempmdsrLineChar, (tempmdsrILen + 1 - 30), 1, outFilePtr)) != 1) {
-						printf("ERROR - outFile write error\n\n");
+						fprintf(stderr, "ERROR - outFile write error\n\n");
 						exit(-1);
 					}
 
@@ -1267,72 +1267,72 @@ int main(int argc, char *argv[]) {
 				bytesRead = bytesRead + (mdsrILen + 1 - 30) * fread(&mdsrLineChar, (mdsrILen + 1 - 30), 1, imFilePtr);
 
 				if ((fwrite(&mdsrDsrTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrDsrTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeDays, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeSeconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrGsrtTimeMicroseconds, 4, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrIspLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrCrcErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrRsErrs, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrSpare1, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketIdentification, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketSequenceControl, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketLength, 2, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrPacketDataHeader, 30, 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				if ((fwrite(&mdsrLineChar, (mdsrILen + 1 - 30), 1, outFilePtr)) != 1) {
-					printf("ERROR - outFile write error\n\n");
+					fprintf(stderr, "ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 
 				bytesToBeWritten = bytesToBeWritten + 68 + (mdsrILen + 1 - 30);
 			}
 			else if ((modePacketCount > modePacketCountOld + 1) && (oldFrameID != FrameID) && (catAbortFlag == 0)) {
-				printf("\nWARNING: No overlap between frames. Aborting further "
+				fprintf(stderr, "\nWARNING: No overlap between frames. Aborting further "
 				       "concatenation.\n");
-				printf("At output Line %5d : Mode packet count at successive frame "
+				fprintf(stderr, "At output Line %5d : Mode packet count at successive frame "
 				       "edges - %d %d\n\n",
 				       outLines + 1, modePacketCountOld, modePacketCount);
 
@@ -1399,15 +1399,15 @@ int main(int argc, char *argv[]) {
 				/* writing update MPH and SPH in outfile */
 				fseek(outFilePtr, 0.0, SEEK_SET); /* go back to start of the file */
 
-				printf("Writing updated MPH of output file...\n");
+				fprintf(stderr, "Writing updated MPH of output file...\n");
 				if ((fwrite(mphPtr2, sizeof(char), mphSize, outFilePtr)) != mphSize) {
-					printf(" ERROR - outFile write error\n\n");
+					fprintf(stderr, " ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 
-				printf("Writing updated SPH of output file...\n");
+				fprintf(stderr, "Writing updated SPH of output file...\n");
 				if ((fwrite(sphPtr2, sizeof(char), mph.sphSize, outFilePtr)) != mph.sphSize) {
-					printf(" ERROR - outFile write error\n\n");
+					fprintf(stderr, " ERROR - outFile write error\n\n");
 					exit(-1);
 				}
 				free(mphPtr2);
@@ -1476,8 +1476,8 @@ int main(int argc, char *argv[]) {
 
 	} /* end of for ii, input files*/
 
-	printf("\nNumber of duplicate lines found between overlapping frames: %8d\n", duplicateLines);
-	printf("\nTotal number of lines in output files:  %8d\n", outLines);
+	fprintf(stderr, "\nNumber of duplicate lines found between overlapping frames: %8d\n", duplicateLines);
+	fprintf(stderr, "\nTotal number of lines in output files:  %8d\n", outLines);
 
 	/* updating the sensing stop time in MPH */
 	memcpy(mphPtr2 + 380 + 14, ssensingStopTime, 27);
@@ -1506,15 +1506,15 @@ int main(int argc, char *argv[]) {
 	/* writing update MPH and SPH in outfile */
 	fseek(outFilePtr, 0.0, SEEK_SET); /* go back to start of the file */
 
-	printf("\nWriting updated MPH of output file...\n");
+	fprintf(stderr, "\nWriting updated MPH of output file...\n");
 	if ((fwrite(mphPtr2, sizeof(char), mphSize, outFilePtr)) != mphSize) {
-		printf(" ERROR - outFile write error\n\n");
+		fprintf(stderr, " ERROR - outFile write error\n\n");
 		exit(-1);
 	}
 
-	printf("Writing updated SPH of output file...\n");
+	fprintf(stderr, "Writing updated SPH of output file...\n");
 	if ((fwrite(sphPtr2, sizeof(char), mph.sphSize, outFilePtr)) != mph.sphSize) {
-		printf(" ERROR - outFile write error\n\n");
+		fprintf(stderr, " ERROR - outFile write error\n\n");
 		exit(-1);
 	}
 
@@ -1522,7 +1522,7 @@ int main(int argc, char *argv[]) {
 	free(sphPtr2);
 	fclose(outFilePtr);
 
-	printf("\nDone.\n\n");
+	fprintf(stderr, "\nDone.\n\n");
 	return 0;
 
 } /* end main */
@@ -1534,7 +1534,7 @@ struct mphStruct readMph(const char *mphPtr, const int printMphIfZero) {
 	struct mphStruct mph;
 
 	if (1 == 0) {
-		printf("check:\n%s\n", mphPtr + 1247);
+		fprintf(stderr, "check:\n%s\n", mphPtr + 1247);
 	}
 
 	memcpy(mph.product, mphPtr + 0 + 9, 62);

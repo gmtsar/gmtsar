@@ -1,4 +1,4 @@
-#!/bin/tcsh -f
+#!/bin/csh -f
 #       $Id$
 # Script to drive the xcorr to do the azimuthal pixel-tracking
 # Originated by Matt Wei, April 19, 2010
@@ -37,8 +37,10 @@ set do_xcorr = $7
 cd intf/*/
 mkdir azi_offset
 cd azi_offset
-cp ../../../raw/$1 .
-cp ../../../raw/$2 .
+#cp ../../../raw/$1 .
+#cp ../../../raw/$2 .
+cp ../../../SLC/$1 .
+cp ../../../SLC/$2 .
 #
 ln -s ../../../SLC/*.SLC .
 ln -s ../../../topo/trans.dat

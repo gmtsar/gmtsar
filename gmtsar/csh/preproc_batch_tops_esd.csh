@@ -24,7 +24,7 @@
     echo "    s1a-iw1-slc-vv-20150715...001:s1a-iw1-slc-vv-20150715...001:s1a-iw1-slc-vv-20150715...001:S1A_OPER_AUX_POEORB_V20150625_20150627.EOF"
     echo ""
     echo "  outputs:"
-    echo "    baseline.ps align_table.ra (contains info for precise geomatric alignment)"
+    echo "    baseline.ps (mode 1)"
     echo "    *.PRM *.LED *.SLC(mode 2)"
     echo ""
     echo "  esd_mode:"
@@ -223,8 +223,9 @@
             set res_shift = `sort -n tmp2 | awk ' { a[i++]=$1; } END { print a[int(i/2)]; }' | awk '{print $1/2.0/3.141592653/'$spec_sep'}'`
             echo "Updating azimuth shift with mapping the residual da ...(mapping $res_shift)"
             awk '{print $1,$2,$3}' < ddphase > test
-    
-            gmt blockmedian test -R0/$rmax/0/$amax -I400/100 | gmt greenspline -Gtest.grd -R0/$rmax/0/$amax -I400/100 -D1 -Cn900 -r -V
+            set rmax2 = `echo $rmax | awk '{print $1+1000}'`
+            set amax2 = `echo $amax | awk '{print $1+1000}'`
+            gmt blockmedian test -R-1000/$rmax2/-1000/$amax2 -I400/100 | gmt greenspline -Gtest.grd -R-1000/$rmax2/-1000/$amax2 -I400/100 -D1 -Cn900 -r -V
             gmt grdfilter test.grd -D0 -Fg8000/1500 -Gtest2.grd -V
             gmt grdsample test2.grd -Gtest_b.grd -Ra.grd -nc 
 
@@ -329,6 +330,8 @@
     awk '{print $1,$2}' < text > text2
     gmt psxy text2 -Sp0.2c -G0 -R -JX -Ba0.5:"year":/a50g00f25:"baseline (m)":WSen -O >> baseline.ps
     rm text text2 table.gmt
+    gmt psconvert baseline.ps -Tf -A
+    rm baseline.ps
   endif
 
   # clean up a little bit

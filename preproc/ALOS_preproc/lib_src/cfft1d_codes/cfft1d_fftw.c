@@ -35,7 +35,7 @@ fftwf_complex *c;
 		}
 		pf = fftwf_plan_dft_1d(n, c, c, -1, FFTW_MEASURE);
 		pi = fftwf_plan_dft_1d(n, c, c, 1, FFTW_MEASURE);
-		printf(" reset plan \n");
+		fprintf(stderr, " reset plan \n");
 		nold = n;
 	}
 

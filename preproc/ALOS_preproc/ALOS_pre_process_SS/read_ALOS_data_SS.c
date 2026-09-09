@@ -241,7 +241,7 @@ int64_t read_ALOS_data_SS(FILE *imagefile, FILE *outfile, struct PRM *prm, int64
 			kburst++;
 
 			if (sdr.sequence_number != n)
-				printf(" missing line: n, seq# %d %d \n", n, sdr.sequence_number);
+				fprintf(stderr, " missing line: n, seq# %d %d \n", n, sdr.sequence_number);
 
 			/* check for changes in record_length and PRF */
 			record_length1 = sdr.record_length - line_prefix_size;
@@ -452,12 +452,12 @@ int check_shift(struct PRM *prm, int *shift, int *ishift, int *shift0, int recor
 	*ishift = abs(*shift);
 
 	if (*ishift > record_length1) {
-		printf(" end: shift exceeds data window %d \n", *shift);
+		fprintf(stderr, " end: shift exceeds data window %d \n", *shift);
 		die("exitting", "");
 	}
 
 	if (*shift != *shift0) {
-		printf(" near_range, shift = %d %d \n", sdr.slant_range, *shift);
+		fprintf(stderr, " near_range, shift = %d %d \n", sdr.slant_range, *shift);
 		*shift0 = *shift;
 	}
 
@@ -515,8 +515,8 @@ int handle_prf_change(struct PRM *prm, FILE *imagefile, int64_t *byte_offset, in
 	*byte_offset = ftell(imagefile);
 
 	/* tell the world */
-	printf(" *** PRF changed from %lf to  %lf  at line %d (byte %ld)\n", (0.001 * prm->prf), (0.001 * sdr.PRF), n, *byte_offset);
-	printf(" end: PRF changed from %lf to  %lf  at line %d \n", (0.001 * prm->prf), (0.001 * sdr.PRF), n);
+	fprintf(stderr, " *** PRF changed from %lf to  %lf  at line %d (byte %ld)\n", (0.001 * prm->prf), (0.001 * sdr.PRF), n, *byte_offset);
+	fprintf(stderr, " end: PRF changed from %lf to  %lf  at line %d \n", (0.001 * prm->prf), (0.001 * sdr.PRF), n);
 
 	return (EXIT_SUCCESS);
 }

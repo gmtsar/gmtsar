@@ -201,25 +201,25 @@ int dump_data(EPR_ELogLevel log_level, const char *infile, FILE *outstream, int 
 
 	/* check if number of records indeed equals the number of lines */
 	if (numberoflines != numlines) {
-		printf("numlines not equal in check, ASAR format error?.");
+		fprintf(stderr, "numlines not equal in check, ASAR format error?.");
 		return 1;
 	}
 
 	/* --- Check if input as acceptable ---------------------------- */
 	if (l0 < 1) {
-		printf("l0<1 not allowed.  first line is 1 not 0.\n");
+		fprintf(stderr, "l0<1 not allowed.  first line is 1 not 0.\n");
 		return 1;
 	}
 	if (p0 < 1) {
-		printf("p0<1 not allowed.  first line is 1 not 0.\n");
+		fprintf(stderr, "p0<1 not allowed.  first line is 1 not 0.\n");
 		return 1;
 	}
 	if (lN > numlines) {
-		printf("lN>numlines not allowed.\n");
+		fprintf(stderr, "lN>numlines not allowed.\n");
 		return 1;
 	}
 	if (pN > numpixels) {
-		printf("pN>numpixels not allowed.\n");
+		fprintf(stderr, "pN>numpixels not allowed.\n");
 		return 1;
 	}
 
@@ -422,8 +422,8 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	/*status = epr_init_api(e_log_debug, epr_log_message, epr_log_message);*/
 	status = epr_init_api(log_level, epr_log_message, NULL);
 	if (status != 0) {
-		printf("read_header: fatal error in epr_init_api\n");
-		printf("exiting.\n");
+		fprintf(stderr, "read_header: fatal error in epr_init_api\n");
+		fprintf(stderr, "exiting.\n");
 		return 1;
 	};
 
@@ -431,15 +431,15 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	/* PRODUCT dataset record field element */
 
 	if (log_level == e_log_debug) {
-		printf("\nOpening product.\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nOpening product.\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	product_id = epr_open_product(infile);
 	err_code = epr_get_last_err_code();
 	if (err_code != e_err_none) {
-		printf("read_header: fatal error in epr_open_product\n");
-		printf("exiting.\n");
+		fprintf(stderr, "read_header: fatal error in epr_open_product\n");
+		fprintf(stderr, "exiting.\n");
 		return 1;
 	}
 
@@ -447,8 +447,8 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	/* product DATASET record field element */
 	/* --- MAIN PRODUCT HEADER ---------------------------------------- */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: MPH\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: MPH\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 	mph = epr_get_mph(product_id);
 	err_code = epr_get_last_err_code();
@@ -457,16 +457,16 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 			epr_print_record(mph, stdout);
 	}
 	else {
-		printf("read_header: likely fatal error in epr_get_mph\n");
+		fprintf(stderr, "read_header: likely fatal error in epr_get_mph\n");
 		epr_clear_err();
-		printf("exiting.\n");
+		fprintf(stderr, "exiting.\n");
 		return 1;
 	}
 
 	/* --- SECOND PRODUCT HEADER -------------------------------------- */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: SPH\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: SPH\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 	sph = epr_get_sph(product_id);
 	err_code = epr_get_last_err_code();
@@ -475,9 +475,9 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 			epr_print_record(sph, stdout);
 	}
 	else {
-		printf("read_header: likely fatal error in epr_get_sph\n");
+		fprintf(stderr, "read_header: likely fatal error in epr_get_sph\n");
 		epr_clear_err();
-		printf("exiting.\n");
+		fprintf(stderr, "exiting.\n");
 		return 1;
 	}
 
@@ -486,8 +486,8 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 
 	/* --- MDS1_SQ_ADS ------------------------------------------------ */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: MDS1_SQ_ADS\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: MDS1_SQ_ADS\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	MDS1_SQ_ADS = epr_get_dataset_id(product_id, "MDS1_SQ_ADS");
@@ -500,21 +500,21 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 				epr_print_record(rec0, stdout);
 		}
 		else {
-			printf("read_header: non-fatal error in epr_read_record MDS1_SQ_ADS\n");
-			printf("could not read this record.  may not be a problem.\n");
+			fprintf(stderr, "read_header: non-fatal error in epr_read_record MDS1_SQ_ADS\n");
+			fprintf(stderr, "could not read this record.  may not be a problem.\n");
 			epr_clear_err();
 		}
 	}
 	else {
-		printf("read_header: error in epr_get_dataset_id MDS1_SQ_ADS\n");
-		printf("could not read this record.  may not be a problem.\n");
+		fprintf(stderr, "read_header: error in epr_get_dataset_id MDS1_SQ_ADS\n");
+		fprintf(stderr, "could not read this record.  may not be a problem.\n");
 		epr_clear_err();
 	}
 
 	/* --- MAIN_PROC_PM_ID -------------------------------------------- */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: MAIN_PROCESSING_PARAMS_ADS\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: MAIN_PROCESSING_PARAMS_ADS\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	MAIN_PROC_PM_ID = epr_get_dataset_id(product_id, "MAIN_PROCESSING_PARAMS_ADS");
@@ -527,22 +527,22 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 				epr_print_record(rec1, stdout);
 		}
 		else {
-			printf("read_header: error in epr_read_record MAIN_PROCESSING_PARAMS_ADS\n");
-			printf("could not read this record.  may not be a problem.\n");
+			fprintf(stderr, "read_header: error in epr_read_record MAIN_PROCESSING_PARAMS_ADS\n");
+			fprintf(stderr, "could not read this record.  may not be a problem.\n");
 			epr_clear_err();
 		}
 	}
 	else {
-		printf("read_header: error in epr_get_dataset_id "
+		fprintf(stderr, "read_header: error in epr_get_dataset_id "
 		       "MAIN_PROCESSING_PARAMS_ADS\n");
-		printf("could not read this record.  may not be a problem.\n");
+		fprintf(stderr, "could not read this record.  may not be a problem.\n");
 		epr_clear_err();
 	}
 
 	/* --- DOP_CENTROID_COEFFS_ADS ------------------------------------ */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: DOP_CENTROID_COEFFS_ADS\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: DOP_CENTROID_COEFFS_ADS\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	DOP_CENTROID_COEFFS_ADS = epr_get_dataset_id(product_id, "DOP_CENTROID_COEFFS_ADS");
@@ -555,21 +555,21 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 				epr_print_record(rec2, stdout);
 		}
 		else {
-			printf("read_header: error in epr_read_record DOP_CENTROID_COEFFS_ADS\n");
-			printf("could not read this record.  may not be a problem.\n");
+			fprintf(stderr, "read_header: error in epr_read_record DOP_CENTROID_COEFFS_ADS\n");
+			fprintf(stderr, "could not read this record.  may not be a problem.\n");
 			epr_clear_err();
 		}
 	}
 	else {
-		printf("read_header: error in epr_get_dataset_id DOP_CENTROID_COEFFS_ADS\n");
-		printf("could not read this record.  may not be a problem.\n");
+		fprintf(stderr, "read_header: error in epr_get_dataset_id DOP_CENTROID_COEFFS_ADS\n");
+		fprintf(stderr, "could not read this record.  may not be a problem.\n");
 		epr_clear_err();
 	}
 
 	/* --- CHIRP_PARAMS_ADS ------------------------------------------- */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: CHIRP_PARAMS_ADS\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: CHIRP_PARAMS_ADS\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	/* it seems ESRIN does not include this.  For now do not read it at all
@@ -585,21 +585,21 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 				epr_print_record(rec3, stdout);
 		}
 		else {
-			printf("read_header: error in epr_read_record CHIRP_PARAMS_ADS\n");
-			printf("could not read this record.  may not be a problem.\n");
+			fprintf(stderr, "read_header: error in epr_read_record CHIRP_PARAMS_ADS\n");
+			fprintf(stderr, "could not read this record.  may not be a problem.\n");
 			epr_clear_err();
 		}
 	}
 	else {
-		printf("read_header: error in epr_get_dataset_id CHIRP_PARAMS_ADS\n");
-		printf("could not read this record.  may not be a problem.\n");
+		fprintf(stderr, "read_header: error in epr_get_dataset_id CHIRP_PARAMS_ADS\n");
+		fprintf(stderr, "could not read this record.  may not be a problem.\n");
 		epr_clear_err();
 	}
 
 	/* --- GEOLOCATION_GRID_ADS --------------------------------------- */
 	if (log_level == e_log_debug) {
-		printf("\nTrying to read record: GEOLOCATION_GRID_ADS\n");
-		printf("-------------------------------------------------\n");
+		fprintf(stderr, "\nTrying to read record: GEOLOCATION_GRID_ADS\n");
+		fprintf(stderr, "-------------------------------------------------\n");
 	}
 
 	GEOLOCATION_GRID_ADS = epr_get_dataset_id(product_id, "GEOLOCATION_GRID_ADS");
@@ -612,14 +612,14 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 				epr_print_record(rec4, stdout);
 		}
 		else {
-			printf("read_header: error in epr_read_record GEOLOCATION_GRID_ADS\n");
-			printf("could not read this record.  may not be a problem.\n");
+			fprintf(stderr, "read_header: error in epr_read_record GEOLOCATION_GRID_ADS\n");
+			fprintf(stderr, "could not read this record.  may not be a problem.\n");
 			epr_clear_err();
 		}
 	}
 	else {
-		printf("read_header: error in epr_get_dataset_id GEOLOCATION_GRID_ADS\n");
-		printf("could not read this record.  may not be a problem.\n");
+		fprintf(stderr, "read_header: error in epr_get_dataset_id GEOLOCATION_GRID_ADS\n");
+		fprintf(stderr, "could not read this record.  may not be a problem.\n");
 		epr_clear_err();
 	}
 
@@ -726,7 +726,7 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 		rbias = -0.8 * dr;
 	}
 	else {
-		printf(" SC_identity out of range ");
+		fprintf(stderr, " SC_identity out of range ");
 	}
 
 	prm->near_range = near_range + rbias; // near_range
@@ -859,7 +859,7 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 		tbias = -4.25 / prm->prf / 86400.;
 	}
 	else {
-		printf(" SC_identity out of range ");
+		fprintf(stderr, " SC_identity out of range ");
 	}
 
 	prm->clock_start = atof(s_out) + 1 + tbias;
@@ -940,7 +940,7 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	prm->num_rng_bins = prm->bytes_per_line / 4;
 	prm->chirp_ext = 0;
 
-	printf("PRM set for Image File...\n");
+	fprintf(stderr, "PRM set for Image File...\n");
 
 	// Read orbit state vectors, there should always be five of them
 	for (int n_orbit_state_vector = 1; n_orbit_state_vector < 6; n_orbit_state_vector++) {
@@ -983,10 +983,10 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 		*n_state_vectors = n_orbit_state_vector;
 	}
 
-	printf("LED set for Image File...\n");
+	fprintf(stderr, "LED set for Image File...\n");
 
 	/* Close product_id and release rest of the allocated memory */
-	printf("\n");
+	fprintf(stderr, "\n");
 	epr_close_product(product_id);
 	/* Closes product reader API, release all allocated resources */
 	epr_close_api();

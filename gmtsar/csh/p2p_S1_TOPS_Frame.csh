@@ -54,6 +54,10 @@ unset noclobber
   set f2s = `ls */*iw2*$pol*xml | awk '{print substr($1,12,length($1)-15)}'`
   set f3s = `ls */*iw3*$pol*xml | awk '{print substr($1,12,length($1)-15)}'`
   cd $pth
+
+  set skip_master = `grep skip_master $5 | awk '{print $3}'`
+  if ($skip_master == "") set skip_master = 0 
+
 #if (6 == 9) then
 #
 # organize files
@@ -137,7 +141,7 @@ unset noclobber
 # merge_unwrap_geocode
 #
 #endif
-
+if ($skip_master != 2) then
   mkdir merge
   cd merge
   ln -s ../topo/dem.grd .
@@ -171,9 +175,12 @@ unset noclobber
 
 
   set iono = `grep correct_iono ../$5 | awk '{print $3}'`
+  set iono_filt_rng = `grep iono_filt_rng ../$5 | awk '{print $3}'`
+  set iono_filt_azi = `grep iono_filt_azi ../$5 | awk '{print $3}'`
+  set det_stitch = `grep det_stitch ../$5 | awk '{print $3}'`
   if ($iono != 0) then
     sed "s/.*threshold_geocode.*/threshold_geocode = 0/g" ../$5 | sed "s/.*threshold_snaphu.*/threshold_snaphu = 0/g" | sed "s/.*iono_skip_est.*/iono_skip_est = 1/g" > $5
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
 
     cd ..
     mkdir iono
@@ -186,7 +193,7 @@ unset noclobber
     sed "s/.*threshold_geocode.*/threshold_geocode = 0/g" ../../$5 | sed "s/.*threshold_snaphu.*/threshold_snaphu = 0.1/g" | sed "s/.*iono_skip_est.*/iono_skip_est = 1/g" > $5
     ln -s ../../topo/dem.grd .
     ln -s ../../merge/trans.dat .
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
     cp ../../F1/SLC/params* .
     cd ../intf_l
 
@@ -196,7 +203,7 @@ unset noclobber
     sed "s/.*threshold_geocode.*/threshold_geocode = 0/g" ../../$5 | sed "s/.*threshold_snaphu.*/threshold_snaphu = 0.1/g" | sed "s/.*iono_skip_est.*/iono_skip_est = 1/g" > $5
     ln -s ../../topo/dem.grd .
     ln -s ../../merge/trans.dat .
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
     cp ../../F1/SLC/params* .
     cd ../intf_o
 
@@ -206,22 +213,27 @@ unset noclobber
     sed "s/.*threshold_geocode.*/threshold_geocode = 0/g" ../../$5 | sed "s/.*threshold_snaphu.*/threshold_snaphu = 0.1/g" | sed "s/.*iono_skip_est.*/iono_skip_est = 1/g" > $5
     ln -s ../../topo/dem.grd .
     ln -s ../../merge/trans.dat .
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
     cp ../../F1/SLC/params* .
     cd ../iono_correction
 
-    estimate_ionospheric_phase.csh ../intf_h ../intf_l ../intf_o ../../merge 0.8 0.8 
+    estimate_ionospheric_phase.csh ../intf_h ../intf_l ../intf_o ../../merge $iono_filt_rng $iono_filt_azi
     cd ../../merge
     ln -s ../iono/iono_correction/ph_iono_orig.grd .
     cp ../$5 .
 
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
    
   else
     cp ../$5 .
-    merge_unwrap_geocode_tops.csh tmp.filelist $5
+    merge_unwrap_geocode_tops.csh tmp.filelist $5 $det_stitch
 
   endif
+else
+  echo ""
+  echo "No radar product are produced as only master image is processed."
+  echo ""
+endif
 
 
 

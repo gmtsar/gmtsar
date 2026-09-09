@@ -19,6 +19,6 @@ EXTERN_MSC double str2double(char *);
 EXTERN_MSC int str2dbs(double *, char *);
 EXTERN_MSC int null_MEM_STR();
 EXTERN_MSC int assemble_trees(int, struct tree **, int, int, FILE *);
-#ifndef WIN32
+#ifndef _WIN32
 int itoa(int, char *, int);
 #endif

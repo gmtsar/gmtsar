@@ -24,6 +24,7 @@ endif
 set ncores = $2
 set d1 = `date`
 
+rm unwrap.cmd
 foreach line (`awk '{print $0}' $1`)
   echo "unwrap_intf.csh $line > log_$line.txt" >> unwrap.cmd
 end

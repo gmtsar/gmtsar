@@ -7,7 +7,10 @@ if (HAVE_M_LIBRARY)
 	set (LINK_LIBS m)
 endif (HAVE_M_LIBRARY)
 
-include_directories (include ../../gmtsar ../ALOS_preproc/include ${GMT_INCLUDE_DIR})
+# ENVI uses the ALOS orbit/PRM ABI.  Keep that include directory ahead of
+# gmtsar's similarly named headers, otherwise MSVC picks incompatible PRM and
+# lib_functions definitions.
+include_directories (include ../ALOS_preproc/include ../../gmtsar ${GMT_INCLUDE_DIR})
 
 add_library (ENVI lib_src/ENVI_ldr_orbit.c lib_src/read_ENVI_orb.c)
 target_link_libraries (ENVI ALOS gmtsar ${LINK_LIBS})

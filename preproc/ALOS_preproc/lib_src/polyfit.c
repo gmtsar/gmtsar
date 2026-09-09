@@ -16,7 +16,7 @@ void polyfit(double *T, double *Y, double *C, int *Mp, int *Np)
 	M = *Mp;
 	N = *Np;
 	if (N > M) {
-		printf(" underdetermined system \n");
+		fprintf(stderr, " underdetermined system \n");
 		exit(-1);
 	}
 

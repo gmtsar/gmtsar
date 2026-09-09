@@ -1,0 +1,21 @@
+{
+  "case": "ENVI_Baja_EQ_SLC",
+  "tag": "v2.6.0",
+  "generated_from": "/home/utig5/dliu/gmtsar/gmtsar/python/work/results/ENVI_Baja_EQ_SLC.json",
+  "compare_result": {
+    "corr_ll.png": "SUCCESS",
+    "display_amp_ll.png": "SUCCESS",
+    "phasefilt_mask_ll.png": "SUCCESS",
+    "corr_ll.grd": "SUCCESS",
+    "phasefilt.grd": "SUCCESS",
+    "filtcorr.grd": "SUCCESS"
+  },
+  "file_md5s": {
+    "intf/2010087_2010122/corr_ll.grd": "add0ae1b2781b803739c7fe45dabe634",
+    "intf/2010087_2010122/corr_ll.png": "3b6df99ed1ee374ff15a8084e041e262",
+    "intf/2010087_2010122/display_amp_ll.png": "78d7c64317faab2a67dd907a3e341852",
+    "intf/2010087_2010122/filtcorr.grd": "ce83514e4cb2c96c4f18ceea0441f837",
+    "intf/2010087_2010122/phasefilt.grd": "f80ecb5dbce03fa008ad801b2ac9d08a",
+    "intf/2010087_2010122/phasefilt_mask_ll.png": "79d05b433b5af09fcca523e652d9d3ed"
+  }
+}
