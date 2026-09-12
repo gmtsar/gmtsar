@@ -203,6 +203,12 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
             | $GREP 'FLAGS\|Extra libraries:' \
             | $AWK -F: '{printf("%s "), $[]2}' )
 
+        dnl HDF5 2.x (including Homebrew builds) may report Extra libraries
+        dnl as a semicolon-separated list.  Semicolons are shell command
+        dnl separators, so convert them to ordinary whitespace before the
+        dnl flags are classified below.
+        HDF5_tmp_flags=$(echo "$HDF5_tmp_flags" | $SED 's/;/ /g')
+
         dnl Find the installation directory and append include/
         HDF5_tmp_inst=$(eval $H5CC -showconfig \
             | $GREP 'Installation point:' \
@@ -229,6 +235,11 @@ HDF5 support is being disabled (equivalent to --with-hdf5=no).
         HDF5_INFIX=
         for lib in $HDF5_LIBS; do
           case "$lib" in
+            dnl Do not mistake the standard high-level library (hdf5_hl)
+            dnl for a library-name infix.  An actual infixed installation
+            dnl has names such as hdf5_serial or hdf5_openmpi.
+            -lhdf5_hl|-lhdf5_cpp)
+                ;;
             -lhdf5_*)
                 HDF5_INFIX="${lib#-lhdf5_}"
                 HDF5_INFIX="_${HDF5_INFIX%%_*}"
