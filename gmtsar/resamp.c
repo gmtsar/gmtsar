@@ -49,6 +49,8 @@ void bicubic(double *, short *, int, int, short *);
 void bicubic_one(double *, double *, double, double, double *);
 void bisinc(double *, short *, int, int, short *);
 void sinc_one(double *, double *, double, double, double *);
+void sinc_one_nisar(double *, double *, double, double, double, double *);
+void bisinc_nisar(double *, short *, int, int, double, short *);
 
 int main(int argc, char **argv) {
 	int ii, jj;
@@ -249,7 +251,7 @@ int main(int argc, char **argv) {
 	            }
 
                 // interpolate with bisinc
-                bisinc(ras, sinn, ydims, xdims, &sout[2 * jj]);
+                bisinc_nisar(ras, sinn, ydims, xdims, ps.prf, &sout[2 * jj]);
 
             }
             else {
@@ -606,6 +608,60 @@ void bisinc(double *ras, short *s_in, int ydims, int xdims, short *sout) {
 	}
 	/*if(nclip > 0) fprintf(stderr," %d integers were clipped \n",nclip);*/
 }
+
+/************************************************************************
+ * NISAR bi-sinc interpolation using Doppler-aware azimuth sinc weights *
+ ************************************************************************/
+void bisinc_nisar(double *ras, short *s_in, int ydims, int xdims, double prf, short *sout) {
+	double dr, da, ns2 = NS / 2 - 1;
+	double rdata[NS * NS], idata[NS * NS], cz[2];
+	int i, j, k, kk;
+	int i0, j0;
+	int nclip;
+	short *tmp_sin;
+
+	/* compute the residual offsets */
+	nclip = 0;
+	j0 = (int)floor(ras[0]);
+	i0 = (int)floor(ras[1]);
+	dr = ras[0] - (double)j0;
+	da = ras[1] - (double)i0;
+	if (dr < 0. || dr > 1. || da < 0. || da > 1.)
+		fprintf(stderr, " dr or da out of bounds %f %f \n", dr, da);
+
+	/* make sure all NS x NS samples are within the aligned array */
+	if ((i0 - ns2) < 0 || (i0 + ns2 + 1) >= ydims || (j0 - ns2) < 0 || (j0 + ns2 + 1) >= xdims) {
+		sout[0] = 0;
+		sout[1] = 0;
+	}
+	else {
+		/* shift the pointer by i0-ns2 lines */
+		tmp_sin = s_in;
+		tmp_sin++;
+		tmp_sin = s_in + (size_t)(2 * xdims) * (size_t)(i0 - ns2) * (tmp_sin - s_in);
+
+		for (i = 0; i < NS; i++) {
+			for (j = 0; j < NS; j++) {
+				k = i * NS + j;
+				kk = 2 * xdims * i + 2 * (j0 + j - ns2);
+				rdata[k] = tmp_sin[kk];
+				idata[k] = tmp_sin[kk + 1];
+			}
+		}
+
+		/* NISAR Doppler-aware interpolation */
+		sinc_one_nisar(rdata, idata, dr, da, prf, cz);
+
+		if ((int)fabs(cz[0]) > I2MAX)
+			nclip = nclip + 1;
+		sout[0] = (short)clipi2(cz[0] + 0.5);
+		if ((int)fabs(cz[1]) > I2MAX)
+			nclip = nclip + 1;
+		sout[1] = (short)clipi2(cz[1] + 0.5);
+	}
+	/*if(nclip > 0) fprintf(stderr," %d integers were clipped \n",nclip);*/
+}
+
 #include "gmtsar.h"
 #include "lib_functions.h"
 
@@ -726,3 +782,65 @@ void sinc_one(double *rdata, double *idata, double x, double y, double *cz) {
 	cz[0] = rsum / wsum;
 	cz[1] = isum / wsum;
 }
+
+/************************************************************************
+ * NISAR sinc interpolation with fixed 950 Hz azimuth Doppler centroid *
+ *                                                                      *
+ * The NISAR RSLC is stored in zero-Doppler geometry, so fd1 remains 0  *
+ * in the PRM.  This Doppler is used only to improve complex azimuth     *
+ * interpolation.  The 950 Hz carrier is wrapped to the sampled PRF.    *
+ ************************************************************************/
+void sinc_one_nisar(double *rdata, double *idata, double x, double y, double prf, double *cz) {
+	int i, j, ij, ns2 = NS / 2 - 1;
+	double wx[NS], wy[NS];
+	double arg, w, wsum, rsum, isum;
+	double dy, fdnorm, phase, cp, sp;
+	double rr, ii;
+	const double nisar_doppler = 950.0;	/* Hz */
+
+	/*
+	 * Convert the physical Doppler centroid to cycles per azimuth sample
+	 * and wrap it into the Nyquist interval [-0.5,0.5].
+	 */
+	fdnorm = nisar_doppler / prf;
+	fdnorm = fdnorm - round(fdnorm);
+
+	for (i = 0; i < NS; i++) {
+		arg = fabs(x + ns2 - i);
+		wx[i] = sinc_kernel(arg);
+		arg = fabs(y + ns2 - i);
+		wy[i] = sinc_kernel(arg);
+	}
+
+	rsum = isum = wsum = 0.0;
+	ij = 0;
+	for (j = 0; j < NS; j++) {
+
+		/*
+		 * Signed azimuth distance, in samples, from input sample j
+		 * to the desired interpolation point.
+		 */
+		dy = y + ns2 - j;
+		phase = 2.0 * PI * fdnorm * dy;
+		cp = cos(phase);
+		sp = sin(phase);
+
+		for (i = 0; i < NS; i++) {
+			w = wx[i] * wy[j];
+			rr = rdata[ij + i];
+			ii = idata[ij + i];
+
+			/* apply Doppler phase to the azimuth sinc interpolation */
+			rsum += w * (rr * cp - ii * sp);
+			isum += w * (rr * sp + ii * cp);
+			wsum += w;
+		}
+		ij += NS;
+	}
+
+	if (wsum <= 0.0)
+		printf(" error wsum is zero \n");
+	cz[0] = rsum / wsum;
+	cz[1] = isum / wsum;
+}
+
