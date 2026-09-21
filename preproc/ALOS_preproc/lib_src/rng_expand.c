@@ -17,7 +17,7 @@
 
 void cfft1d_(int *, fcomplex *, int *);
 
-void rng_expand(fxomplex *cin, int nffti, fxomplex *cout, int nffto)
+void rng_expand(fcomplex *cin, int nffti, fxomplex *cout, int nffto)
 {
 	int i, dir, n2;
 	n2 = nffti / 2;
