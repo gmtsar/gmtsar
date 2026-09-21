@@ -61,6 +61,9 @@
 void set_prm_defaults(struct PRM *);
 void read_orb(FILE *, struct SAT_ORB *);
 void hermite_c(double *, double *, double *, int, int, double, double *, int *);
+int goldop(double, double, double **, int, int, int, double, double, double, double *, double *);
+double dist(double, double, double, int, double **);
+int calorb_alos(struct SAT_ORB *, double **orb_pos, double ts, double t1, int nrec);
 
 void llt2rat_sub(struct PRM *prm, double *target_llt, double *target_rat) {
 
@@ -74,16 +77,12 @@ void llt2rat_sub(struct PRM *prm, double *target_llt, double *target_rat) {
 	// double rad=PI/180.;
 	double fll, rdd, daa, drr;
 	int j, nrec, npad = 8000;
-	int goldop();
 	int stai, endi, midi;
 	double **orb_pos;
 	//struct PRM prm;
 	struct SAT_ORB *orb;
 	FILE *ldrfile;
 	//FILE *fprm1;
-	int calorb_alos(struct SAT_ORB *, double **orb_pos, double ts, double t1, int nrec);
-	double rsr;
-	char value[128], name[128];
 
 	/*  get the orbit data */
 	ldrfile = fopen(prm->led_file, "r");
@@ -123,7 +122,7 @@ void llt2rat_sub(struct PRM *prm, double *target_llt, double *target_rat) {
 	}
 
 	/* read in the postion of the orbit */
-	(void)calorb_alos(orb, orb_pos, ts, t1, nrec);
+	calorb_alos(orb, orb_pos, ts, t1, nrec);
 
 	/* read the llt points and convert to xyz.  */
 	rlt = target_llt[0];
@@ -152,7 +151,7 @@ void llt2rat_sub(struct PRM *prm, double *target_llt, double *target_rat) {
 	stai = 0;
 	endi = nrec + npad * 2 - 1;
 	midi = (stai + (endi - stai) * C);
-	(void)goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng, &tm);
+	goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng, &tm);
 	xt[0] = rng;
 	xt[1] = tm;
 
@@ -193,7 +192,6 @@ int goldop(double ts, double t1, double **orb_pos, int ax, int bx, int cx, doubl
 	double f1, f2;
 	int x0, x1, x2, x3;
 	int xmin;
-	double dist();
 
 	x0 = ax;
 	x3 = bx;

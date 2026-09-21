@@ -31,6 +31,8 @@ void set_prm_defaults(struct PRM *);
 void interpolate_SAT_orbit_slow(struct SAT_ORB *orb, double time, double *, double *, double *, int *); 
 void polyfit(double *, double *, double *, int *, int *); 
 int calorb_alos(struct SAT_ORB *, double **, double, double, int );
+int goldop(double, double, double **, int, int, int, double, double, double, double *, double *);
+double dist(double, double, double, int, double **);
 
 
 #define R 0.61803399
@@ -72,13 +74,12 @@ int main (int argc, char **argv) {
     double xp[3];
     double xt[3];
     double rp[3];
-    double r0, rf, a0, af;
+    //double r0, rf, a0, af;
     double fll, rdd, daa, drr, dopc;
     double dt, dtt, xs, ys, zs;
     double time[20], rng[20], d[3]; /* arrays used for polynomial refinement of min range */
     int ir, ntt = 10, nc = 3;    /* size of arrays used for polynomial refinement */
     int nrec;
-    int goldop();
     int stai, endi, midi;
     struct PRM prm;
     void *API = NULL;
@@ -129,10 +130,10 @@ int main (int argc, char **argv) {
     imag = (float *)malloc(DEM->header->n_columns*DEM->header->n_rows*sizeof(float));
 
     dr = 0.5 * SOL / prm.fs;
-    r0 = -10.;
-    rf = prm.num_rng_bins + 10.;
-    a0 = -20.;
-    af = prm.num_patches * prm.num_valid_az + 20.;
+    //r0 = -10.;
+    //rf = prm.num_rng_bins + 10.;
+    //a0 = -20.;
+    //af = prm.num_patches * prm.num_valid_az + 20.;
 
     /* compute the flattening */
 
@@ -183,7 +184,7 @@ int main (int argc, char **argv) {
             stai = 0;
             endi = nrec + npad * 2 - 1;
             midi = (stai + (endi - stai) * C); 
-            (void)goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng0, &tm);
+            goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng0, &tm);
         
             /* refine this minimum range and azimuth with a polynomial fit */
             dt = 1. / ntt; /* make the polynomial 1 second long */
@@ -509,7 +510,6 @@ int goldop(double ts, double t1, double **orb_pos, int ax, int bx, int cx, doubl
         double f1, f2;
         int x0, x1, x2, x3;
         int xmin;
-        double dist();
 
         x0 = ax;
         x3 = bx;

@@ -85,6 +85,8 @@ void hermite_c(double *, double *, double *, int, int, double, double *, int *);
 void set_prm_defaults(struct PRM *);
 void interpolate_SAT_orbit_slow(struct SAT_ORB *orb, double time, double *, double *, double *, int *);
 void polyfit(double *, double *, double *, int *, int *);
+int goldop(double, double, double **, int, int, int, double, double, double, double *, double *); 
+double dist(double, double, double, int, double **);
 
 int main(int argc, char **argv) {
 
@@ -104,13 +106,10 @@ int main(int argc, char **argv) {
     double vec1[3], vec2[3], vec0[3], det = 1.0;
 	int ir, k, ntt = 10, nc = 3;    /* size of arrays used for polynomial refinement */
 	int j, nrec, precise = 0;
-	int goldop();
 	int stai, endi, midi, lookdir;
 	double **orb_pos = NULL;
 	struct PRM prm;
 	struct SAT_ORB *orb = NULL;
-	char name[128], value[128];
-	double rsr;
 	FILE *ldrfile = NULL;
 	int calorb_alos(struct SAT_ORB *, double **orb_pos, double ts, double t1, int nrec);
 
@@ -229,7 +228,7 @@ int main(int argc, char **argv) {
 		endi = nrec + npad * 2 - 1;
 		midi = (stai + (endi - stai) * C);
 
-		(void)goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng0, &tm);
+		goldop(ts, t1, orb_pos, stai, endi, midi, xp[0], xp[1], xp[2], &rng0, &tm);
 
 		if (precise == 1) {
 
@@ -340,7 +339,6 @@ int goldop(double ts, double t1, double **orb_pos, int ax, int bx, int cx, doubl
 	double f1, f2;
 	int x0, x1, x2, x3;
 	int xmin;
-	double dist();
 
 	x0 = ax;
 	x3 = bx;
