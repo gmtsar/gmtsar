@@ -107,18 +107,18 @@ int write_slc_hdf5(hid_t input, FILE *slc, double SLC_factor) {
 
 	int i, j, width, height, widthi, nclip = 0;
     float rr, ii;
-	short *buf, *tmp;
+	float *buf, *tmp;
 	hsize_t dims[10];
 	hid_t memtype, dset, group;
-	herr_t status;
+	//herr_t status;
 
 	hdf5_read(dims, input, "/S01", "IMG", "", 'n');
 	height = (int)dims[0];
 	width = (int)dims[1];
     widthi = width;
 
-	buf = (short *)malloc(height * width * 2 * sizeof(float));
-	tmp = (short *)malloc(width * 2 * sizeof(float));
+	buf = (float *)malloc(height * width * 2 * sizeof(float));
+	tmp = (float *)malloc(width * 2 * sizeof(float));
 
 	printf("Data size %lld x %lld x %lld...\n", dims[0], dims[1], dims[2]);
     width = width - width%4;
@@ -129,14 +129,15 @@ int write_slc_hdf5(hid_t input, FILE *slc, double SLC_factor) {
 
 	memtype = H5Dget_type(dset);
 
-	status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+	//status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+	H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
 
 	printf("Writing SLC..Image Size: %d X %d...\n", width, height);
 
 	for (i = 0; i < height; i++) {
 		for (j = 0; j < width * 2; j += 2) {
-			rr = (float)((double)buf[i * widthi * 2 + j]*SLC_factor);
-			ii = (float)((double)buf[i * widthi * 2 + j + 1]*SLC_factor);
+			rr = (float)(buf[i * widthi * 2 + j]*SLC_factor);
+			ii = (float)(buf[i * widthi * 2 + j + 1]*SLC_factor);
             tmp[j] = (short)clipi2(rr);
             tmp[j + 1] = (short)clipi2(ii);
             if ((int)rr > I2MAX || (int)ii > I2MAX) {
@@ -168,10 +169,10 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
 }
 
 int pop_led_hdf5(hid_t input, state_vector *sv) {
-	int i, count, iy;
+	int i, count=0, iy;
 	char tmp_c[200], date[200];
 	double t[200], t0, t_tmp;
-	unsigned short tmp_i[200];
+	//unsigned short tmp_i[200];
 	double x[600], v[600];
 
     for (i=0;i<200;i++) {
@@ -357,9 +358,9 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name) {
 
 int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_attr, int c) {
 	hid_t memtype, type, group = -1, dset = -1, attr = -1, tmp_id, space;
-	herr_t status;
+	//herr_t status;
 	size_t sdim;
-	int ndims;
+	//int ndims;
 
 	tmp_id = file;
 	if (strlen(n_group) > 0) {
@@ -380,7 +381,8 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 		type = H5Aget_type(tmp_id);
 		sdim = H5Tget_size(type);
 		sdim++;
-		status = H5Tset_size(memtype, sdim);
+		//status = H5Tset_size(memtype, sdim);
+		H5Tset_size(memtype, sdim);
 	}
 	else if (c == 'd') {
 		memtype = H5T_NATIVE_DOUBLE;
@@ -393,11 +395,13 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 	}
 
 	if (tmp_id == attr) {
-		status = H5Aread(tmp_id, memtype, output);
+		//status = H5Aread(tmp_id, memtype, output);
+		H5Aread(tmp_id, memtype, output);
 	}
 	else if (tmp_id == dset && c == 'n') {
 		space = H5Dget_space(dset);
-		ndims = H5Sget_simple_extent_dims(space, output, NULL);
+		//ndims = H5Sget_simple_extent_dims(space, output, NULL);
+		H5Sget_simple_extent_dims(space, output, NULL);
 	}
 	else {
 		return (-1);

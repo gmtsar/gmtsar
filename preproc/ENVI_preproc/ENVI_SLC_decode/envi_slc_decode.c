@@ -381,19 +381,21 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	int year_for_state_vectors;
 	int day_for_state_vectors;
 	EPR_SField zero_doppler_time_field;
-	const EPR_STime *zero_doppler_time_mjd;
+	//const EPR_STime *zero_doppler_time_mjd;
 	EPR_SField attach_flag_field;
-	int attach_flag_value;
+	//int attach_flag_value;
 	EPR_SField dop_coef_field;
+/*
 	double dop_coef_value_D0;
 	double dop_coef_value_D1;
 	double dop_coef_value_D2;
 	double dop_coef_value_D3;
 	double dop_coef_value_D4;
+*/
 	EPR_SField dop_conf_field;
-	double dop_conf_value;
+	//double dop_conf_value;
 	EPR_SField dop_thresh_flag_field;
-	int dop_thresh_flag_value;
+	//int dop_thresh_flag_value;
 	int q;
 	double dr;
 
@@ -735,11 +737,13 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 
 	/* Zero Doppler azimuth time at which estimate applies */
 	zero_doppler_time_field = *(epr_get_field(rec2, "zero_doppler_time"));
-	zero_doppler_time_mjd = epr_get_field_elem_as_mjd(&zero_doppler_time_field);
+	//zero_doppler_time_mjd = epr_get_field_elem_as_mjd(&zero_doppler_time_field);
+	epr_get_field_elem_as_mjd(&zero_doppler_time_field);
 
 	/* Attachment Flag (always set to zero for this ADSR */
 	attach_flag_field = *(epr_get_field(rec2, "attach_flag"));
-	attach_flag_value = epr_get_field_elem_as_double(&attach_flag_field, 0);
+	//attach_flag_value = epr_get_field_elem_as_double(&attach_flag_field, 0);
+	epr_get_field_elem_as_double(&attach_flag_field, 0);
 
 	/* 2-way slant range time origin (t0) */
 	slant_range_time_ns = 0;
@@ -749,19 +753,28 @@ int read_header(EPR_ELogLevel log_level, const char *infile, struct PRM *prm, st
 	/* Doppler centroid coefficients as a function of slant range time: D0, D1,
 	 * D2, D3, and D4. */
 	dop_coef_field = *(epr_get_field(rec2, "dop_coef"));
+/*
 	dop_coef_value_D0 = epr_get_field_elem_as_double(&dop_coef_field, 0);
 	dop_coef_value_D1 = epr_get_field_elem_as_double(&dop_coef_field, 1);
 	dop_coef_value_D2 = epr_get_field_elem_as_double(&dop_coef_field, 2);
 	dop_coef_value_D3 = epr_get_field_elem_as_double(&dop_coef_field, 3);
 	dop_coef_value_D4 = epr_get_field_elem_as_double(&dop_coef_field, 4);
+*/
+	epr_get_field_elem_as_double(&dop_coef_field, 0);
+	epr_get_field_elem_as_double(&dop_coef_field, 1);
+	epr_get_field_elem_as_double(&dop_coef_field, 2);
+	epr_get_field_elem_as_double(&dop_coef_field, 3);
+	epr_get_field_elem_as_double(&dop_coef_field, 4);
 
 	/* Doppler Centroid Confidence Measure */
 	dop_conf_field = *(epr_get_field(rec2, "dop_conf"));
-	dop_conf_value = epr_get_field_elem_as_double(&dop_conf_field, 0);
+	//dop_conf_value = epr_get_field_elem_as_double(&dop_conf_field, 0);
+	epr_get_field_elem_as_double(&dop_conf_field, 0);
 
 	/* Doppler Confidence Below Threshold Flag */
 	dop_thresh_flag_field = *(epr_get_field(rec2, "dop_thresh_flag"));
-	dop_thresh_flag_value = epr_get_field_elem_as_double(&dop_thresh_flag_field, 0);
+	//dop_thresh_flag_value = epr_get_field_elem_as_double(&dop_thresh_flag_field, 0);
+	epr_get_field_elem_as_double(&dop_thresh_flag_field, 0);
 
 	/*
 	printf("\nINFO:\nDoppler Centroid Coefficients ADSR\n");

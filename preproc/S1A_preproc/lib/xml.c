@@ -145,7 +145,8 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 
 	char *buffer;
 	char tmp_char[200], tmp_s[200], *tmp_c;
-	int i1, i2, j1, j2, have_slash;
+	int i1, i2, j1, have_slash;
+    //int j2;
 	long int count = 0;
 	// int *num_space;
 	long int level[100] = {-1}, lev_ct = 0;
@@ -171,7 +172,7 @@ int get_tree(FILE *fp, tree *list, int num_parse) {
 		i1 = strlocate(buffer, '<', 1);
 		j1 = strlocate(buffer, '>', 1);
 		i2 = strlocate(buffer, '<', 2);
-		j2 = strlocate(buffer, '>', 2);
+		//j2 = strlocate(buffer, '>', 2);
 
 		if (i1 < 0 || j1 < 0) {
             continue;

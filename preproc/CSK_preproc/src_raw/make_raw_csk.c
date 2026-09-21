@@ -40,24 +40,15 @@ char *USAGE = "\n\nUsage: make_raw_csk name_of_input_file name_output\n"
 
 int main(int argc, char **argv) {
 
-	int MAX_CHAR_SIZE = 60000, MAX_NUM_SIZE = 1000;
-
+	//int MAX_CHAR_SIZE = 60000, MAX_NUM_SIZE = 1000;
 	FILE *OUTPUT_PRM, *OUTPUT_raw, *OUTPUT_LED;
 	char tmp_str[200];
-	char *buff_c, *buff_o;
-	double *buff_d;
-	int *buff_i;
 	struct PRM prm;
 	// tree *xml_tree;
 	state_vector sv[200];
 	int n;
 
 	hid_t file;
-
-	buff_c = (char *)malloc(MAX_CHAR_SIZE * sizeof(char));
-	buff_o = (char *)malloc(MAX_CHAR_SIZE * sizeof(char));
-	buff_d = (double *)malloc(MAX_NUM_SIZE * sizeof(double));
-	buff_i = (int *)malloc(MAX_NUM_SIZE * sizeof(double));
 
 	if (argc < 3)
 		die(USAGE, "");
@@ -108,7 +99,7 @@ int write_raw_hdf5(hid_t input, FILE *raw) {
 	unsigned char *buf;
 	hsize_t dims[10];
 	hid_t memtype, dset, group;
-	herr_t status;
+	//herr_t status;
 	int kk, ntot;
 	double lut[1000], lut_max;
 
@@ -137,7 +128,8 @@ int write_raw_hdf5(hid_t input, FILE *raw) {
 	// data come as signed character with zero mean
 	memtype = H5T_STD_U8LE;
 
-	status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+	//status = H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
+	H5Dread(dset, memtype, H5S_ALL, H5S_ALL, H5P_DEFAULT, buf);
 
 	for (kk = 0; kk < ntot * 2; kk++)
 		buf[kk] = (unsigned char)(127.0 * lut[(int)buf[kk]] / lut_max + 127.0);
@@ -337,9 +329,9 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name) {
 
 int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_attr, int c) {
 	hid_t memtype, type, group = -1, dset = -1, attr = -1, tmp_id, space;
-	herr_t status;
+	//herr_t status;
 	size_t sdim;
-	int ndims;
+	//int ndims;
 
 	tmp_id = file;
 	if (strlen(n_group) > 0) {
@@ -360,7 +352,8 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 		type = H5Aget_type(tmp_id);
 		sdim = H5Tget_size(type);
 		sdim++;
-		status = H5Tset_size(memtype, sdim);
+		//status = H5Tset_size(memtype, sdim);
+		H5Tset_size(memtype, sdim);
 	}
 	else if (c == 'd') {
 		memtype = H5T_NATIVE_DOUBLE;
@@ -373,11 +366,13 @@ int hdf5_read(void *output, hid_t file, char *n_group, char *n_dset, char *n_att
 	}
 
 	if (tmp_id == attr) {
-		status = H5Aread(tmp_id, memtype, output);
+		//status = H5Aread(tmp_id, memtype, output);
+		H5Aread(tmp_id, memtype, output);
 	}
 	else if (tmp_id == dset && c == 'n') {
 		space = H5Dget_space(dset);
-		ndims = H5Sget_simple_extent_dims(space, output, NULL);
+		//ndims = H5Sget_simple_extent_dims(space, output, NULL);
+		H5Sget_simple_extent_dims(space, output, NULL);
 	}
 	else {
 		return (-1);

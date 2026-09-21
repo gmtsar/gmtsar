@@ -12,8 +12,7 @@
 
 void calc_time(char time_string[], double *clock_time, double *SC_clock_time);
 
-void make_prm_dpaf(sar) struct SAR_info sar;
-{
+void make_prm_dpaf(struct SAR_info sar) {
 
 	int SC_identity; /* ERS-1 = 1, ERS2 = 2 */
 

@@ -31,10 +31,10 @@ in CEOS SAR data file
 
 int is_big_endian_(void);
 int is_big_endian__(void);
+double calc_pri(struct lineparam);
+double calc_swst(struct lineparam);
 
-int main(argc, argv) int argc;
-char *argv[];
-{
+int main(int argc, char **argv) {
 
 	char *data, logfilename[255];
 	// int	file_size,year;
@@ -67,9 +67,6 @@ char *argv[];
 		double pri;
 		double swst;
 	};
-
-	double calc_pri();
-	double calc_swst();
 
 	logflag = 0;
 
@@ -205,9 +202,9 @@ char *argv[];
 	}
 }
 /* these are taken verbatim from fix_line */
-double calc_pri(info) struct lineparam info;
+double calc_pri(struct lineparam info)
 { return (((double)info.pri_dn + 2.0) * SEC_PER_PRI_COUNT); }
-double calc_swst(info) struct lineparam info;
+double calc_swst(struct lineparam info)
 {
 	return ((double)info.swst_dn * SEC_PER_PRI_COUNT + 9.0 * info.pri - 6.6E-6);
 	/* based on Johan Jacob Mohr and Søren Nørvang Madsen, Member, IEEE,Geometric

@@ -34,7 +34,7 @@ int write_roi(char *imagery, FILE *ldrfile, struct PRM prm, struct ALOS_ORB orb,
 	double ibias, qbias, wavelength, pulsedur, range_sample_freq, prf;
 
 	int orbit_num, first_frame;
-	char syr2[2], smo[2], sda[2];
+	char syr2[3], smo[3], sda[3];
 	char proc_sys[64], proc_ver[64], ctime[64], foutname[128];
 	char polar[32], swath[16];
 

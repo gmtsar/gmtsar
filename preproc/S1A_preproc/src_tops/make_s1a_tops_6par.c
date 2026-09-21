@@ -240,7 +240,8 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
 
 	char tmp_c[200], tmp_cc[60000];
 	double tmp_d, dt, t[100];
-	int i, j, k, nl = 0, nlf, ntl, count, lpb, tmp_i, flag, flag0;
+	int i, j, k, nl = 0, nlf, count, lpb, tmp_i, flag, flag0;
+    //int ntl = 0;
 	int k_start, kC;
 	int *kF, *ksa, *ksr, *kea, *ker, *kover;
 	double t0 = -1., time;
@@ -337,8 +338,8 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
 	search_tree(xml_tree, "/product/swathTiming/burstList/", tmp_c, 3, 0, 1);
 	count = (int)str2double(tmp_c);
 	// count = 1;
-	search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfLines/", tmp_c, 1, 0, 1);
-	ntl = (int)str2double(tmp_c);
+	//search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfLines/", tmp_c, 1, 0, 1);
+	//ntl = (int)str2double(tmp_c);
 	search_tree(xml_tree, "/product/swathTiming/linesPerBurst/", tmp_c, 1, 4, 0);
 	lpb = (int)str2double(tmp_c);
 	nlf = count * lpb;
@@ -444,14 +445,14 @@ int shift_write_slcs(void *API, struct PRM *prm, tree *xml_tree, burst_bounds *b
                      int imode, double rng, double azi, double stretch_a, double a_stretch_a, double stretch_r,
                      double a_stretch_r) {
 
-	uint16 s = 0;
-	uint16 *buf;
-	uint32 it;
+	uint16_t s = 0;
+	uint16_t *buf;
+	uint32_t it;
 	short *tmp, *brst;
 	float *rtmp;
 	int ii, jj, nl, k, k2, kk;
 	int count, lpb, nlf, width2, nclip = 0;
-	uint32 width, height, widthi;
+	uint32_t width, height, widthi;
 	char tmp_c[200];
 	fcomplex *cbrst, *cramp;
 	fcomplex *fft_vec_rng, *fft_vec_azi;
@@ -480,7 +481,7 @@ int shift_write_slcs(void *API, struct PRM *prm, tree *xml_tree, burst_bounds *b
 	brst = (short *)malloc(lpb * width2 * sizeof(short));
 	cbrst = (fcomplex *)malloc(lpb * width * sizeof(fcomplex));
 	cramp = (fcomplex *)malloc(lpb * width * sizeof(fcomplex));
-	buf = (uint16 *)_TIFFmalloc(TIFFScanlineSize(tif));
+	buf = (uint16_t *)_TIFFmalloc(TIFFScanlineSize(tif));
 	tmp = (short *)malloc(width * 2 * sizeof(short));
 	rtmp = (float *)malloc(width * 2 * sizeof(float));
 	ranfft_rng = fft_bins(width);

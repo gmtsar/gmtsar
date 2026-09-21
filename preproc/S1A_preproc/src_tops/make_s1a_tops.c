@@ -291,8 +291,9 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
 
 	char tmp_c[DEF_SIZE], tmp_cc[60000];
 	double tmp_d, dt, t[DEF_SIZE];
-	int i, j, k, nl = 0, nlf, ntl = 0, count, lpb, tmp_i, flag, flag0;
-	int k_start = 0, kC;
+	int i, j, k, nl = 0, nlf, count, lpb, tmp_i, flag, flag0;
+    //int ntl = 0;
+    int k_start = 0, kC;
 	int *kF, *ksa, *ksr, *kea, *ker, *kover;
 	double t0 = -1., time;
 	char *cflag, *cflag_orig;
@@ -389,8 +390,8 @@ int pop_burst(struct PRM *prm, tree *xml_tree, struct burst_bounds *bb, char *fi
 	search_tree(xml_tree, "/product/swathTiming/burstList/", tmp_c, 3, 0, 1);
 	count = (int)str2double(tmp_c);
 	// count = 1;
-	search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfLines/", tmp_c, 1, 0, 1);
-	ntl = (int)str2double(tmp_c);
+	//search_tree(xml_tree, "/product/imageAnnotation/imageInformation/numberOfLines/", tmp_c, 1, 0, 1);
+	//ntl = (int)str2double(tmp_c);
 	search_tree(xml_tree, "/product/swathTiming/linesPerBurst/", tmp_c, 1, 0, 1);
 	lpb = (int)str2double(tmp_c);
 	nlf = count * lpb;
@@ -700,14 +701,14 @@ double dramp_dmod(struct tree *xml_tree, int nb, fcomplex *cramp, int lpb, int w
 double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct burst_bounds *bb, int imode, TIFF *tif,
                        FILE *slcl, FILE *slcc, FILE *slch, FILE *rmp,char *dr_table, char *da_table) {
 
-	uint16 s = 0;
-	uint16 *buf;
-	uint32 it;
+	uint16_t s = 0;
+	uint16_t *buf;
+	uint32_t it;
 	short *tmp, *brst;
 	float *rtmp,*prmp;
 	int ii, jj, nl, k, k2, kk;
 	int count, lpb, nlf, width2, nclip = 0;
-	uint32 width, height, widthi;
+	uint32_t width, height, widthi;
 	char tmp_c[DEF_SIZE];
 	fcomplex *cbrst, *cramp;
 	float rtest, itest;
@@ -756,7 +757,7 @@ double shift_write_slc(void *API, struct PRM *prm, struct tree *xml_tree, struct
 	brst = (short *)malloc(lpb * width2 * sizeof(short));
 	cbrst = (fcomplex *)malloc(lpb * width * sizeof(fcomplex));
 	cramp = (fcomplex *)malloc(lpb * width * sizeof(fcomplex));
-	buf = (uint16 *)_TIFFmalloc(TIFFScanlineSize(tif));
+	buf = (uint16_t *)_TIFFmalloc(TIFFScanlineSize(tif));
 	tmp = (short *)malloc(width * 2 * sizeof(short));
 	rtmp = (float *)malloc(width * 2 * sizeof(float));
     prmp = (float *)malloc(lpb * width * sizeof(float));

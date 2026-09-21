@@ -22,7 +22,6 @@ int dump_data(EPR_ELogLevel log_level, const char *infile, const char *outfile, 
 
 int main(int argc, char **argv) {
 
-	int status = 0;
 	// ulong           l0;
 	// ulong           lN;
 	// ulong           p0;
@@ -58,10 +57,10 @@ int main(int argc, char **argv) {
 	printf("infile:  %s\n", infile);
 	printf("outfile: %s\n", outfile);
 	if (argc == 7) {
-		status = sscanf(argv[3], "%u", &l0);
-		status = sscanf(argv[4], "%u", &lN);
-		status = sscanf(argv[5], "%u", &p0);
-		status = sscanf(argv[6], "%u", &pN);
+		sscanf(argv[3], "%u", &l0);
+		sscanf(argv[4], "%u", &lN);
+		sscanf(argv[5], "%u", &p0);
+		sscanf(argv[6], "%u", &pN);
 		printf("sscanf l0: %f\n", (float)l0);
 		printf("sscanf lN: %f\n", (float)lN);
 		printf("sscanf p0: %f\n", (float)p0);

@@ -12,9 +12,8 @@
 #include <string.h>
 void make_prm_dpaf(struct SAR_info);
 
-int main(argc, argv) int argc;
-char **argv;
-{
+int main(int argc, char **argv) {
+
 	char *filename, string[5];
 	int i;
 	// int	num_data_points;

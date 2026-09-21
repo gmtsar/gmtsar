@@ -3,11 +3,13 @@
  * Date   : 09/12/93             Copyright, David T. Sandwell           *
  ************************************************************************/
 
-void swap32(in, out, n) /* Swaps 4 bytes within each 32-bit word of
+void swap32(char *in, char*out, int n) /* Swaps 4 bytes within each 32-bit word of
                         array in. */
-    char *in;           /* Input array */
-char *out;              /* Output array */
-int n;                  /* # of short integers to swap */
+/*
+    char *in;           // Input array
+    char *out;          // Output array
+    int n;              // # of short integers to swap
+*/
 
 {
 	register char *ip, *op; /* Local register variables */

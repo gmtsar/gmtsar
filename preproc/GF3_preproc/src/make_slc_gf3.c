@@ -107,10 +107,10 @@ int main(int argc, char **argv) {
 
 int write_slc(TIFF *tif, FILE *slc, char *orbdir) {
 
-	uint32 width, height, widthi;
+	uint32_t width, height, widthi;
 	int i, j;
-	uint16 s = 0, nsamples;
-	uint16 *buf;
+	uint16_t s = 0;
+	uint16_t *buf;
 	short *tmp;
 
 	// get the width and the height of the file, make width dividable by 4
@@ -118,7 +118,7 @@ int write_slc(TIFF *tif, FILE *slc, char *orbdir) {
 	TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
 	// printf("%d %d \n",width,height);
 
-	buf = (uint16 *)_TIFFmalloc(TIFFScanlineSize(tif));
+	buf = (uint16_t *)_TIFFmalloc(TIFFScanlineSize(tif));
 	width = widthi - widthi % 4;
 	tmp = (short *)malloc(width * 2 * sizeof(short));
 	printf("Writing SLC..Image Size: %d X %d...\n", width, height);
