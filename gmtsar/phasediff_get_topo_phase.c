@@ -217,7 +217,8 @@ int main(int argc, char **argv) {
 	double ys, test, inc[2], wesn[4];
 	double xdect, ydect, xdecm, ydecm, rdumt;
 	FILE *SLCfile1 = NULL, *SLCfile2 = NULL;
-	fcomplex *intfp = NULL, *iptr1 = NULL, *iptr2 = NULL, pshif;
+	fcomplex *intfp = NULL, *iptr1 = NULL, *iptr2 = NULL;
+    //fcomplex pshif;
 	struct PRM p1, p2, tp, mp;
 	void *API = NULL;                       /* GMT control structure */
 	struct GMT_GRID *M = NULL, *T = NULL;   /* Grid structures containing ->header and ->data */
@@ -510,7 +511,7 @@ int main(int argc, char **argv) {
 				                   integers */
 				pha = pha - M->data[xm + M->header->n_columns * ym];
 			}
-			pshif = Cexp(pha);
+			//pshif = Cexp(pha);
 			//intfp[k] = Cmul(intfp[k], pshif);
             intfp[k].r = pha;
             intfp[k].i = 0.0;

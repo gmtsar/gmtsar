@@ -121,7 +121,8 @@ int find_nearest(int i, int j, int *r2, int *is, int *js, int *xs, int *ys) {
 
 double nearest_interp(int nx, int ny, float *m, float *m_interp, int radius) {
 
-	int i, j, flag, ct, k, kt, kk = 1, recx = 1, recy = 1;
+	int i, j, flag, ct, k, kk = 1, recx = 1, recy = 1;
+    //int kt;
 
 	int *is, *js, *xs, *ys;
 
@@ -190,7 +191,7 @@ double nearest_interp(int nx, int ny, float *m, float *m_interp, int radius) {
 							if (isnan(m[is[k] * nx + js[k]]) == 0) {
 								m_interp[i * nx + j] = m[is[k] * nx + js[k]];
 								flag = 1;
-								kt = k;
+								//kt = k;
 								recx = abs(is[k] - i);
 								recy = abs(js[k] - j);
 								//                                idx[j] = 1;
