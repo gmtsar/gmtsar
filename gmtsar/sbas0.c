@@ -6,6 +6,7 @@
  * Memory: only -rows rows of phase and displacement are held at once.
  * GMT reads geographic row strips from each input, opening each file once
  * per block. One full output grid and full velocity/rms grids remain in RAM.
+ * One full residual-RMS grid is also held in RAM (4 bytes per pixel).
  * Completed displacement strips are spooled to an automatically removed
  * temporary file in the working directory (4 * rows * columns * scenes bytes).
  * Numerical inversion and output conventions match sbas0.c.
@@ -49,6 +50,7 @@
  *
  * Output:
  *   disp_XXXXXXX.grd
+ *   residual_rms_mm.grd
  *
  * Automatically retain only the network connected to the earliest scene.
  * Default: use a common finite-data mask and the fast single-factorization
@@ -115,7 +117,39 @@ static char *USAGE =
 "  disp_XXXXXXX.grd  cumulative LOS displacement in mm\n"
 "  vel.grd           linear LOS velocity in mm/yr\n"
 "  rms.grd           velocity uncertainty in mm/yr\n"
+"  residual_rms_mm.grd  interferogram residual RMS in mm\n"
 "\n";
+
+/* Section 5 consistency diagnostic. The solution contains phase states 1..S-1;
+ * state 0 is fixed to zero. Convert observations and reconstructed differences
+ * to mm before computing sqrt(sum(residual_mm^2) / number_used).
+ * Use the double-precision fit, before rounding displacement grids to float.
+ * Missing observations are omitted only after the caller has accepted a
+ * full-rank fit. This measures network misfit, not displacement uncertainty. */
+static float interferogram_residual_rms_mm(const float *observed,
+                                          const double *solution, int64_t N,
+                                          const int64_t *iref,
+                                          const int64_t *irep,
+                                          double phase_to_mm)
+{
+    int64_t i, used = 0;
+    double sumsq = 0.0;
+    for (i = 0; i < N; i++) {
+        double ref, rep, observed_mm, modeled_mm, residual_mm;
+        if (!isfinite(observed[i]))
+            continue;
+        ref = iref[i] == 0 ? 0.0 : solution[iref[i] - 1];
+        rep = irep[i] == 0 ? 0.0 : solution[irep[i] - 1];
+        observed_mm = phase_to_mm * (double)observed[i];
+        modeled_mm = phase_to_mm * (rep - ref);
+        residual_mm = observed_mm - modeled_mm;
+        if (!isfinite(residual_mm))
+            return NAN;
+        sumsq += residual_mm * residual_mm;
+        used++;
+    }
+    return used > 0 ? (float)sqrt(sumsq / used) : NAN;
+}
 
 /* Return scene index for scene ID, or -1 if not found. */
 static int64_t scene_index(int64_t id, const int64_t *scene_id, int64_t S)
@@ -397,6 +431,7 @@ int main(int argc, char **argv)
     float *disp = NULL;
     float *vel = NULL;
     float *rms = NULL;
+    float *residual_rms = NULL;
 
     FILE *fp = NULL;
     void *API = NULL;
@@ -542,6 +577,14 @@ int main(int argc, char **argv)
     retain_reference_network(&N, &S, scene_id, scene_time,
                              ref_id, rep_id, iref, irep, gfile);
     n = S - 1;
+    fprintf(stderr, "residual RMS diagnostic: %lld independent network loops\n",
+            (long long)(N - n));
+    if (N == n)
+        fprintf(stderr, "warning: a tree has no redundant interferograms; "
+                        "a zero residual cannot test consistency\n");
+    if (!common_mask)
+        fprintf(stderr, "partial-coverage residual RMS uses each pixel's finite "
+                        "observations; a tree subset has no consistency check\n");
     G0 = (double *)malloc((size_t)N * (size_t)n * sizeof(double));
     if (!G0)
         die("memory allocation failed", "");
@@ -682,6 +725,9 @@ int main(int argc, char **argv)
     disp = (float *)malloc((size_t)S * (size_t)npix * sizeof(float));
     vel  = (float *)malloc((size_t)total_pixels * sizeof(float));
     rms  = (float *)malloc((size_t)total_pixels * sizeof(float));
+    residual_rms = (float *)malloc((size_t)total_pixels * sizeof(float));
+    if (!residual_rms)
+        die("memory allocation failed for residual RMS grid", "");
     if (!phi || !disp || !vel || !rms)
         die("memory allocation failed", "");
 
@@ -735,6 +781,8 @@ int main(int argc, char **argv)
         int64_t read_first_row, read_rows, skip_rows;
         rows = (ydim - first_row < block_rows ? ydim - first_row : block_rows);
         npix = rows * xdim;
+        for (p = 0; p < npix; p++)
+            residual_rms[first_row * xdim + p] = NAN;
         read_first_row = first_row;
         read_rows = rows;
         skip_rows = 0;
@@ -857,6 +905,9 @@ int main(int argc, char **argv)
                         for (i = 1; i < S; i++)
                             disp[i * npix + pixel] =
                                 (float)(phase_to_mm * solution[i - 1]);
+                        residual_rms[first_row * xdim + pixel] =
+                            interferogram_residual_rms_mm(phi + pixel * N,
+                                solution, N, iref, irep, phase_to_mm);
                     }
                     good_pixels += batch_count;
                 }
@@ -880,6 +931,9 @@ int main(int argc, char **argv)
                     for (i = 1; i < S; i++)
                         disp[i * npix + pixel] =
                             (float)(phase_to_mm * solution[i - 1]);
+                    residual_rms[first_row * xdim + pixel] =
+                        interferogram_residual_rms_mm(phi + pixel * N,
+                            solution, N, iref, irep, phase_to_mm);
                 }
                 good_pixels += batch_count;
             }
@@ -987,6 +1041,9 @@ int main(int argc, char **argv)
             for (i = 1; i < S; i++)
                 disp[i * npix + p] =
                     (float)(phase_to_mm * b[i - 1]);
+            residual_rms[first_row * xdim + p] =
+                interferogram_residual_rms_mm(phi + p * N, b,
+                                             N, iref, irep, phase_to_mm);
 
             good_pixels++;
         }
@@ -1153,6 +1210,23 @@ int main(int argc, char **argv)
                        GMT_GRID_ALL, NULL, "rms.grd", Out))
         die("failed to write output grid ", "rms.grd");
 
+    /* Write the unweighted interferogram misfit, separate from the
+     * existing velocity-fit uncertainty in rms.grd (mm/yr). */
+    for (p = 0; p < npix; p++)
+        Out->data[p] = residual_rms[p];
+    strcpy(Out->header->title, "");
+    strcpy(Out->header->remark, "");
+    strcpy(Out->header->z_units, "mm");
+    if (GMT_Set_Comment(API, GMT_IS_GRID, GMT_COMMENT_IS_REMARK,
+                        "Unweighted RMS of fitted interferogram residuals (mm); not displacement uncertainty", Out))
+        die("could not set grid remark", "");
+    if (GMT_Set_Comment(API, GMT_IS_GRID, GMT_COMMENT_IS_TITLE,
+                        "SBAS interferogram residual RMS (mm)", Out))
+        die("could not set grid title", "");
+    if (GMT_Write_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE,
+                       GMT_GRID_ALL, NULL, "residual_rms_mm.grd", Out))
+        die("failed to write output grid ", "residual_rms_mm.grd");
+
     if (fclose(disp_store))
         die("error closing temporary displacement file", "");
 
@@ -1179,6 +1253,7 @@ int main(int argc, char **argv)
     free(reference_phase);
     free(vel);
     free(rms);
+    free(residual_rms);
 
     fprintf(stderr, "sbas0 complete.\n");
 
