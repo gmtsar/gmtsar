@@ -276,7 +276,32 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
 	int i;
 	double dt;
 
-	dt = trunc((sv[1].sec) * 100.0) / 100.0 - trunc((sv[0].sec) * 100.0) / 100.0;
+	/* Round, do not truncate. sv[].sec does not survive its round trip
+	   exactly: xml.c str_date2JD() emits the orbit time as a STRING via
+	   sprintf("%.12f", doy + MJDfrac) -- doy is the day of year, so the
+	   fraction of a day keeps ~12 decimals -- and pop_led() recovers it as
+	   (tmp_d - trunc(tmp_d)) * 86400. A repeating fraction cannot be written
+	   exactly in 12 decimals, so each timestamp arrives a few hundredths of
+	   a microsecond off, rounded up or down depending on its digits.
+
+	   That magnitude is harmless; the SIGN is not. Sentinel-1 state vectors
+	   fall on exact integer seconds, which is exactly where a 0.01 s
+	   truncation boundary lies, so when one vector lands just above its
+	   integer second and the next just below, trunc floors them in OPPOSITE
+	   directions and the difference is short by a whole centisecond
+	   (2021-05-19, vectors at 48837 s and 48847 s, errors +0.04/-0.02 us):
+
+	       sv[0] 48837.000000039 -> trunc -> 48837.00
+	       sv[1] 48846.999999975 -> trunc -> 48846.99   dt = 9.99
+
+	   calc_dop_orb divides by dt, so 0.1% inflates SC_vel and stretches the
+	   azimuth axis by 0.1% -- a 33-44 line, progressive coregistration
+	   failure that reduces affected interferograms to the noise floor.
+
+	   Rounding is safe because both vectors then move the SAME way, so their
+	   difference is exact for any error below half a millisecond -- ~10,000x
+	   the error actually present. Matches ext_orb_s1a.c's write_orb(). */
+	dt = round((sv[1].sec) * 1000.0) / 1000.0 - round((sv[0].sec) * 1000.0) / 1000.0;
 	if (n <= 1)
 		return (-1);
 	fprintf(fp, "%d %d %d %.6lf %lf \n", n, sv[0].yr, sv[0].jd, sv[0].sec, dt);
