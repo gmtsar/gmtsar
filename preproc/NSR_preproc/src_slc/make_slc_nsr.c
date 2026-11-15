@@ -409,6 +409,81 @@ int write_orb(state_vector *sv, FILE *fp, int n) {
     return (1);
 }
 
+/* Average the metadata lookup table over azimuth time and slant range. */
+static int read_mean_doppler(hid_t input, const char *rslc_base,
+                             char frequency, double *mean)
+{
+    char path[256];
+    hid_t dataset = -1, space = -1, attr = -1, attr_space = -1;
+    hssize_t points;
+    double *values = NULL;
+    double fill = NAN;
+    long double sum = 0.0L;
+    size_t valid = 0;
+    int result = -1;
+
+    snprintf(path, sizeof(path),
+             "%s/metadata/processingInformation/parameters/frequency%c/dopplerCentroid",
+             rslc_base, frequency);
+    if (h5_path_exists_quiet(input, path) <= 0)
+        goto done;
+
+    dataset = H5Dopen(input, path, H5P_DEFAULT);
+    if (dataset < 0)
+        goto done;
+
+    space = H5Dget_space(dataset);
+    if (space < 0 || H5Sget_simple_extent_ndims(space) != 2)
+        goto done;
+
+    points = H5Sget_simple_extent_npoints(space);
+    if (points <= 0 || (uintmax_t)points > SIZE_MAX / sizeof(*values))
+        goto done;
+
+    htri_t has_fill = H5Aexists(dataset, "_FillValue");
+    if (has_fill < 0)
+        goto done;
+    if (has_fill > 0) {
+        attr = H5Aopen(dataset, "_FillValue", H5P_DEFAULT);
+        if (attr < 0)
+            goto done;
+        attr_space = H5Aget_space(attr);
+        if (attr_space < 0 || H5Sget_simple_extent_npoints(attr_space) != 1 ||
+            H5Aread(attr, H5T_NATIVE_DOUBLE, &fill) < 0)
+            goto done;
+    }
+
+    values = malloc((size_t)points * sizeof(*values));
+    if (values == NULL ||
+        H5Dread(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, values) < 0)
+        goto done;
+
+    for (size_t i = 0; i < (size_t)points; i++) {
+        if (isfinite(values[i]) && values[i] != fill) {
+            sum += values[i];
+            valid++;
+        }
+    }
+    if (valid > 0) {
+        *mean = (double)(sum / valid);
+        result = 0;
+    }
+
+done:
+    free(values);
+    if (attr_space >= 0)
+        H5Sclose(attr_space);
+    if (attr >= 0)
+        H5Aclose(attr);
+    if (space >= 0)
+        H5Sclose(space);
+    if (dataset >= 0)
+        H5Dclose(dataset);
+    if (result < 0)
+        fprintf(stderr, "Warning: no usable Doppler centroid in %s; omitting fdd1.\n", path);
+    return result;
+}
+
 int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int xl, int xh, int yl, int yh, const char *rslc_base, const char *ident_base) {
     char tmp_c[200], date[100],iy[100],freq[10],type[10],group[200],swaths_group[200];
     double tmp_d[200],yr,t[65535]; // not sure howmany time components will be available
@@ -490,7 +565,10 @@ int pop_prm_hdf5(struct PRM *prm, hid_t input, char *file_name, char *mode, int 
     prm->clock_start = t0 + (t[0] + yl / prm->prf)/86400.0;
     prm->SC_clock_start = prm->clock_start + yr*1000.0;
 
-    prm->fdd1 = 0.0;
+    /* Store the mean of the selected band's full LUT in Hz. */
+    double mean_doppler;
+    if (read_mean_doppler(input, rslc_base, freq[0], &mean_doppler) == 0)
+        prm->fdd1 = mean_doppler;
     prm->fddd1 = 0.0;
 
     hdf5_read(tmp_c, input, ident_base, "orbitPassDirection", "", 's'); 
