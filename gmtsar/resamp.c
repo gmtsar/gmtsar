@@ -49,8 +49,8 @@ void bicubic(double *, short *, int, int, short *);
 void bicubic_one(double *, double *, double, double, double *);
 void bisinc(double *, short *, int, int, short *);
 void sinc_one(double *, double *, double, double, double *);
-void sinc_one_nisar(double *, double *, double, double, double, double *);
-void bisinc_nisar(double *, short *, int, int, double, short *);
+void sinc_one_nisar(double *, double *, double, double, double, double, double *);
+void bisinc_nisar(double *, short *, int, int, double, double, short *);
 
 int main(int argc, char **argv) {
 	int ii, jj;
@@ -59,6 +59,7 @@ int main(int argc, char **argv) {
 	int xdims, ydims;                 /* size of aligned SLC file */
 	short *sinn = NULL, *sout = NULL; /* pointer to input (whole array) and output (row) files.*/
 	double ram[2], ras[2];            /* range and azimuth locations for master and aligned images */
+	struct PRM pm, ps;
 	FILE *SLC_file2 = NULL, *prmout = NULL;
 	int fdin;
 	double sv_pr[6];
@@ -72,10 +73,9 @@ int main(int argc, char **argv) {
 
     // Begin: Initializing new GMT session
     void *API = NULL; // GMT API control structure
-    if ((API = GMT_Create_Session(argv[0], 0U, 0U, NULL)) == NULL)
+    if ((API = GMT_Create_Session(argv[0], 0U, 0U, NULL)) == NULL) {
         return EXIT_FAILURE;
-
-	struct PRM pm, ps;
+    }
 
 	debug = 0;
 	intrp = 2;
@@ -112,13 +112,16 @@ int main(int argc, char **argv) {
             die("shift table size does not match or too small", ""); 
         if (R->header->inc[GMT_Y] != A->header->inc[GMT_Y] || R->header->inc[GMT_Y] <= 1)
             die("shift table size does not match or too small", ""); 
-        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, rgrid, R) == NULL)
+        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, rgrid, R) == NULL) {
             return EXIT_FAILURE;
-        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, agrid, A) == NULL)
+        }
+        if (GMT_Read_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_DATA_ONLY, NULL, agrid, A) == NULL) {
             return EXIT_FAILURE;
-	    /* for R grid */
-	    nx = (int)R->header->n_columns;
-	    ny = (int)R->header->n_rows;
+        }
+
+        /* for R grid */
+        nx = (int)R->header->n_columns;
+        ny = (int)R->header->n_rows;
     }
     else {
         if (argc < 6) die(USAGE, "");
@@ -251,7 +254,7 @@ int main(int argc, char **argv) {
 	            }
 
                 // interpolate with bisinc
-                bisinc_nisar(ras, sinn, ydims, xdims, ps.prf, &sout[2 * jj]);
+                bisinc_nisar(ras, sinn, ydims, xdims, ps.fdd1, ps.prf, &sout[2 * jj]);
 
             }
             else {
@@ -612,7 +615,7 @@ void bisinc(double *ras, short *s_in, int ydims, int xdims, short *sout) {
 /************************************************************************
  * NISAR bi-sinc interpolation using Doppler-aware azimuth sinc weights *
  ************************************************************************/
-void bisinc_nisar(double *ras, short *s_in, int ydims, int xdims, double prf, short *sout) {
+void bisinc_nisar(double *ras, short *s_in, int ydims, int xdims, double doppler, double prf, short *sout) {
 	double dr, da, ns2 = NS / 2 - 1;
 	double rdata[NS * NS], idata[NS * NS], cz[2];
 	int i, j, k, kk;
@@ -650,7 +653,7 @@ void bisinc_nisar(double *ras, short *s_in, int ydims, int xdims, double prf, sh
 		}
 
 		/* NISAR Doppler-aware interpolation */
-		sinc_one_nisar(rdata, idata, dr, da, prf, cz);
+		sinc_one_nisar(rdata, idata, dr, da, doppler, prf, cz);
 
 		if ((int)fabs(cz[0]) > I2MAX)
 			nclip = nclip + 1;
@@ -784,26 +787,28 @@ void sinc_one(double *rdata, double *idata, double x, double y, double *cz) {
 }
 
 /************************************************************************
- * NISAR sinc interpolation with fixed 950 Hz azimuth Doppler centroid *
- *                                                                      *
- * The NISAR RSLC is stored in zero-Doppler geometry, so fd1 remains 0  *
- * in the PRM.  This Doppler is used only to improve complex azimuth     *
- * interpolation.  The 950 Hz carrier is wrapped to the sampled PRF.    *
+ * NISAR sinc interpolation with azimuth Doppler centroid from fdd1.    *
+ * The RSLC uses zero-Doppler geometry (fd1 = 0). The centroid in Hz    *
+ * is used for complex azimuth interpolation.                           *
  ************************************************************************/
-void sinc_one_nisar(double *rdata, double *idata, double x, double y, double prf, double *cz) {
+void sinc_one_nisar(double *rdata, double *idata, double x, double y, double doppler, double prf, double *cz) {
 	int i, j, ij, ns2 = NS / 2 - 1;
 	double wx[NS], wy[NS];
 	double arg, w, wsum, rsum, isum;
 	double dy, fdnorm, phase, cp, sp;
 	double rr, ii;
-	const double nisar_doppler = 950.0;	/* Hz */
+	static int doppler_reported = 0;
+
+	if (!doppler_reported) {
+		fprintf(stderr, "resamp: NISAR Doppler centroid (fdd1) = %.9g Hz\n", doppler);
+		doppler_reported = 1;
+	}
 
 	/*
 	 * Convert the physical Doppler centroid to cycles per azimuth sample
-	 * and wrap it into the Nyquist interval [-0.5,0.5].
 	 */
-	fdnorm = nisar_doppler / prf;
-	fdnorm = fdnorm - round(fdnorm);
+	fdnorm = doppler / prf;
+	//fdnorm = fdnorm - round(fdnorm);
 
 	for (i = 0; i < NS; i++) {
 		arg = fabs(x + ns2 - i);
