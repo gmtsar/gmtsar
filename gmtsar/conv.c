@@ -19,6 +19,7 @@
  * 04/17/98     Started hacking at the code                                *
  * 06/07/98     Removed edge effects of derivative filter                  *
  * 01/14/10     Modified to read and write grd files - RJM                 *
+ * 11/20/26	Fixed position bias when decimation is used - DTS          *
  ***************************************************************************/
 
 #include "gmtsar.h"
@@ -140,13 +141,14 @@ int read_SLC_float(float *cf2, int xdim, FILE *f_input, int yarr, float *buffer,
 int main(int argc, char **argv) {
 	int idec, jdec;
 	int iout, jout;
+	int row_centers, col_centers;
 	int i, j, ic, jc, norm, ic0, ic1;
 	int ydim = 0, xdim = 0; /* size of input file */
 	int xarr, yarr, narr, yarr2;
 	int nbuff, ibuff, imove;
 	int iend, ylen, iread;
 	uint64_t left_node;
-	unsigned int row;
+	int row, col;
 	char input_name[128], output_name[128], prmfilename[128], *c = NULL;
 	short *cindat = NULL;
 	float *cfdat = NULL;
@@ -182,6 +184,8 @@ int main(int argc, char **argv) {
 
 	if (idec <= 0 || jdec <= 0)
 		die("idec and jdec should be positive integers.", "");
+	row_centers = (idec % 2 == 0) ? 2 : 1;
+	col_centers = (jdec % 2 == 0) ? 2 : 1;
 
 	/* open and filter file */
 	if ((f_filter = fopen(argv[3], "r")) == NULL)
@@ -314,14 +318,17 @@ int main(int argc, char **argv) {
 	if (format_flag == 3)
 		read_SLC_float(cfdat, xdim, f_input, 0, buffer, DFACT, ibuff);
 
-	for (ic = 0, row = 0; ic < iout * idec; ic = ic + idec) {
+	for (row = 0; row < iout; row++) {
+		/* Center the convolution on the output pixel. Even factors straddle two input nodes. */
+		ic = row * idec + (idec - 1) / 2;
+		int last_needed_row = ic + row_centers - 1 + yarr2;
 
 		if (ic / 2000.0 == ic / 1000)
 			if (verbose)
 				fprintf(stderr, " line %d\n", ic);
 
 		/* check buffer and shift data up if necessary */
-		if ((ic + yarr2) >= iend && (ic + yarr2) < (ydim - 1)) {
+		while (last_needed_row >= iend && iend < ydim) {
 
 			for (i = 0; i < yarr; i++)
 				for (j = 0; j < xdim; j++)
@@ -340,30 +347,31 @@ int main(int argc, char **argv) {
 			if (format_flag == 3)
 				read_SLC_float(cfdat, xdim, f_input, yarr, buffer, DFACT, iread);
 
-		} /* end of ic loop */
+		}
 		left_node = GMT_Get_Index(API, Out->header, row, 0);
-		jout = 0;
 		ic1 = ic - ic0;
 
-		/* now do the 2d convolution */
-		for (jc = 0; jc < floor(xmax / inc[GMT_X]) * jdec; jc = jc + jdec) {
-			conv2d(buffer, &ylen, &xdim, filter, &yarr, &xarr, &filtdat, &ic1, &jc, &rnorm);
-			/* use a zero or null value if there is not enough data in the filter */
-			Out->data[left_node + jout] = 0.0f;
-			if (norm > 0) {
-				if (fabs(rnorm) > (0.01 * rnormax))
-					Out->data[left_node + jout] = filtdat / rnorm;
+		for (col = 0; col < jout; col++) {
+			jc = col * jdec + (jdec - 1) / 2;
+			double sum = 0.0;
+			for (int di = 0; di < row_centers; di++) {
+				for (int dj = 0; dj < col_centers; dj++) {
+					int sample_row = ic1 + di;
+					int sample_col = jc + dj;
+					conv2d(buffer, &ylen, &xdim, filter, &yarr, &xarr, &filtdat, &sample_row, &sample_col, &rnorm);
+					/* Apply the original normalization to each integer-centered result. */
+					if (norm > 0) {
+						if (fabs(rnorm) > (0.01 * rnormax))
+							sum += filtdat / rnorm;
+					}
+					else if (fabs(rnorm) < 0.0001 * anormax) {
+						sum += filtdat;
+					}
+				}
 			}
-			else {
-				if (fabs(rnorm) < 0.0001 * anormax)
-					Out->data[left_node + jout] = filtdat;
-			}
-
-			jout++;
-
-		} /* end of jc loop */
-		row++;
-	} /* end of data loop */
+			Out->data[left_node + col] = (float)(sum / (row_centers * col_centers));
+		}
+	}
 	fclose(f_input);
 
 	if (GMT_Write_Data(API, GMT_IS_GRID, GMT_IS_FILE, GMT_IS_SURFACE, GMT_GRID_ALL, NULL, output_name, Out)) {
